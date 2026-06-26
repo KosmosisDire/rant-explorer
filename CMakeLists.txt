@@ -1,15 +1,6 @@
-# DART Explorer: cross-platform (Windows + Linux) build, Clay layout + SDL3.
-#
-# Nothing third-party is vendored. CMake fetches SDL3 + SDL3_ttf (built from
-# source via FetchContent, FreeType vendored by SDL_ttf) plus the single-file
-# Clay header, all pinned to immutable tags. The Clay->SDL3 renderer is vendored
-# in ui_render.h. The DART single-header comes from ../dist.
-#
-# Builds two ways:
-#   standalone:  cmake -S explore -B explore/build && cmake --build explore/build
-#   from root:   cmake -S . -B build -DDART_BUILD_EXPLORER=ON && cmake --build build
-# From the root it is an add_subdirectory of the top build (so its fetches land in
-# the same build tree and dart_explorer drops in the repo root with the rest).
+# DART Explorer (Windows + Linux): Clay layout + SDL3. CMake fetches SDL3/SDL3_ttf +
+# the Clay header (pinned tags); DART comes from ../dist. Builds standalone
+# (cmake -S explore -B explore/build) or from the root (-DDART_BUILD_EXPLORER=ON).
 
 cmake_minimum_required(VERSION 3.19)
 project(dart_explorer C)
@@ -17,12 +8,20 @@ project(dart_explorer C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# Standalone vs. pulled in by the root DART build. Standalone we own the output
-# dir and define a minimal `dart` interface pointing at ../dist; under the root
-# we inherit its output dir (repo root) and reuse its `dart` target, which
-# carries the dist include and regenerates the single-headers as a dependency.
+# Standalone: own the output dir and define a minimal `dart` -> ../dist. Under the
+# root build the `dart` target already exists (with dist include + regeneration).
 if(NOT TARGET dart)
+  if(CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_CONFIGURATION_TYPES "Release;Debug;RelWithDebInfo;MinSizeRel"
+        CACHE STRING "Build configs (Release first = the default)" FORCE)
+  endif()
   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+  foreach(_cfg ${CMAKE_CONFIGURATION_TYPES})   # optimized configs to build root, Debug keeps Debug/
+    string(TOUPPER "${_cfg}" _CFG)
+    if(NOT _cfg STREQUAL "Debug")
+      set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${_CFG} "${CMAKE_BINARY_DIR}")
+    endif()
+  endforeach()
   get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
   add_library(dart INTERFACE)
   target_include_directories(dart INTERFACE "${REPO_ROOT}/dist")
@@ -32,7 +31,6 @@ file(MAKE_DIRECTORY "${DEPS}/include")
 
 include(FetchContent)
 
-# ------------------------------------------------------------------ single files
 function(fetch url dest)
   if(NOT EXISTS "${dest}")
     message(STATUS "fetch ${dest}")
@@ -50,9 +48,7 @@ endfunction()
 set(CLAY_RAW "https://raw.githubusercontent.com/nicbarker/clay/v0.14")
 fetch("${CLAY_RAW}/clay.h" "${DEPS}/include/clay.h")
 
-# nanosvg: single-header SVG parser + rasterizer. Lucide icons (SVG) are rasterized
-# to RGBA textures at load and drawn via Clay's image path (tinted by theme color).
-# zlib-licensed; SDL3_ttf's own SVG (PlutoSVG) is off and SDL3 has no native SVG.
+# nanosvg: rasterizes the Lucide SVG icons to RGBA textures (SDL3 has no native SVG).
 set(NSVG_RAW "https://raw.githubusercontent.com/memononen/nanosvg/master/src")
 fetch("${NSVG_RAW}/nanosvg.h"     "${DEPS}/include/nanosvg.h")
 fetch("${NSVG_RAW}/nanosvgrast.h" "${DEPS}/include/nanosvgrast.h")
@@ -60,9 +56,7 @@ fetch("${NSVG_RAW}/nanosvgrast.h" "${DEPS}/include/nanosvgrast.h")
 # Fonts are the OS system fonts (system-ui / ui-monospace), loaded by path at
 # runtime to match the mockup per platform. Nothing to fetch.
 
-# ----------------------------------------------------------------- SDL3 + SDL_ttf
-# Built from source so the result is identical on Windows and Linux and needs no
-# system packages. Static so the binary runs straight from the build dir.
+# SDL3 + SDL_ttf, built from source, static (same result on Windows/Linux, no packages).
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(SDL_SHARED   OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC   ON  CACHE BOOL "" FORCE)
@@ -73,10 +67,8 @@ FetchContent_Declare(SDL3
   URL https://github.com/libsdl-org/SDL/releases/download/release-3.2.16/SDL3-3.2.16.tar.gz)
 FetchContent_MakeAvailable(SDL3)
 
-# SDL_ttf vendors FreeType from its own submodule (the release tarball omits it,
-# so fetch via git and pull just external/freetype). HarfBuzz/PlutoSVG off keeps
-# the build lean (no complex-script shaping or SVG glyphs), so no other submodule
-# is needed.
+# SDL_ttf vendors FreeType from its git submodule (tarball omits it); HarfBuzz/PlutoSVG
+# off keeps it lean, so only external/freetype is pulled.
 set(SDLTTF_VENDORED ON  CACHE BOOL "" FORCE)
 set(SDLTTF_HARFBUZZ OFF CACHE BOOL "" FORCE)
 set(SDLTTF_PLUTOSVG OFF CACHE BOOL "" FORCE)
@@ -87,10 +79,7 @@ FetchContent_Declare(SDL3_ttf
   GIT_SUBMODULES external/freetype)
 FetchContent_MakeAvailable(SDL3_ttf)
 
-# ------------------------------------------------------------------------ target
-# Two TUs on purpose: discovery_explorer.c is the SDL3/Clay UI; net_capture.c
-# owns DART + winsock. SDL coexists with windows.h, but keeping the split is
-# zero-cost and isolates the DART/winsock side.
+# Two TUs: discovery_explorer.c is the SDL3/Clay UI, net_capture.c owns DART + winsock.
 add_executable(dart_explorer discovery_explorer.c net_capture.c)
 target_include_directories(dart_explorer PRIVATE
   "${DEPS}/include" "${CMAKE_CURRENT_SOURCE_DIR}")

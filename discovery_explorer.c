@@ -1,0 +1,185 @@
+/* DART Explorer: a debugger UI for a DART mesh (Discovery And Realtime
+   Transport). Three tabs: Nodes, Topics, Log.
+
+   This translation unit is the GUI: SDL3 for the window/input/renderer, SDL3_ttf
+   (FreeType) for text, Clay for declarative (flexbox-style) layout. The UI is
+   broken out into ui_*.h (theme, data model, widgets, per-tab views, shell). The
+   live discovery observer lives in net_capture.c, a SEPARATE TU (it owns DART +
+   winsock); keeping the split isolates that side from the GUI.
+
+   The new UI renders from an (initially empty) ui_model Dataset; feeding it from
+   net_capture's live peers is the next step.
+
+   Build (cross-platform) with CMake; see CMakeLists.txt:
+     cmake -S explore -B explore/build && cmake --build explore/build */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <math.h>
+
+#define CLAY_IMPLEMENTATION
+#include "clay.h"
+
+#define SDL_MAIN_HANDLED                 /* we own main(); don't let SDL_main.h rename it */
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>               /* for SDL_SetMainReady() */
+#include <SDL3_ttf/SDL_ttf.h>
+#include "ui_render.h"                   /* vendored Clay->SDL3 renderer + LCD subpixel text */
+
+#include "net_capture.h"
+#include "ui_theme.h"
+#include "ui_fonts.h"
+#include "ui_model.h"
+#include "ui_app.h"
+#include "ui_widgets.h"
+#include "ui_tab_nodes.h"
+#include "ui_tab_topics.h"
+#include "ui_tab_log.h"
+#include "ui_shell.h"
+
+/* the dataset the UI draws from. Empty for now: the skeleton renders regions,
+   not content. Populate from data.js (sample) and net_capture (live) next. */
+static Dataset g_data;
+
+static void clay_error(Clay_ErrorData e){
+    fprintf(stderr, "clay error: %.*s\n", (int)e.errorText.length, e.errorText.chars);
+}
+
+int main(int argc, char **argv){
+    Config  cfg;
+    Capture cap;
+    AppState app;
+    SDL_Window   *win;
+    SDL_Renderer *ren;
+    UiRenderer rdata;
+    float dpi;
+    uint64_t clay_mem, last_ticks;
+    Clay_Arena arena;
+    int ow = 0, oh = 0;
+    bool mouse_held = false;
+
+    setvbuf(stdout, NULL, _IONBF, 0);   /* unbuffered: console echo stays live */
+
+    cap_defaults(&cfg);
+    {   int parsed = cap_parse_args(argc, argv, &cfg);
+        if (parsed <= 0) return parsed < 0 ? 1 : 0;
+    }
+    printf("DART Explorer\n  observer \"%s\"  domain %u  group %s:%u  interface %s\n",
+           cfg.name, cfg.domain, cfg.group, cfg.port, cfg.ifc ? cfg.ifc : "(auto)");
+
+    SDL_SetMainReady();
+    if (!SDL_Init(SDL_INIT_VIDEO)){
+        fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+        return 1;
+    }
+    if (!TTF_Init()){
+        fprintf(stderr, "TTF_Init failed: %s\n", SDL_GetError());
+        return 1;
+    }
+    if (!SDL_CreateWindowAndRenderer("DART Explorer", 1280, 800,
+            SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY, &win, &ren)){
+        fprintf(stderr, "SDL_CreateWindowAndRenderer failed: %s\n", SDL_GetError());
+        return 1;
+    }
+    SDL_SetRenderVSync(ren, 1);
+
+    dpi = SDL_GetWindowPixelDensity(win);   /* physical px per logical px (1.0 = 100%) */
+    if (dpi <= 0.0f) dpi = 1.0f;
+    {   const char *z = getenv("DART_UI_ZOOM");   /* optional extra zoom on the CSS px */
+        ui_scale = z ? (float)atof(z) : 1.0f;
+        if (ui_scale < 0.5f) ui_scale = 0.5f;
+        if (ui_scale > 4.0f) ui_scale = 4.0f;
+    }
+    printf("  display pixel density %.2f, UI zoom %.2f (override with DART_UI_ZOOM)\n",
+           (double)dpi, (double)ui_scale);
+
+    if (!ui_fonts_load(dpi)){
+        fprintf(stderr, "failed to load system fonts (Segoe UI / Consolas; DejaVu on Linux)\n");
+        return 1;
+    }
+    rdata = (UiRenderer){ .renderer = ren, .fonts = g_fonts };
+
+    SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
+    clay_mem = Clay_MinMemorySize();
+    arena = Clay_CreateArenaWithCapacityAndMemory(clay_mem, malloc(clay_mem));
+    Clay_Initialize(arena, (Clay_Dimensions){ (float)ow, (float)oh },
+                    (Clay_ErrorHandler){ clay_error, 0 });
+    Clay_SetMeasureTextFunction(ui_measure_text, g_fonts);
+
+    app_init(&app, &g_data);
+
+    if (!cap_start(&cap, &cfg))
+        fprintf(stderr, "running without live discovery (socket/interface issue)\n");
+
+    last_ticks = SDL_GetTicks();
+    for (;;){
+        SDL_Event ev;
+        float wheel_x = 0.0f, wheel_y = 0.0f;
+        bool  quit = false;
+        float mx, my, dt;
+        uint64_t now;
+        float cur_dpi;
+        Clay_Color bg;
+
+        g_pointer_pressed = false;   /* edge-triggered: set only on a press this frame */
+        while (SDL_PollEvent(&ev)){
+            switch (ev.type){
+                case SDL_EVENT_QUIT: quit = true; break;
+                case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                    if (ev.button.button == SDL_BUTTON_LEFT){ mouse_held = true; g_pointer_pressed = true; }
+                    break;
+                case SDL_EVENT_MOUSE_BUTTON_UP:
+                    if (ev.button.button == SDL_BUTTON_LEFT) mouse_held = false;
+                    break;
+                case SDL_EVENT_MOUSE_WHEEL:
+                    wheel_x += ev.wheel.x; wheel_y += ev.wheel.y;
+                    break;
+                default: break;
+            }
+        }
+        if (quit) break;
+
+        cap_poll(&cap);
+
+        cur_dpi = SDL_GetWindowPixelDensity(win);
+        if (cur_dpi > 0.0f && fabsf(cur_dpi - g_atlas_scale) > 0.01f)   /* moved to a different-DPI monitor */
+            ui_fonts_reload(cur_dpi);
+
+        SDL_GetMouseState(&mx, &my);     /* logical (point) coords; layout is physical */
+        mx *= ui_dpi; my *= ui_dpi;
+        SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
+
+        now = SDL_GetTicks();
+        dt = (float)(now - last_ticks) / 1000.0f;
+        last_ticks = now;
+        if (dt <= 0.0f) dt = 1.0f / 60.0f;
+
+        Clay_SetLayoutDimensions((Clay_Dimensions){ (float)ow, (float)oh });
+        Clay_SetPointerState((Clay_Vector2){ mx, my }, mouse_held);
+        Clay_UpdateScrollContainers(true, (Clay_Vector2){ wheel_x * UISC(40), wheel_y * UISC(40) }, dt);
+
+        ui_strpool_reset();
+        Clay_BeginLayout();
+        ui_frame(&app);
+        Clay_RenderCommandArray cmds = Clay_EndLayout();
+
+        bg = app.theme_dark ? UI_DARK.bg : UI_LIGHT.bg;
+        SDL_SetRenderDrawColor(ren, (Uint8)bg.r, (Uint8)bg.g, (Uint8)bg.b, 255);
+        SDL_RenderClear(ren);
+        ui_render(&rdata, &cmds, bg);
+        SDL_RenderPresent(ren);
+    }
+
+    cap_stop(&cap);
+    ui_fonts_unload();
+    TTF_Quit();
+    SDL_DestroyRenderer(ren);
+    SDL_DestroyWindow(win);
+    SDL_Quit();
+    free(arena.memory);
+    return 0;
+}

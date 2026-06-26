@@ -215,12 +215,11 @@ static void cap_topics_csv(const CapTopic *t, int n, char *buf, size_t cap){
         off += (size_t)snprintf(buf + off, cap - off, "%s%s", i ? "," : "", t[i].name);
 }
 
-static void cap_on_peer_up(void *user, uint32_t id, const DartDiscoveryAddr *addr,
+static void cap_peer_up(uint32_t id, const DartDiscoveryAddr *addr,
                            const uint8_t *meta, uint16_t meta_len){
     CapPeer *p = cap_peer_get(id);
     CapPeerState was = p->state;
     char a[80];
-    (void)user;
 
     p->state = CAP_ACTIVE;
     memcpy(p->ip, addr->ip, 16);
@@ -242,9 +241,8 @@ static void cap_on_peer_up(void *user, uint32_t id, const DartDiscoveryAddr *add
     }
 }
 
-static void cap_on_peer_down(void *user, uint32_t id, DartDiscoveryDownReason reason){
+static void cap_peer_down(uint32_t id, DartDiscoveryDownReason reason){
     CapPeer *p = cap_peer_find(id);
-    (void)user;
     if (!p){
         cap_logf("DOWN  id=%u  [%s, peer unknown]", id, reason == DART_DISCOVERY_GONE ? "GONE" : "DROP");
         return;
@@ -255,11 +253,20 @@ static void cap_on_peer_down(void *user, uint32_t id, DartDiscoveryDownReason re
              reason == DART_DISCOVERY_GONE ? "GONE (state freed)" : "DROPPED (silent, may return)");
 }
 
-static void cap_on_peer_refused(void *user, const DartDiscoveryAddr *addr){
+static void cap_peer_refused(const DartDiscoveryAddr *addr){
     char a[80];
-    (void)user;
     cap_fmt_addr(a, sizeof a, addr->ip, addr->ip_len, addr->port);
     cap_logf("REFUSED %s  (peer table full of active peers)", a);
+}
+
+/* one discovery event sink (the generic DartDiscoveryEvent), demuxed to the handlers above */
+static void cap_on_event(const DartDiscoveryEvent *ev){
+    switch (ev->kind){
+        case DART_DISCOVERY_PEER_UP:      cap_peer_up(ev->peer, &ev->addr, ev->meta, ev->meta_len); break;
+        case DART_DISCOVERY_PEER_DOWN:    cap_peer_down(ev->peer, ev->reason); break;
+        case DART_DISCOVERY_PEER_REFUSED: cap_peer_refused(&ev->addr); break;
+        default: break;
+    }
 }
 
 static void cap_uuid_to_hex(const uint8_t u[16], char *out){
@@ -348,9 +355,7 @@ int cap_start(Capture *cap, const Config *cfg){
        everyone's, so reserve a full datagram of per-peer meta (default 64 is too
        small once a node has more than a couple of topics). */
     rcfg.discovery.meta_capacity = 1408;
-    rcfg.discovery.on_peer_up      = cap_on_peer_up;
-    rcfg.discovery.on_peer_down    = cap_on_peer_down;
-    rcfg.discovery.on_peer_refused = cap_on_peer_refused;
+    rcfg.discovery.on_event = cap_on_event;
     rcfg.group               = cfg->group;
     rcfg.discovery_port      = cfg->port;
     rcfg.multicast_interface = cfg->ifc;

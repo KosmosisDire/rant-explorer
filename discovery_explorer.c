@@ -30,20 +30,31 @@
 #include <SDL3_ttf/SDL_ttf.h>
 #include "ui_render.h"                   /* vendored Clay->SDL3 renderer + LCD subpixel text */
 
+/* nanosvg single-headers: implementation lives in this one TU. Used by ui_icons.h
+   to rasterize the Lucide SVGs into textures. */
+#define NANOSVG_IMPLEMENTATION
+#include "nanosvg.h"
+#define NANOSVGRAST_IMPLEMENTATION
+#include "nanosvgrast.h"
+
 #include "net_capture.h"
 #include "ui_theme.h"
 #include "ui_fonts.h"
+#include "ui_icons.h"
 #include "ui_model.h"
+#include "ui_data.h"
 #include "ui_app.h"
 #include "ui_widgets.h"
+#include "ui_tree.h"
 #include "ui_tab_nodes.h"
 #include "ui_tab_topics.h"
 #include "ui_tab_log.h"
 #include "ui_shell.h"
 
-/* the dataset the UI draws from. Empty for now: the skeleton renders regions,
-   not content. Populate from data.js (sample) and net_capture (live) next. */
-static Dataset g_data;
+/* the dataset the UI draws from, rebuilt each frame from the live capture snapshot
+   by ui_data_build(). g_snap is the plain-types view copied out of net_capture. */
+static Dataset     g_data;
+static CapSnapshot g_snap;
 
 static void clay_error(Clay_ErrorData e){
     fprintf(stderr, "clay error: %.*s\n", (int)e.errorText.length, e.errorText.chars);
@@ -60,7 +71,7 @@ int main(int argc, char **argv){
     uint64_t clay_mem, last_ticks;
     Clay_Arena arena;
     int ow = 0, oh = 0;
-    bool mouse_held = false;
+    bool mouse_held = false, debug_enabled = false;
 
     setvbuf(stdout, NULL, _IONBF, 0);   /* unbuffered: console echo stays live */
 
@@ -70,6 +81,7 @@ int main(int argc, char **argv){
     }
     printf("DART Explorer\n  observer \"%s\"  domain %u  group %s:%u  interface %s\n",
            cfg.name, cfg.domain, cfg.group, cfg.port, cfg.ifc ? cfg.ifc : "(auto)");
+    printf("  hotkey: F12 = toggle the Clay layout inspector\n");
 
     SDL_SetMainReady();
     if (!SDL_Init(SDL_INIT_VIDEO)){
@@ -101,6 +113,8 @@ int main(int argc, char **argv){
         fprintf(stderr, "failed to load system fonts (Segoe UI / Consolas; DejaVu on Linux)\n");
         return 1;
     }
+    if (!ui_icons_load(ren))
+        fprintf(stderr, "warning: some Lucide icons failed to rasterize (UI runs without them)\n");
     rdata = (UiRenderer){ .renderer = ren, .fonts = g_fonts };
 
     SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
@@ -111,6 +125,12 @@ int main(int argc, char **argv){
     Clay_SetMeasureTextFunction(ui_measure_text, g_fonts);
 
     app_init(&app, &g_data);
+    app.snap = &g_snap;          /* stable global; the Log tab reads its event lines */
+    {   const char *tab = getenv("DART_UI_TAB");   /* optional: open straight on a tab */
+        if (tab){ if (!strcmp(tab, "topics")) app.tab = TAB_TOPICS;
+                  else if (!strcmp(tab, "log")) app.tab = TAB_LOG;
+                  else if (!strcmp(tab, "nodes")) app.tab = TAB_NODES; }
+    }
 
     if (!cap_start(&cap, &cfg))
         fprintf(stderr, "running without live discovery (socket/interface issue)\n");
@@ -138,6 +158,13 @@ int main(int argc, char **argv){
                 case SDL_EVENT_MOUSE_WHEEL:
                     wheel_x += ev.wheel.x; wheel_y += ev.wheel.y;
                     break;
+                case SDL_EVENT_KEY_DOWN:
+                    if (ev.key.repeat) break;
+                    if (ev.key.key == SDLK_F12){              /* F12: toggle Clay's layout inspector */
+                        debug_enabled = !debug_enabled;
+                        Clay_SetDebugModeEnabled(debug_enabled);
+                    }
+                    break;
                 default: break;
             }
         }
@@ -146,8 +173,10 @@ int main(int argc, char **argv){
         cap_poll(&cap);
 
         cur_dpi = SDL_GetWindowPixelDensity(win);
-        if (cur_dpi > 0.0f && fabsf(cur_dpi - g_atlas_scale) > 0.01f)   /* moved to a different-DPI monitor */
-            ui_fonts_reload(cur_dpi);
+        if (cur_dpi > 0.0f && fabsf(cur_dpi - g_atlas_scale) > 0.01f){   /* moved to a different-DPI monitor */
+            ui_fonts_reload(cur_dpi);   /* sets ui_dpi first... */
+            ui_icons_reload(ren);       /* ...so the icon raster picks up the new density */
+        }
 
         SDL_GetMouseState(&mx, &my);     /* logical (point) coords; layout is physical */
         mx *= ui_dpi; my *= ui_dpi;
@@ -162,6 +191,13 @@ int main(int argc, char **argv){
         Clay_SetPointerState((Clay_Vector2){ mx, my }, mouse_held);
         Clay_UpdateScrollContainers(true, (Clay_Vector2){ wheel_x * UISC(40), wheel_y * UISC(40) }, dt);
 
+        cap_snapshot(&cap, &g_snap);     /* live discovery table -> plain view */
+        ui_data_build(&g_data, &g_snap); /* -> the UI Dataset (rebuilt every frame) */
+        if (app.sel_node >= g_data.n_nodes)
+            app.sel_node = g_data.n_nodes ? g_data.n_nodes - 1 : 0;
+        if (app.sel_topic >= g_data.n_topics)
+            app.sel_topic = g_data.n_topics ? g_data.n_topics - 1 : 0;
+
         ui_strpool_reset();
         Clay_BeginLayout();
         ui_frame(&app);
@@ -175,6 +211,7 @@ int main(int argc, char **argv){
     }
 
     cap_stop(&cap);
+    ui_icons_unload();
     ui_fonts_unload();
     TTF_Quit();
     SDL_DestroyRenderer(ren);

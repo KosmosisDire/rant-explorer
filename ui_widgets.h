@@ -8,6 +8,10 @@
 #ifndef UI_WIDGETS_H
 #define UI_WIDGETS_H
 
+/* UISC yields a float; Clay's padding/childGap/border-width fields are uint16_t.
+   UISCI scales and casts in one step, to keep layout literals readable. */
+#define UISCI(px) ((uint16_t)UISC(px))
+
 static bool g_pointer_pressed = false;   /* left mouse pressed this frame; main sets it */
 
 /* a filled or hollow status dot (a circle = a rect with full corner radius) */
@@ -53,6 +57,22 @@ static bool ui_chip(const Palette *P, Clay_String label, Clay_Color dot){
         if (Clay_Hovered() && g_pointer_pressed) clicked = true;
         ui_dot(UISC(6), dot, dot);
         CLAY_TEXT(label, CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text }));
+    }
+    return clicked;
+}
+
+/* a square icon button: the icon centered in a box, faint hover fill. Returns true
+   on click. fg/hover_fg tint the icon; box is the clickable square's side (px). */
+static bool ui_icon_button(const Palette *P, IconId id, float icon_px, float box,
+                           Clay_Color fg, Clay_Color hover_fg){
+    bool clicked = false, hov;
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(box)), .height = CLAY_SIZING_FIXED(UISC(box)) },
+                       .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
+           .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)),
+           .backgroundColor = Clay_Hovered() ? P->panel2 : UI_NONE }) {   /* hover wash behind the icon */
+        hov = Clay_Hovered();
+        if (hov && g_pointer_pressed) clicked = true;
+        ui_icon(id, icon_px, hov ? hover_fg : fg);
     }
     return clicked;
 }

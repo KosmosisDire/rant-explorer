@@ -36,8 +36,11 @@ static void ui_fill_rounded_rect(SDL_Renderer *ren, const SDL_FRect rect, const 
     const int numCircleSegments = SDL_max(UI_CIRCLE_SEGMENTS, (int) clampedRadius * 0.5f);
     int totalVertices = 4 + (4 * (numCircleSegments * 2)) + 2*4;
     int totalIndices = 6 + (4 * (numCircleSegments * 3)) + 6*4;
-    SDL_Vertex vertices[totalVertices];
-    int indices[totalIndices];
+    /* heap, not a VLA: MSVC has no C99 variable-length arrays, and the counts grow
+       with the corner radius so a fixed stack buffer would have to be huge. */
+    SDL_Vertex *vertices = (SDL_Vertex *)malloc((size_t)totalVertices * sizeof *vertices);
+    int        *indices  = (int *)       malloc((size_t)totalIndices  * sizeof *indices);
+    if (!vertices || !indices){ free(vertices); free(indices); return; }
 
     vertices[vertexCount++] = (SDL_Vertex){ {rect.x + clampedRadius, rect.y + clampedRadius}, color, {0, 0} };
     vertices[vertexCount++] = (SDL_Vertex){ {rect.x + rect.w - clampedRadius, rect.y + clampedRadius}, color, {1, 0} };
@@ -57,7 +60,7 @@ static void ui_fill_rounded_rect(SDL_Renderer *ren, const SDL_FRect rect, const 
                 case 1: cx = rect.x + rect.w - clampedRadius; cy = rect.y + clampedRadius; signX = 1; signY = -1; break;
                 case 2: cx = rect.x + rect.w - clampedRadius; cy = rect.y + rect.h - clampedRadius; signX = 1; signY = 1; break;
                 case 3: cx = rect.x + clampedRadius; cy = rect.y + rect.h - clampedRadius; signX = -1; signY = 1; break;
-                default: return;
+                default: free(vertices); free(indices); return;
             }
             vertices[vertexCount++] = (SDL_Vertex){ {cx + SDL_cosf(angle1) * clampedRadius * signX, cy + SDL_sinf(angle1) * clampedRadius * signY}, color, {0, 0} };
             vertices[vertexCount++] = (SDL_Vertex){ {cx + SDL_cosf(angle2) * clampedRadius * signX, cy + SDL_sinf(angle2) * clampedRadius * signY}, color, {0, 0} };
@@ -85,6 +88,8 @@ static void ui_fill_rounded_rect(SDL_Renderer *ren, const SDL_FRect rect, const 
     indices[indexCount++] = 0; indices[indexCount++] = 3; indices[indexCount++] = vertexCount - 1;
 
     SDL_RenderGeometry(ren, NULL, vertices, vertexCount, indices, indexCount);
+    free(vertices);
+    free(indices);
 }
 
 /* ported from Clay's SDL3 renderer: a stroked arc (rounded-border corners) */
@@ -95,9 +100,12 @@ static void ui_fill_arc(SDL_Renderer *ren, const SDL_FPoint center, const float 
     const int numCircleSegments = SDL_max(UI_CIRCLE_SEGMENTS, (int)(radius * 1.5f));
     const float angleStep = (radEnd - radStart) / (float)numCircleSegments;
     const float thicknessStep = 0.4f;
+    /* heap, not a VLA (MSVC); the segment count is constant across the loop, so
+       allocate once and reuse. */
+    SDL_FPoint *points = (SDL_FPoint *)malloc((size_t)(numCircleSegments + 1) * sizeof *points);
+    if (!points) return;
     SDL_SetRenderDrawColor(ren, (Uint8)color.r, (Uint8)color.g, (Uint8)color.b, (Uint8)color.a);
     for (float t = thicknessStep; t < thickness - thicknessStep; t += thicknessStep) {
-        SDL_FPoint points[numCircleSegments + 1];
         const float clampedRadius = SDL_max(radius - t, 1.0f);
         for (int i = 0; i <= numCircleSegments; i++) {
             const float angle = radStart + i * angleStep;
@@ -106,6 +114,7 @@ static void ui_fill_arc(SDL_Renderer *ren, const SDL_FPoint center, const float 
         }
         SDL_RenderLines(ren, points, numCircleSegments + 1);
     }
+    free(points);
 }
 
 typedef struct { SDL_FRect box; Clay_Color color; } UiBgRect;
@@ -196,8 +205,17 @@ static void ui_render(UiRenderer *rd, Clay_RenderCommandArray *cmds, Clay_Color 
                 break;
 
             case CLAY_RENDER_COMMAND_TYPE_IMAGE: {
-                SDL_Texture *tex = (SDL_Texture *)cmd->renderData.image.imageData;
-                if (tex) SDL_RenderTexture(ren, tex, NULL, &rect);
+                Clay_ImageRenderData *c = &cmd->renderData.image;
+                SDL_Texture *tex = (SDL_Texture *)c->imageData;
+                if (tex){
+                    /* backgroundColor is the image tint: our icons are rasterized white,
+                       so color-mod recolors them to any theme color (alpha = AA edges). */
+                    if (c->backgroundColor.a > 0.0f)
+                        SDL_SetTextureColorMod(tex, (Uint8)c->backgroundColor.r, (Uint8)c->backgroundColor.g, (Uint8)c->backgroundColor.b);
+                    else
+                        SDL_SetTextureColorMod(tex, 255, 255, 255);
+                    SDL_RenderTexture(ren, tex, NULL, &rect);
+                }
             } break;
 
             default: break;

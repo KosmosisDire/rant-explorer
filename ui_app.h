@@ -6,6 +6,8 @@
 typedef enum { TAB_NODES, TAB_TOPICS, TAB_LOG } Tab;
 typedef enum { DRW_INSPECT, DRW_PUBLISH } DrawerMode;
 
+#define UI_MAX_COLLAPSED 128   /* tracked collapsed tree branches (default = expanded) */
+
 typedef struct {
     int  theme_dark;          /* 1 dark, 0 light */
     Tab  tab;
@@ -16,17 +18,42 @@ typedef struct {
     int        drawer_open;   /* Topics inspector drawer */
     DrawerMode drawer_mode;
 
-    const Dataset *data;
+    /* topic tree: a set of COLLAPSED branch-path hashes (absent = expanded, the default) */
+    uint64_t collapsed[UI_MAX_COLLAPSED];
+    int      n_collapsed;
+
+    const Dataset     *data;  /* rebuilt each frame from the live snapshot */
+    const CapSnapshot *snap;  /* the raw snapshot (Log tab reads its event lines) */
 } AppState;
 
 static void app_init(AppState *a, const Dataset *data){
     a->theme_dark  = 1;
-    a->tab         = TAB_TOPICS;
+    a->tab         = TAB_NODES;
     a->sel_node    = 0;
     a->sel_topic   = 0;
     a->drawer_open = 1;
     a->drawer_mode = DRW_INSPECT;
+    a->n_collapsed = 0;
     a->data        = data;
+    a->snap        = NULL;
+}
+
+/* FNV-1a over a path string, the key for the collapsed-branch set */
+static uint64_t ui_path_hash(const char *s){
+    uint64_t h = 1469598103934665603ull;
+    for (; s && *s; s++){ h ^= (unsigned char)*s; h *= 1099511628211ull; }
+    return h;
+}
+static int app_is_collapsed(const AppState *a, const char *path){
+    uint64_t h = ui_path_hash(path); int i;
+    for (i = 0; i < a->n_collapsed; i++) if (a->collapsed[i] == h) return 1;
+    return 0;
+}
+static void app_toggle_collapsed(AppState *a, const char *path){
+    uint64_t h = ui_path_hash(path); int i;
+    for (i = 0; i < a->n_collapsed; i++)
+        if (a->collapsed[i] == h){ a->collapsed[i] = a->collapsed[--a->n_collapsed]; return; }
+    if (a->n_collapsed < UI_MAX_COLLAPSED) a->collapsed[a->n_collapsed++] = h;
 }
 
 #endif /* UI_APP_H */

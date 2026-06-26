@@ -50,6 +50,13 @@ endfunction()
 set(CLAY_RAW "https://raw.githubusercontent.com/nicbarker/clay/v0.14")
 fetch("${CLAY_RAW}/clay.h" "${DEPS}/include/clay.h")
 
+# nanosvg: single-header SVG parser + rasterizer. Lucide icons (SVG) are rasterized
+# to RGBA textures at load and drawn via Clay's image path (tinted by theme color).
+# zlib-licensed; SDL3_ttf's own SVG (PlutoSVG) is off and SDL3 has no native SVG.
+set(NSVG_RAW "https://raw.githubusercontent.com/memononen/nanosvg/master/src")
+fetch("${NSVG_RAW}/nanosvg.h"     "${DEPS}/include/nanosvg.h")
+fetch("${NSVG_RAW}/nanosvgrast.h" "${DEPS}/include/nanosvgrast.h")
+
 # Fonts are the OS system fonts (system-ui / ui-monospace), loaded by path at
 # runtime to match the mockup per platform. Nothing to fetch.
 

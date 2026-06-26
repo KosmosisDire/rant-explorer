@@ -27,13 +27,14 @@
 #define CAP_MAX_TOPICS  32
 #define CAP_RAW_META    256
 #define CAP_LOG_LINES   400
-#define CAP_LOG_LINE    160
+/* CAP_LOG_LINE comes from net_capture.h (shared with the snapshot) */
 
 typedef enum { CAP_ACTIVE = 0, CAP_DROPPED = 1, CAP_GONE = 2 } CapPeerState;
 
 typedef struct {
     char     name[DART_TOPIC_NAME_MAX + 1];
     uint16_t alias;
+    int      reliable;       /* offered (pub) / requested (sub): flags bit 0 */
 } CapTopic;
 
 typedef struct {
@@ -68,8 +69,9 @@ static char    cap_log[CAP_LOG_LINES][CAP_LOG_LINE];
 static int     cap_log_head, cap_log_count;
 static unsigned long long cap_start_ms;
 static char    cap_uuid_hex[40];
+static Config  cap_cfg;          /* echoed into the snapshot for display */
 
-static uint8_t  cap_self_meta[8 + DART_NODE_NAME_MAX];
+static uint8_t  cap_self_meta[16 + DART_NODE_NAME_MAX];   /* 'D','N',ver,frag(2),namelen,name,npub(2),nsub(2) */
 static uint16_t cap_self_meta_len;
 
 static unsigned long long cap_now_ms(void){
@@ -103,6 +105,12 @@ static void cap_fmt_addr(char *buf, size_t n, const uint8_t *ip, uint8_t ip_len,
                  ip[0], ip[1], ip[2], ip[3], ip[14], ip[15], port);
     else
         snprintf(buf, n, "(no address):%u", port);
+}
+
+static void cap_fmt_ip(char *buf, size_t n, const uint8_t *ip, uint8_t ip_len){
+    if (ip_len == 4)       snprintf(buf, n, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    else if (ip_len == 16) snprintf(buf, n, "%02x%02x:..:%02x%02x", ip[0], ip[1], ip[14], ip[15]);
+    else                   snprintf(buf, n, "(no address)");
 }
 
 static CapPeer *cap_peer_find(uint32_t id){
@@ -158,34 +166,37 @@ static void cap_decode_meta(CapPeer *p, const uint8_t *meta, uint16_t meta_len){
 
     in = dart_meta_interest(meta, meta_len, &il);
     if (in && il >= 4){
+        /* each entry is [u16 alias][u8 flags][u8 namelen][name]; flags bit 0 = reliability */
         uint16_t npub = (uint16_t)(in[0] | (in[1] << 8));
         uint16_t nsub = (uint16_t)(in[2] | (in[3] << 8));
         const uint8_t *q = in + 4, *end = in + il;
         uint16_t k;
-        for (k = 0; k < npub && q + 3 <= end; k++){
+        for (k = 0; k < npub && q + 4 <= end; k++){
             uint16_t alias = (uint16_t)(q[0] | (q[1] << 8));
-            uint8_t len = q[2];
-            q += 3;
+            uint8_t flags = q[2], len = q[3];
+            q += 4;
             if (q + len > end) break;
             if (p->n_pub < CAP_MAX_TOPICS){
                 uint8_t c = len > DART_TOPIC_NAME_MAX ? DART_TOPIC_NAME_MAX : len;
                 memcpy(p->pub[p->n_pub].name, q, c);
                 p->pub[p->n_pub].name[c] = '\0';
                 p->pub[p->n_pub].alias = alias;
+                p->pub[p->n_pub].reliable = (flags & 1u) != 0;
                 p->n_pub++;
             }
             q += len;
         }
-        for (k = 0; k < nsub && q + 3 <= end; k++){
+        for (k = 0; k < nsub && q + 4 <= end; k++){
             uint16_t alias = (uint16_t)(q[0] | (q[1] << 8));
-            uint8_t len = q[2];
-            q += 3;
+            uint8_t flags = q[2], len = q[3];
+            q += 4;
             if (q + len > end) break;
             if (p->n_sub < CAP_MAX_TOPICS){
                 uint8_t c = len > DART_TOPIC_NAME_MAX ? DART_TOPIC_NAME_MAX : len;
                 memcpy(p->sub[p->n_sub].name, q, c);
                 p->sub[p->n_sub].name[c] = '\0';
                 p->sub[p->n_sub].alias = alias;
+                p->sub[p->n_sub].reliable = (flags & 1u) != 0;
                 p->n_sub++;
             }
             q += len;
@@ -258,18 +269,21 @@ static void cap_uuid_to_hex(const uint8_t u[16], char *out){
 }
 
 static void cap_build_self_meta(const char *name){
+    /* v6 (no-SHM, named): ['D','N',6, frag_lo, frag_hi, namelen, name, npub16=0, nsub16=0].
+       Matches what the current node writes (DART_NO_SHM => v6) so peers accept our
+       blob; the interest list is empty (a passive observer publishes nothing). */
     uint16_t frag = (uint16_t)dart_clamp_frag(0);
     size_t sl = strlen(name);
     uint8_t nl = sl > DART_NODE_NAME_MAX ? (uint8_t)DART_NODE_NAME_MAX : (uint8_t)sl;
     uint8_t *o = cap_self_meta;
     uint16_t off;
-    o[0] = 'D'; o[1] = 'N'; o[2] = 4;
+    o[0] = 'D'; o[1] = 'N'; o[2] = 6;
     o[3] = (uint8_t)(frag & 0xFF); o[4] = (uint8_t)(frag >> 8);
     o[5] = nl;
     memcpy(o + 6, name, nl);
     off = (uint16_t)(6 + nl);
-    o[off] = 0; o[off + 1] = 0;
-    o[off + 2] = 0; o[off + 3] = 0;
+    o[off] = 0; o[off + 1] = 0;      /* npub = 0 */
+    o[off + 2] = 0; o[off + 3] = 0;  /* nsub = 0 */
     cap_self_meta_len = (uint16_t)(off + 4);
 }
 
@@ -318,6 +332,7 @@ int cap_start(Capture *cap, const Config *cfg){
 
     memset(cap, 0, sizeof *cap);
     cap_start_ms = cap_now_ms();
+    cap_cfg = *cfg;          /* group/name point into argv: stable for the run */
 
     if (!dart_discovery_make_uuid4(uuid)) memset(uuid, 0, 16);
     cap_uuid_to_hex(uuid, cap_uuid_hex);
@@ -329,7 +344,10 @@ int cap_start(Capture *cap, const Config *cfg){
     memcpy(rcfg.discovery.uuid, uuid, 16);
     rcfg.discovery.meta          = cap_self_meta;
     rcfg.discovery.meta_len      = cap_self_meta_len;
-    rcfg.discovery.meta_capacity = DART_DISCOVERY_META_MAX;
+    /* a node sizes its blob to its own interest list; an observer wants to receive
+       everyone's, so reserve a full datagram of per-peer meta (default 64 is too
+       small once a node has more than a couple of topics). */
+    rcfg.discovery.meta_capacity = 1408;
     rcfg.discovery.on_peer_up      = cap_on_peer_up;
     rcfg.discovery.on_peer_down    = cap_on_peer_down;
     rcfg.discovery.on_peer_refused = cap_on_peer_refused;
@@ -363,4 +381,57 @@ void cap_stop(Capture *cap){
     if (cap->rt) dart_discovery_rt_close((DartDiscoveryRt *)cap->rt, 1);
     if (cap->mem) free(cap->mem);
     cap->rt = NULL; cap->mem = NULL;
+}
+
+void cap_snapshot(const Capture *cap, CapSnapshot *out){
+    unsigned long long now = cap_now_ms();
+    int i, k;
+    (void)cap;   /* the peer table is file-static; cap is kept for API symmetry */
+
+    memset(out, 0, sizeof *out);
+    out->domain    = cap_cfg.domain;
+    out->disc_port = cap_cfg.port;
+    snprintf(out->group, sizeof out->group, "%s", cap_cfg.group ? cap_cfg.group : "");
+
+    {   /* copy the observer event ring, newest first, capped to CAP_SNAP_LOG */
+        int want = cap_log_count < CAP_SNAP_LOG ? cap_log_count : CAP_SNAP_LOG;
+        for (k = 0; k < want; k++){
+            int idx = cap_log_head - 1 - k;          /* head = next write slot */
+            idx %= CAP_LOG_LINES; if (idx < 0) idx += CAP_LOG_LINES;
+            memcpy(out->log[k], cap_log[idx], CAP_LOG_LINE);
+        }
+        out->n_log = want;
+    }
+
+    for (i = 0; i < CAP_MAX_PEERS && out->n_nodes < CAP_SNAP_NODES; i++){
+        const CapPeer *p = &cap_peers[i];
+        CapNode *n;
+        if (!p->used) continue;
+        n = &out->nodes[out->n_nodes++];
+        n->id           = p->local_id;
+        n->state        = (CapState)p->state;   /* CAP_ACTIVE/DROPPED/GONE align with CapState */
+        n->have_meta    = p->have_meta;
+        n->meta_version = p->meta_version;
+        n->frag         = p->frag;
+        n->meta_len     = p->raw_len;
+        n->port         = p->port;
+        n->updates      = p->updates;
+        n->observed_s   = (double)(now - p->first_seen_ms) / 1000.0;
+        n->age_s        = (double)(now - p->last_change_ms) / 1000.0;
+        snprintf(n->name, sizeof n->name, "%s", p->name);
+        cap_fmt_ip(n->ip, sizeof n->ip, p->ip, p->ip_len);
+
+        for (k = 0; k < p->n_pub && k < CAP_MAX_EP; k++){
+            snprintf(n->pub[k].name, sizeof n->pub[k].name, "%s", p->pub[k].name);
+            n->pub[k].alias    = p->pub[k].alias;
+            n->pub[k].reliable = p->pub[k].reliable;
+        }
+        n->n_pub = k;
+        for (k = 0; k < p->n_sub && k < CAP_MAX_EP; k++){
+            snprintf(n->sub[k].name, sizeof n->sub[k].name, "%s", p->sub[k].name);
+            n->sub[k].alias    = p->sub[k].alias;
+            n->sub[k].reliable = p->sub[k].reliable;
+        }
+        n->n_sub = k;
+    }
 }

@@ -50,15 +50,25 @@ typedef struct {
     int       pid;
     NodeState state;
 
-    double uptime_s;
-    double heartbeat_age_s;
-    int    cpu_pct;
-    long   mem_bytes;
-    long   msgs_sent;
-    long   msgs_recv;
+    double uptime_s;          /* < 0 = placeholder (real node uptime isn't on discovery) */
+    double heartbeat_age_s;   /* < 0 = placeholder */
+    int    cpu_pct;           /* < 0 = placeholder */
+    long   mem_bytes;         /* < 0 = placeholder */
+    long   msgs_sent;         /* < 0 = placeholder */
+    long   msgs_recv;         /* < 0 = placeholder */
+
+    /* observer-derived, genuinely live (not node-internal): how long WE have seen
+       this peer, and how many times its announce changed. */
+    double observed_s;
+    unsigned updates;
 
     int pubs[UI_MAX_ENDPOINTS]; int n_pubs;   /* indices into topics[] */
     int subs[UI_MAX_ENDPOINTS]; int n_subs;
+    /* this node's own offered/requested reliability per endpoint, parallel to
+       pubs[]/subs[] (the Topic carries one topic-level value; a dot in the node's
+       pub/sub list wants the node's own QoS). 1 = reliable, 0 = best-effort. */
+    unsigned char pub_rel[UI_MAX_ENDPOINTS];
+    unsigned char sub_rel[UI_MAX_ENDPOINTS];
 
     DiscInfo disc;
 } Node;
@@ -108,6 +118,7 @@ typedef struct {
    nodes too. Builder lands with the Topics tab. */
 typedef struct {
     const char  *name;       /* leaf segment label */
+    const char  *path;       /* accumulated path (key for the expand/collapse set) */
     int          depth;
     int          is_branch;  /* has children: show a caret */
     int          has_topic;  /* selectable: show a status dot */

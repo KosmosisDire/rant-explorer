@@ -299,9 +299,8 @@ int cap_start(Capture *cap, const Config *cfg){
        observer wants to receive everyone's; the default 64 is too small past a couple
        of topics). The overlay we pass is opaque to discovery. */
     mem = dart_allocator_dynamic(1 << 16);
-    d = dart_discovery_open(&mem, &(DartDiscoveryConfig){
+    d = dart_discovery_open(&mem, cfg->name, &(DartDiscoveryConfig){
         .domain              = cfg->domain,
-        .name                = cfg->name,
         .discovery_group     = cfg->group,
         .discovery_port      = cfg->port,
         .multicast_interface = cfg->ifc,

@@ -320,8 +320,8 @@ int cap_parse_args(int argc, char **argv, Config *c){
 }
 
 int cap_start(Capture *cap, const Config *cfg){
-    DartDiscoveryRtConfig rcfg;
-    DartDiscoveryRt *rt;
+    DartDiscoveryNetConfig rcfg;
+    DartDiscovery *rt;
     uint8_t uuid[16];
     size_t mem_size;
     void *mem;
@@ -351,12 +351,12 @@ int cap_start(Capture *cap, const Config *cfg){
     rcfg.discovery_port      = cfg->port;
     rcfg.multicast_interface = cfg->ifc;
 
-    mem_size = dart_discovery_rt_required_memory(&rcfg);
+    mem_size = dart_discovery_placement_memory(&rcfg);
     mem = malloc(mem_size);
     if (!mem){ fprintf(stderr, "cap_start: out of memory\n"); return 0; }
-    rt = dart_discovery_rt_open(mem, mem_size, &rcfg);
+    rt = dart_discovery_place(mem, mem_size, &rcfg);
     if (!rt){
-        fprintf(stderr, "cap_start: dart_discovery_rt_open failed (port %u in use? interface?)\n", cfg->port);
+        fprintf(stderr, "cap_start: dart_discovery_place failed (port %u in use? interface?)\n", cfg->port);
         free(mem);
         return 0;
     }
@@ -369,12 +369,12 @@ int cap_start(Capture *cap, const Config *cfg){
 int cap_poll(Capture *cap){
     int guard = 0;
     if (!cap->rt) return 0;
-    while (dart_discovery_rt_poll((DartDiscoveryRt *)cap->rt, 0) > 0 && ++guard < 256){ }
+    while (dart_discovery_poll((DartDiscovery *)cap->rt, 0) > 0 && ++guard < 256){ }
     return guard;
 }
 
 void cap_stop(Capture *cap){
-    if (cap->rt) dart_discovery_rt_close((DartDiscoveryRt *)cap->rt, 1);
+    if (cap->rt) dart_discovery_close((DartDiscovery *)cap->rt, 1);
     if (cap->mem) free(cap->mem);
     cap->rt = NULL; cap->mem = NULL;
 }

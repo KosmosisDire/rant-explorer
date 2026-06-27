@@ -71,7 +71,7 @@ static unsigned long long cap_start_ms;
 static char    cap_uuid_hex[40];
 static Config  cap_cfg;          /* echoed into the snapshot for display */
 
-static uint8_t  cap_self_meta[16 + DART_NODE_NAME_MAX];   /* 'D','N',ver,frag(2),namelen,name,npub(2),nsub(2) */
+static uint8_t  cap_self_meta[16];   /* the overlay: 'D','N',ver, frag(2), npub(2), nsub(2) (no name) */
 static uint16_t cap_self_meta_len;
 
 static unsigned long long cap_now_ms(void){
@@ -143,26 +143,18 @@ static CapPeer *cap_peer_get(uint32_t id){
 }
 
 static void cap_decode_meta(CapPeer *p, const uint8_t *meta, uint16_t meta_len){
-    const char *nm; const uint8_t *in;
-    uint8_t nl = 0; size_t il = 0;
+    const uint8_t *in;
+    size_t il = 0;
     uint16_t rc;
 
     p->have_meta = 0;
-    p->name[0] = '\0';
     p->frag = 0; p->meta_version = 0; p->raw_len = 0;
     p->n_pub = p->n_sub = 0;
-    if (!meta || meta_len < 3) return;
+    if (!meta || meta_len < 3) return;        /* meta = the overlay (frag + interest); name is separate */
 
     p->have_meta = 1;
     p->meta_version = meta[2];
     p->frag = dart_meta_frag(meta, meta_len);
-
-    nm = dart_meta_name(meta, meta_len, &nl);
-    if (nm && nl){
-        if (nl > DART_NODE_NAME_MAX) nl = DART_NODE_NAME_MAX;
-        memcpy(p->name, nm, nl);
-        p->name[nl] = '\0';
-    }
 
     in = dart_meta_interest(meta, meta_len, &il);
     if (in && il >= 4){
@@ -215,7 +207,7 @@ static void cap_topics_csv(const CapTopic *t, int n, char *buf, size_t cap){
         off += (size_t)snprintf(buf + off, cap - off, "%s%s", i ? "," : "", t[i].name);
 }
 
-static void cap_peer_up(uint32_t id, const DartDiscoveryAddr *addr,
+static void cap_peer_up(uint32_t id, const DartDiscoveryAddr *addr, const char *name, uint8_t name_len,
                            const uint8_t *meta, uint16_t meta_len){
     CapPeer *p = cap_peer_get(id);
     CapPeerState was = p->state;
@@ -226,6 +218,9 @@ static void cap_peer_up(uint32_t id, const DartDiscoveryAddr *addr,
     p->ip_len = addr->ip_len;
     p->port = addr->port;
     cap_decode_meta(p, meta, meta_len);
+    {   uint8_t nl = name_len > DART_NODE_NAME_MAX ? (uint8_t)DART_NODE_NAME_MAX : name_len;  /* name: discovery-level now */
+        if (name && nl) memcpy(p->name, name, nl);
+        p->name[nl] = '\0'; }
     p->updates++;
     p->last_change_ms = cap_now_ms();
 
@@ -262,7 +257,7 @@ static void cap_peer_refused(const DartDiscoveryAddr *addr){
 /* one discovery event sink (the generic DartDiscoveryEvent), demuxed to the handlers above */
 static void cap_on_event(const DartDiscoveryEvent *ev){
     switch (ev->kind){
-        case DART_DISCOVERY_PEER_UP:      cap_peer_up(ev->peer, &ev->addr, ev->meta, ev->meta_len); break;
+        case DART_DISCOVERY_PEER_UP:      cap_peer_up(ev->peer, &ev->addr, ev->name, ev->name_len, ev->meta, ev->meta_len); break;
         case DART_DISCOVERY_PEER_DOWN:    cap_peer_down(ev->peer, ev->reason); break;
         case DART_DISCOVERY_PEER_REFUSED: cap_peer_refused(&ev->addr); break;
         default: break;
@@ -275,23 +270,17 @@ static void cap_uuid_to_hex(const uint8_t u[16], char *out){
              u[10],u[11],u[12],u[13],u[14],u[15]);
 }
 
-static void cap_build_self_meta(const char *name){
-    /* v6 (no-SHM, named): ['D','N',6, frag_lo, frag_hi, namelen, name, npub16=0, nsub16=0].
-       Matches what the current node writes (DART_NO_SHM => v6) so peers accept our
-       blob; the interest list is empty (a passive observer publishes nothing). */
+static void cap_build_self_meta(void){
+    /* the OVERLAY a passive observer advertises: the v6 (no-SHM) prefix ['D','N',6,frag_lo,
+       frag_hi] + an empty interest list [npub16=0][nsub16=0]. The name is NOT here: it rides
+       discovery's own blob section (rcfg.discovery.name). An observer publishes nothing. */
     uint16_t frag = (uint16_t)dart_clamp_frag(0);
-    size_t sl = strlen(name);
-    uint8_t nl = sl > DART_NODE_NAME_MAX ? (uint8_t)DART_NODE_NAME_MAX : (uint8_t)sl;
     uint8_t *o = cap_self_meta;
-    uint16_t off;
     o[0] = 'D'; o[1] = 'N'; o[2] = 6;
     o[3] = (uint8_t)(frag & 0xFF); o[4] = (uint8_t)(frag >> 8);
-    o[5] = nl;
-    memcpy(o + 6, name, nl);
-    off = (uint16_t)(6 + nl);
-    o[off] = 0; o[off + 1] = 0;      /* npub = 0 */
-    o[off + 2] = 0; o[off + 3] = 0;  /* nsub = 0 */
-    cap_self_meta_len = (uint16_t)(off + 4);
+    o[5] = 0; o[6] = 0;              /* npub = 0 */
+    o[7] = 0; o[8] = 0;              /* nsub = 0 */
+    cap_self_meta_len = 9;
 }
 
 /* ---------------------------------------------------------------- public API */
@@ -343,13 +332,15 @@ int cap_start(Capture *cap, const Config *cfg){
 
     if (!dart_discovery_make_uuid4(uuid)) memset(uuid, 0, 16);
     cap_uuid_to_hex(uuid, cap_uuid_hex);
-    cap_build_self_meta(cfg->name);
+    cap_build_self_meta();
 
     memset(&rcfg, 0, sizeof rcfg);
     rcfg.discovery.domain_id     = cfg->domain;
     rcfg.discovery.data_port     = 0;
     memcpy(rcfg.discovery.uuid, uuid, 16);
-    rcfg.discovery.meta          = cap_self_meta;
+    rcfg.discovery.name          = cfg->name;     /* the observer's name (discovery-level) */
+    rcfg.discovery.name_len      = (uint8_t)(cfg->name ? strlen(cfg->name) : 0);
+    rcfg.discovery.meta          = cap_self_meta; /* the overlay (frag + empty interest) */
     rcfg.discovery.meta_len      = cap_self_meta_len;
     /* a node sizes its blob to its own interest list; an observer wants to receive
        everyone's, so reserve a full datagram of per-peer meta (default 64 is too

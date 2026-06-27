@@ -68,7 +68,6 @@ static CapPeer cap_peers[CAP_MAX_PEERS];
 static char    cap_log[CAP_LOG_LINES][CAP_LOG_LINE];
 static int     cap_log_head, cap_log_count;
 static unsigned long long cap_start_ms;
-static char    cap_uuid_hex[40];
 static Config  cap_cfg;          /* echoed into the snapshot for display */
 
 static uint8_t  cap_self_meta[16];   /* the overlay: 'D','N',ver, frag(2), npub(2), nsub(2) (no name) */
@@ -143,8 +142,7 @@ static CapPeer *cap_peer_get(uint32_t id){
 }
 
 static void cap_decode_meta(CapPeer *p, const uint8_t *meta, uint16_t meta_len){
-    const uint8_t *in;
-    size_t il = 0;
+    DartInterestIter it; DartTopic t;
     uint16_t rc;
 
     p->have_meta = 0;
@@ -156,43 +154,16 @@ static void cap_decode_meta(CapPeer *p, const uint8_t *meta, uint16_t meta_len){
     p->meta_version = meta[2];
     p->frag = dart_meta_frag(meta, meta_len);
 
-    in = dart_meta_interest(meta, meta_len, &il);
-    if (in && il >= 4){
-        /* each entry is [u16 alias][u8 flags][u8 namelen][name]; flags bit 0 = reliability */
-        uint16_t npub = (uint16_t)(in[0] | (in[1] << 8));
-        uint16_t nsub = (uint16_t)(in[2] | (in[3] << 8));
-        const uint8_t *q = in + 4, *end = in + il;
-        uint16_t k;
-        for (k = 0; k < npub && q + 4 <= end; k++){
-            uint16_t alias = (uint16_t)(q[0] | (q[1] << 8));
-            uint8_t flags = q[2], len = q[3];
-            q += 4;
-            if (q + len > end) break;
-            if (p->n_pub < CAP_MAX_TOPICS){
-                uint8_t c = len > DART_TOPIC_NAME_MAX ? DART_TOPIC_NAME_MAX : len;
-                memcpy(p->pub[p->n_pub].name, q, c);
-                p->pub[p->n_pub].name[c] = '\0';
-                p->pub[p->n_pub].alias = alias;
-                p->pub[p->n_pub].reliable = (flags & 1u) != 0;
-                p->n_pub++;
-            }
-            q += len;
-        }
-        for (k = 0; k < nsub && q + 4 <= end; k++){
-            uint16_t alias = (uint16_t)(q[0] | (q[1] << 8));
-            uint8_t flags = q[2], len = q[3];
-            q += 4;
-            if (q + len > end) break;
-            if (p->n_sub < CAP_MAX_TOPICS){
-                uint8_t c = len > DART_TOPIC_NAME_MAX ? DART_TOPIC_NAME_MAX : len;
-                memcpy(p->sub[p->n_sub].name, q, c);
-                p->sub[p->n_sub].name[c] = '\0';
-                p->sub[p->n_sub].alias = alias;
-                p->sub[p->n_sub].reliable = (flags & 1u) != 0;
-                p->n_sub++;
-            }
-            q += len;
-        }
+    /* decode the interest list via the transport codec's public iterator (no hand-parsing) */
+    memset(&it, 0, sizeof it);
+    while (dart_meta_interest_next(meta, meta_len, &it, &t)){
+        CapTopic *arr; int idx;
+        if (t.is_pub){ if (p->n_pub >= CAP_MAX_TOPICS) continue; arr = p->pub; idx = p->n_pub++; }
+        else         { if (p->n_sub >= CAP_MAX_TOPICS) continue; arr = p->sub; idx = p->n_sub++; }
+        {   uint8_t c = t.name_len > DART_TOPIC_NAME_MAX ? DART_TOPIC_NAME_MAX : t.name_len;
+            memcpy(arr[idx].name, t.name, c); arr[idx].name[c] = '\0'; }
+        arr[idx].alias    = t.alias;
+        arr[idx].reliable = t.reliable;
     }
 
     rc = meta_len < CAP_RAW_META ? meta_len : CAP_RAW_META;
@@ -264,12 +235,6 @@ static void cap_on_event(const DartDiscoveryEvent *ev){
     }
 }
 
-static void cap_uuid_to_hex(const uint8_t u[16], char *out){
-    snprintf(out, 40, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-             u[0],u[1],u[2],u[3], u[4],u[5], u[6],u[7], u[8],u[9],
-             u[10],u[11],u[12],u[13],u[14],u[15]);
-}
-
 static void cap_build_self_meta(void){
     /* the OVERLAY a passive observer advertises: the v6 (no-SHM) prefix ['D','N',6,frag_lo,
        frag_hi] + an empty interest list [npub16=0][nsub16=0]. The name is NOT here: it rides
@@ -320,48 +285,38 @@ int cap_parse_args(int argc, char **argv, Config *c){
 }
 
 int cap_start(Capture *cap, const Config *cfg){
-    DartDiscoveryNetConfig rcfg;
-    DartDiscovery *rt;
-    uint8_t uuid[16];
-    size_t mem_size;
-    void *mem;
+    DartAllocator mem;
+    DartDiscovery *d;
 
     memset(cap, 0, sizeof *cap);
     cap_start_ms = cap_now_ms();
     cap_cfg = *cfg;          /* group/name point into argv: stable for the run */
 
-    if (!dart_discovery_make_uuid4(uuid)) memset(uuid, 0, 16);
-    cap_uuid_to_hex(uuid, cap_uuid_hex);
-    cap_build_self_meta();
+    cap_build_self_meta();   /* the opaque overlay we advertise (discovery auto-gens our uuid) */
 
-    memset(&rcfg, 0, sizeof rcfg);
-    rcfg.discovery.domain_id     = cfg->domain;
-    rcfg.discovery.data_port     = 0;
-    memcpy(rcfg.discovery.uuid, uuid, 16);
-    rcfg.discovery.name          = cfg->name;     /* the observer's name (discovery-level) */
-    rcfg.discovery.name_len      = (uint8_t)(cfg->name ? strlen(cfg->name) : 0);
-    rcfg.discovery.meta          = cap_self_meta; /* the overlay (frag + empty interest) */
-    rcfg.discovery.meta_len      = cap_self_meta_len;
-    /* a node sizes its blob to its own interest list; an observer wants to receive
-       everyone's, so reserve a full datagram of per-peer meta (default 64 is too
-       small once a node has more than a couple of topics). */
-    rcfg.discovery.meta_capacity = 1408;
-    rcfg.discovery.on_event = cap_on_event;
-    rcfg.group               = cfg->group;
-    rcfg.discovery_port      = cfg->port;
-    rcfg.multicast_interface = cfg->ifc;
-
-    mem_size = dart_discovery_placement_memory(&rcfg);
-    mem = malloc(mem_size);
-    if (!mem){ fprintf(stderr, "cap_start: out of memory\n"); return 0; }
-    rt = dart_discovery_place(mem, mem_size, &rcfg);
-    if (!rt){
-        fprintf(stderr, "cap_start: dart_discovery_place failed (port %u in use? interface?)\n", cfg->port);
-        free(mem);
+    /* the defaults-first public open: discovery owns its memory via the allocator.
+       meta_capacity is generous (a node sizes its blob to its own interest, but an
+       observer wants to receive everyone's; the default 64 is too small past a couple
+       of topics). The overlay we pass is opaque to discovery. */
+    mem = dart_allocator_dynamic(1 << 16);
+    d = dart_discovery_open(&mem, &(DartDiscoveryConfig){
+        .domain              = cfg->domain,
+        .name                = cfg->name,
+        .discovery_group     = cfg->group,
+        .discovery_port      = cfg->port,
+        .multicast_interface = cfg->ifc,
+        .max_peers           = CAP_MAX_PEERS,
+        .on_event            = cap_on_event,
+        .meta                = cap_self_meta,
+        .meta_len            = cap_self_meta_len,
+        .meta_capacity       = 1408,
+    });
+    if (!d){
+        fprintf(stderr, "cap_start: dart_discovery_open failed (port %u in use? interface?)\n", cfg->port);
         return 0;
     }
-    cap->rt = rt;
-    cap->mem = mem;
+    cap->rt  = d;
+    cap->mem = NULL;         /* discovery owns its memory now; close frees it */
     cap_logf("observer started on domain %u (%s:%u)", cfg->domain, cfg->group, cfg->port);
     return 1;
 }
@@ -374,8 +329,7 @@ int cap_poll(Capture *cap){
 }
 
 void cap_stop(Capture *cap){
-    if (cap->rt) dart_discovery_close((DartDiscovery *)cap->rt, 1);
-    if (cap->mem) free(cap->mem);
+    if (cap->rt) dart_discovery_close((DartDiscovery *)cap->rt, 1);   /* frees discovery's own memory */
     cap->rt = NULL; cap->mem = NULL;
 }
 

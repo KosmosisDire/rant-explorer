@@ -43,7 +43,7 @@ static DartNode *open_node(const Profile *p, uint16_t domain, const char *ifc){
     DartAllocator mem = dart_allocator_dynamic(1u << 20);
     DartNode *n;
     int i;
-    n = dart_node_open(&mem, p->name, NULL, &(DartNodeOpts){
+    n = dart_node_open(&mem, p->name, NULL, NULL, &(DartNodeOpts){
         .domain = domain, .max_channels = 16,
         .net = { .multicast_interface = ifc } });
     if (!n){ fprintf(stderr, "  open %s failed\n", p->name); return NULL; }

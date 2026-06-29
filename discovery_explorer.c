@@ -28,7 +28,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>               /* for SDL_SetMainReady() */
 #include <SDL3_ttf/SDL_ttf.h>
-#include "ui_render.h"                   /* vendored Clay->SDL3 renderer + LCD subpixel text */
+#include "ui_render.h"                   /* vendored Clay->SDL3 renderer (grayscale-AA text) */
 
 /* nanosvg single-headers: implementation lives in this one TU. Used by ui_icons.h
    to rasterize the Lucide SVGs into textures. */
@@ -254,7 +254,7 @@ int main(int argc, char **argv){
         bg = app.theme_dark ? UI_DARK.bg : UI_LIGHT.bg;
         SDL_SetRenderDrawColor(ren, (Uint8)bg.r, (Uint8)bg.g, (Uint8)bg.b, 255);
         SDL_RenderClear(ren);
-        ui_render(&rdata, &cmds, bg);
+        ui_render(&rdata, &cmds);
         uint64_t r1 = SDL_GetPerformanceCounter();   /* before present: render WORK, not vsync wait */
         SDL_RenderPresent(ren);
 

@@ -1,17 +1,12 @@
-/* Vendored Clay -> SDL3 renderer with subpixel (LCD) text.
+/* Vendored Clay -> SDL3 renderer with grayscale-AA text.
 
    Replaces Clay's stock renderers/SDL3/clay_renderer_SDL3.c. We only ever used
    its rounded-rect + arc fills, so those are ported below (MIT, (c) Clay
-   authors); the rest of that file (its grayscale text-engine path, measure
-   function, and SDL_image/SDL_main pulls) is dropped. ui_render() runs the
-   command loop itself so text goes through TTF_RenderText_LCD (FreeType
-   LCD/ClearType-style filtering) instead of grayscale.
-
-   LCD output is a surface PRE-BLENDED against a background and must be drawn 1:1
-   over that exact background, else the glyph box fringes. Our panels are flat
-   fills, so a text run's true bg is the composite of every painted rectangle
-   under it (opaque panels + translucent selected/hover/status tints), which we
-   track per frame. Requires clay.h, SDL3, SDL3_ttf. */
+   authors); the rest of that file (measure function, SDL_image/SDL_main pulls)
+   is dropped. ui_render() runs the command loop itself; text goes through
+   TTF_RenderText_Blended, whose alpha-channel output blends over whatever is
+   already in the target, so no background reconstruction is needed.
+   Requires clay.h, SDL3, SDL3_ttf. */
 #ifndef UI_RENDER_H
 #define UI_RENDER_H
 
@@ -117,13 +112,8 @@ static void ui_fill_arc(SDL_Renderer *ren, const SDL_FPoint center, const float 
     free(points);
 }
 
-typedef struct { SDL_FRect box; Clay_Color color; } UiBgRect;
-
-/* run a Clay command array: rects/borders direct, text via LCD subpixel. theme_bg
-   is the window background (the base under everything). */
-static void ui_render(UiRenderer *rd, Clay_RenderCommandArray *cmds, Clay_Color theme_bg){
-    static UiBgRect bgs[8192];
-    int nbg = 0;
+/* run a Clay command array: rects/borders direct, text alpha-blended over them. */
+static void ui_render(UiRenderer *rd, Clay_RenderCommandArray *cmds){
     SDL_Renderer *ren = rd->renderer;
 
     for (size_t i = 0; i < cmds->length; i++){
@@ -138,45 +128,24 @@ static void ui_render(UiRenderer *rd, Clay_RenderCommandArray *cmds, Clay_Color 
                 SDL_SetRenderDrawColor(ren, (Uint8)c->backgroundColor.r, (Uint8)c->backgroundColor.g, (Uint8)c->backgroundColor.b, (Uint8)c->backgroundColor.a);
                 if (c->cornerRadius.topLeft > 0) ui_fill_rounded_rect(ren, rect, c->cornerRadius.topLeft, c->backgroundColor);
                 else SDL_RenderFillRect(ren, &rect);
-                /* record EVERY fill (incl. translucent selected/hover/status tints) so a
-                   text run's true bg is the composite of the stack under it. */
-                if (c->backgroundColor.a > 0.0f && nbg < (int)(sizeof bgs / sizeof bgs[0])){
-                    bgs[nbg].box = rect; bgs[nbg].color = c->backgroundColor; nbg++;
-                }
             } break;
 
             case CLAY_RENDER_COMMAND_TYPE_TEXT: {
                 Clay_TextRenderData *c = &cmd->renderData.text;
                 TTF_Font *font = rd->fonts[c->fontId];
-                Clay_Color bgc = theme_bg;
-                float cx, cy;
-                int k;
+                SDL_Color fg = { (Uint8)c->textColor.r, (Uint8)c->textColor.g, (Uint8)c->textColor.b, 255 };
+                SDL_Surface *s;
                 if (!c->stringContents.length || !font) break;
-                cx = bb.x + bb.width * 0.5f; cy = bb.y + bb.height * 0.5f;
-                /* exact bg = every painted rect under this point, composited bottom-to-top
-                   (alpha over). Handles opaque panels and translucent tints uniformly. */
-                for (k = 0; k < nbg; k++){
-                    SDL_FRect *b = &bgs[k].box;
-                    if (cx >= b->x && cx <= b->x + b->w && cy >= b->y && cy <= b->y + b->h){
-                        float a = bgs[k].color.a / 255.0f;
-                        bgc.r = bgs[k].color.r * a + bgc.r * (1.0f - a);
-                        bgc.g = bgs[k].color.g * a + bgc.g * (1.0f - a);
-                        bgc.b = bgs[k].color.b * a + bgc.b * (1.0f - a);
+                s = TTF_RenderText_Blended(font, c->stringContents.chars, (size_t)c->stringContents.length, fg);
+                if (s){
+                    SDL_Texture *t = SDL_CreateTextureFromSurface(ren, s);
+                    if (t){
+                        SDL_FRect dst = { rect.x, rect.y, (float)s->w, (float)s->h };   /* integer pos, 1:1 size */
+                        SDL_SetTextureScaleMode(t, SDL_SCALEMODE_NEAREST);
+                        SDL_RenderTexture(ren, t, NULL, &dst);
+                        SDL_DestroyTexture(t);
                     }
-                }
-                {   SDL_Color fg = { (Uint8)c->textColor.r, (Uint8)c->textColor.g, (Uint8)c->textColor.b, 255 };
-                    SDL_Color bg = { (Uint8)bgc.r, (Uint8)bgc.g, (Uint8)bgc.b, 255 };
-                    SDL_Surface *s = TTF_RenderText_LCD(font, c->stringContents.chars, (size_t)c->stringContents.length, fg, bg);
-                    if (s){
-                        SDL_Texture *t = SDL_CreateTextureFromSurface(ren, s);
-                        if (t){
-                            SDL_FRect dst = { rect.x, rect.y, (float)s->w, (float)s->h };   /* integer pos, 1:1 size */
-                            SDL_SetTextureScaleMode(t, SDL_SCALEMODE_NEAREST);
-                            SDL_RenderTexture(ren, t, NULL, &dst);
-                            SDL_DestroyTexture(t);
-                        }
-                        SDL_DestroySurface(s);
-                    }
+                    SDL_DestroySurface(s);
                 }
             } break;
 

@@ -83,6 +83,8 @@ typedef struct {
 typedef struct {
     char     name[CAP_TOPIC_CAP];
     int      active;         /* 1 = a live subscription right now */
+    int      publishing;     /* 1 = the explorer is publishing to this topic */
+    int      reliable;       /* the live channel's reliability (the reliability we offer/request) */
     int      error;          /* 1 = dropped messages or a QoS/oversize error */
     uint32_t n_msgs;         /* messages received on this subscription */
     uint32_t n_drops;        /* messages the reliable layer reported skipped */
@@ -112,11 +114,23 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out);
 int  cap_subscribe(Capture *cap, const char *topic, int reliable);
 int  cap_unsubscribe(Capture *cap, const char *topic);
 
+/* Declare a publish interest on a topic without sending: creates (or reuses) the topic's
+   publisher channel and advertises it, so subscribers match the explorer as a publisher.
+   Used when a topic is created in the UI. Returns 1 ok. */
+int  cap_declare_publish(Capture *cap, const char *topic);
+
+/* Publish one message to a topic from the observer node. Creates (or reuses) a publisher
+   for the topic; if we are also subscribed it rides the same channel (so one identity keeps
+   one live channel), otherwise it publishes reliable to reach the most subscribers. The
+   message is echoed into the topic's own feed (mine=1) so the sender sees it. Returns 1 ok. */
+int  cap_publish(Capture *cap, const char *topic, const void *data, size_t len);
+
 /* One captured message, oldest-first, copied out for the selected topic's feed. */
 typedef struct {
     double   t_s;                    /* seconds since the observer started */
     uint32_t len;                    /* true payload length */
     uint16_t preview_len;            /* bytes filled in preview[] */
+    int      mine;                   /* 1 = we published it (local echo) */
     char     sender[CAP_NAME_CAP];   /* sending node's name */
     char     preview[CAP_MSG_PREVIEW];
 } CapFeedItem;

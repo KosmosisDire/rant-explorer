@@ -98,6 +98,7 @@ int main(int argc, char **argv){
         return 1;
     }
     SDL_SetRenderVSync(ren, 1);
+    SDL_StartTextInput(win);   /* deliver SDL_EVENT_TEXT_INPUT for the Topics message composer */
 
     dpi = SDL_GetWindowPixelDensity(win);   /* physical px per logical px (1.0 = 100%) */
     if (dpi <= 0.0f) dpi = 1.0f;
@@ -164,10 +165,44 @@ int main(int argc, char **argv){
                     wheel_x += ev.wheel.x; wheel_y += ev.wheel.y;
                     break;
                 case SDL_EVENT_KEY_DOWN:
-                    if (ev.key.repeat) break;
                     if (ev.key.key == SDLK_F12){              /* F12: toggle Clay's layout inspector */
-                        debug_enabled = !debug_enabled;
-                        Clay_SetDebugModeEnabled(debug_enabled);
+                        if (!ev.key.repeat){ debug_enabled = !debug_enabled; Clay_SetDebugModeEnabled(debug_enabled); }
+                        break;
+                    }
+                    if (app.tab == TAB_TOPICS){               /* composer is focused unless adding a topic */
+                        char *buf = app.adding_topic ? app.new_topic : app.compose;
+                        int  *len = app.adding_topic ? &app.new_topic_len : &app.compose_len;
+                        int   cap = app.adding_topic ? (int)sizeof app.new_topic : UI_COMPOSE_MAX;
+                        if (ev.key.key == SDLK_BACKSPACE){    /* (repeat allowed: hold to delete) */
+                            if (*len > 0){
+                                int n = *len - 1;
+                                while (n > 0 && (buf[n] & 0xC0) == 0x80) n--;  /* whole UTF-8 char */
+                                *len = n; buf[n] = '\0';
+                            }
+                        } else if ((ev.key.key == SDLK_RETURN || ev.key.key == SDLK_KP_ENTER) && !ev.key.repeat){
+                            if (!app.adding_topic && (ev.key.mod & SDL_KMOD_SHIFT)){   /* shift+enter: newline */
+                                if (*len + 1 < cap - 1){ buf[*len] = '\n'; (*len)++; buf[*len] = '\0'; }
+                            } else if (app.adding_topic){
+                                app.new_topic_commit = 1;
+                            } else {
+                                app.compose_send = 1;
+                            }
+                        } else if (ev.key.key == SDLK_ESCAPE && !ev.key.repeat){
+                            if (app.adding_topic){ app.adding_topic = 0; app.new_topic_len = 0; app.new_topic[0] = '\0'; }
+                            else { app.compose_len = 0; app.compose[0] = '\0'; }
+                        }
+                    }
+                    break;
+                case SDL_EVENT_TEXT_INPUT:                    /* typed characters -> active field */
+                    if (app.tab == TAB_TOPICS && ev.text.text){
+                        char  *buf = app.adding_topic ? app.new_topic : app.compose;
+                        int   *len = app.adding_topic ? &app.new_topic_len : &app.compose_len;
+                        int    cap = app.adding_topic ? (int)sizeof app.new_topic : UI_COMPOSE_MAX;
+                        size_t add = strlen(ev.text.text);
+                        if (add && *len + (int)add < cap - 1){
+                            memcpy(buf + *len, ev.text.text, add);
+                            *len += (int)add; buf[*len] = '\0';
+                        }
                     }
                     break;
                 default: break;
@@ -198,11 +233,17 @@ int main(int argc, char **argv){
 
         cap_snapshot(&cap, &g_snap);     /* live discovery table -> plain view */
         ui_data_build(&g_data, &g_snap); /* -> the UI Dataset (rebuilt every frame) */
+        if (app.select_topic[0]){        /* a just-added topic: select it once it appears */
+            int ti;
+            for (ti = 0; ti < g_data.n_topics; ti++)
+                if (!strcmp(g_data.topics[ti].path, app.select_topic)){ app.sel_topic = ti; app.select_topic[0] = '\0'; break; }
+        }
         if (app.sel_node >= g_data.n_nodes)
             app.sel_node = g_data.n_nodes ? g_data.n_nodes - 1 : 0;
         if (app.sel_topic >= g_data.n_topics)
             app.sel_topic = g_data.n_topics ? g_data.n_topics - 1 : 0;
 
+        g_caret_on = ((now / 500) % 2) == 0;   /* composer text-cursor blink (2 Hz) */
         ui_strpool_reset();
         uint64_t r0 = SDL_GetPerformanceCounter();
         Clay_BeginLayout();

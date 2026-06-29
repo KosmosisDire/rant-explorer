@@ -81,6 +81,7 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
             if (row->has_topic && Clay_Hovered() && g_pointer_pressed){
                 app->sel_topic = (int)(row->topic - D->topics);
                 app->drawer_open = 1;
+                app->adding_topic = 0;     /* selecting a topic exits the new-topic field */
             }
             CLAY_TEXT(ui_str(row->name),
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
@@ -95,6 +96,44 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
     }
 }
 
+/* commit the typed new-topic name: register it (so it shows in the tree) and queue it for
+   selection once it appears, then leave add mode. */
+static void tt_commit_new_topic(AppState *app){
+    if (app->new_topic_len > 0){
+        ui_data_add_user_topic(app->new_topic);
+        if (app->cap) cap_declare_publish(app->cap, app->new_topic);   /* advertise pub interest now */
+        snprintf(app->select_topic, sizeof app->select_topic, "%s", app->new_topic);
+    }
+    app->adding_topic  = 0;
+    app->new_topic_len = 0;
+    app->new_topic[0]  = '\0';
+}
+
+/* the inline "new topic name" field, shown under the filter while adding_topic. Text is
+   captured into app->new_topic by the event loop; Enter (app->new_topic_commit) or Add commits. */
+static void tt_new_topic_input(AppState *app, const Palette *P){
+    int can;
+    if (app->new_topic_commit){ app->new_topic_commit = 0; tt_commit_new_topic(app); }
+    if (!app->adding_topic) return;
+    can = app->new_topic_len > 0;
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(6),
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(30)) },
+                           .padding = { .left = UISCI(9), .right = UISCI(9) },
+                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+               .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)),
+               .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->accent } }) {
+            /* always focused while shown: a blinking caret (mono "|"/" ", stable width), no placeholder */
+            CLAY_TEXT(ui_fmt("%s%s", app->new_topic, g_caret_on ? "|" : " "),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
+                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        }
+        if (ui_pill(P, CLAY_STRING("Add"), FAM_SANS, WT_SEMI, FS_SMALL,
+                    can ? P->accent : P->faint, can ? P->accent_bg : P->panel2, UI_NONE, UISC(30)) && can)
+            tt_commit_new_topic(app);
+    }
+}
+
 static void topics_tree(AppState *app, const Palette *P){
     const Dataset *D = app->data;
     int n = ui_tree_build(app), i;
@@ -103,8 +142,18 @@ static void topics_tree(AppState *app, const Palette *P){
                        .layoutDirection = CLAY_TOP_TO_BOTTOM },
            .backgroundColor = P->panel,
            .border = { .width = { 0, UISCI(1), 0, 0, 0 }, .color = P->border } }) {
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(12)) } }) {
-            ui_filter_box(P, CLAY_STRING("Filter topics..."));
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(12)),
+                           .layoutDirection = CLAY_TOP_TO_BOTTOM, .childGap = UISCI(8) } }) {
+            /* filter + add-topic button */
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8),
+                               .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+                ui_filter_box(P, CLAY_STRING("Filter topics..."));
+                if (ui_icon_button(P, ICON_PLUS, 16, 30, app->adding_topic ? P->accent : P->dim, P->text)){
+                    app->adding_topic = !app->adding_topic;
+                    app->new_topic_len = 0; app->new_topic[0] = '\0';
+                }
+            }
+            tt_new_topic_input(app, P);
         }
         CLAY({ .id = CLAY_ID("topics_tree_scroll"),
                .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
@@ -116,7 +165,7 @@ static void topics_tree(AppState *app, const Palette *P){
         }
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(12)) },
                .border = { .width = { 0, 0, UISCI(1), 0, 0 }, .color = P->border } }) {
-            ui_section_label(P, ui_fmt("%d TOPICS  \xC2\xB7  OBSERVER READ-ONLY", D ? D->n_topics : 0));
+            ui_section_label(P, ui_fmt("%d TOPICS", D ? D->n_topics : 0));
         }
     }
 }
@@ -137,8 +186,9 @@ static void tt_feed_row(const Palette *P, const CapFeedItem *m, int idx){
             CLAY_TEXT(ui_fmt("%8.2fs", m->t_s),
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION), .textColor = P->faint,
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
-            CLAY_TEXT(ui_str(m->sender),
-                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_CAPTION), .textColor = P->dim,
+            CLAY_TEXT(m->mine ? ui_fmt("%s (you)", m->sender) : ui_str(m->sender),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_CAPTION),
+                                         .textColor = m->mine ? P->accent : P->dim,
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
             CLAY_TEXT(ui_fmt("%u B", m->len),
@@ -148,6 +198,60 @@ static void tt_feed_row(const Palette *P, const CapFeedItem *m, int idx){
         CLAY_TEXT(ui_fmt("%s", buf),
                   CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
                                      .wrapMode = CLAY_TEXT_WRAP_WORDS }));
+    }
+}
+
+/* publish the composed message to `topic` and clear the box */
+static void tt_do_send(AppState *app, const char *topic){
+    if (app->compose_len <= 0 || !app->cap || !topic) return;
+    cap_publish(app->cap, topic, app->compose, (size_t)app->compose_len);
+    app->compose_len = 0;
+    app->compose[0]  = '\0';
+}
+
+/* The message composer pinned under the feed: an input box that grows in height with the
+   wrapped text (pushing the feed up) plus a Send button. Enter (app->compose_send, set in
+   the event loop) sends too. Text is captured into app->compose by the SDL text-input
+   handler whenever the Topics tab is active. Room for QoS/options beside Send comes later. */
+static void topics_composer(AppState *app, const Palette *P, const Topic *t){
+    int can, focused, send = app->compose_send;
+    app->compose_send = 0;
+    if (app->compose_topic != app->sel_topic){      /* switched topic: drop the stale draft */
+        app->compose_topic = app->sel_topic;
+        app->compose_len = 0; app->compose[0] = '\0';
+    }
+    /* the composer is focused by default (so you can just type); the new-topic field steals
+       focus while it is open. The blinking caret marks where text goes. */
+    focused = !app->adding_topic;
+    can = app->compose_len > 0 && app->cap != NULL;
+    if (send) tt_do_send(app, t->path);
+
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(10),
+                       .childAlignment = { .y = CLAY_ALIGN_Y_BOTTOM } } }) {
+        /* input box: FIT height grows with the text, min one line, capped before it scrolls */
+        CLAY({ .id = CLAY_ID("compose_box"),
+               .layout = { .sizing = { .width = CLAY_SIZING_GROW(0),
+                                       .height = CLAY_SIZING_FIT(UISC(38), UISC(150)) },
+                           .padding = { .left = UISCI(11), .right = UISCI(11),
+                                        .top = UISCI(10), .bottom = UISCI(10) },
+                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+               .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
+               .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = focused ? P->accent : P->border } }) {
+            if (Clay_Hovered() && g_pointer_pressed) app->adding_topic = 0;   /* click returns focus here */
+            if (app->compose_len == 0 && !focused)
+                CLAY_TEXT(CLAY_STRING("Type a message, Enter to send"),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->faint,
+                                             .wrapMode = CLAY_TEXT_WRAP_NONE }));
+            else
+                /* mono caret: "|" on / " " off keeps the same advance + line height every frame,
+                   so the blink never resizes the box (a space and a bar are one cell each) */
+                CLAY_TEXT(ui_fmt("%s%s", app->compose, !focused ? "" : (g_caret_on ? "|" : " ")),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
+                                             .wrapMode = CLAY_TEXT_WRAP_WORDS }));
+        }
+        if (ui_pill(P, CLAY_STRING("Send"), FAM_SANS, WT_SEMI, FS_SMALL,
+                    can ? P->accent : P->faint, can ? P->accent_bg : P->panel2, P->border2, UISC(38)) && can)
+            tt_do_send(app, t->path);
     }
 }
 
@@ -189,9 +293,9 @@ static void topics_feed(AppState *app, const Palette *P){
                 CLAY_TEXT(tt_rel_word(t->reliable),
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
                                              .textColor = ui_qos_color(P, t->reliable), .wrapMode = CLAY_TEXT_WRAP_NONE }));
-                CLAY_TEXT(ui_fmt("%d publishers", t->n_pubs),
+                CLAY_TEXT(ui_fmt("%d publishers", t->n_pubs + t->self_pub),
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-                CLAY_TEXT(ui_fmt("%d subscribers", t->n_subs),
+                CLAY_TEXT(ui_fmt("%d subscribers", t->n_subs + t->self_sub),
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
             }
             /* control row: subscribe toggle + live subscription status */
@@ -229,6 +333,7 @@ static void topics_feed(AppState *app, const Palette *P){
                                                     : CLAY_STRING("subscribe to see live messages"));
                 for (i = 0; i < tt_feed_n; i++) tt_feed_row(P, &tt_feed[i], i);
             }
+            topics_composer(app, P, t);
         }
     }
 }
@@ -236,17 +341,12 @@ static void topics_feed(AppState *app, const Palette *P){
 /* ================================================================ right: drawer */
 
 static void topics_drawer_header(AppState *app, const Palette *P){
-    int insp = app->drawer_mode == DRW_INSPECT;
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(40)) },
                        .padding = { .left = UISCI(12), .right = UISCI(6) },
-                       .childGap = UISCI(2), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
-        if (ui_pill(P, CLAY_STRING("Inspect"), FAM_SANS, WT_SEMI, FS_SMALL,
-                    insp ? P->accent : P->dim, insp ? P->accent_bg : P->panel, UI_NONE, UISC(28)))
-            app->drawer_mode = DRW_INSPECT;
-        if (ui_pill(P, CLAY_STRING("Publish"), FAM_SANS, WT_SEMI, FS_SMALL,
-                    !insp ? P->accent : P->dim, !insp ? P->accent_bg : P->panel, UI_NONE, UISC(28)))
-            app->drawer_mode = DRW_PUBLISH;
+        CLAY_TEXT(CLAY_STRING("Inspect"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_SMALL),
+                                                             .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
         if (ui_icon_button(P, ICON_X, 14, 26, P->dim, P->text))
             app->drawer_open = 0;
@@ -285,6 +385,23 @@ static void topic_node_chip(AppState *app, const Palette *P, int nidx, const cha
     }
 }
 
+/* the explorer's own endpoint on a topic (not a discovered peer): accent dot + "you" + the
+   reliability we offer/request, so a topic we publish to lists us as a publisher */
+static void topic_self_chip(const Palette *P, int reliable){
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(30)) },
+                       .padding = { .left = UISCI(10), .right = UISCI(10) },
+                       .childGap = UISCI(9), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+           .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)),
+           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+        ui_dot(UISC(7), P->accent, UI_NONE);
+        CLAY_TEXT(CLAY_STRING("you"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL),
+                                                         .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+        CLAY_TEXT(tt_rel_word(reliable), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                                           .textColor = ui_qos_color(P, reliable), .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+}
+
 static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
     int i;
     CLAY({ .id = CLAY_ID("topics_inspect_scroll"),
@@ -304,14 +421,16 @@ static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
             topic_qos_cell(P, CLAY_STRING("Deadline"), ui_str(ND_DASH), P->text, 1);
         }
 
-        ui_section_label(P, ui_fmt("PUBLISHERS  %d", t->n_pubs));
-        if (t->n_pubs == 0)
+        ui_section_label(P, ui_fmt("PUBLISHERS  %d", t->n_pubs + t->self_pub));
+        if (t->n_pubs == 0 && !t->self_pub)
             CLAY_TEXT(CLAY_STRING("none"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint }));
+        if (t->self_pub) topic_self_chip(P, t->self_pub_reliable);
         for (i = 0; i < t->n_pubs; i++) topic_node_chip(app, P, t->pubs[i], "pub_chip", i);
 
-        ui_section_label(P, ui_fmt("SUBSCRIBERS  %d", t->n_subs));
-        if (t->n_subs == 0)
+        ui_section_label(P, ui_fmt("SUBSCRIBERS  %d", t->n_subs + t->self_sub));
+        if (t->n_subs == 0 && !t->self_sub)
             CLAY_TEXT(CLAY_STRING("none"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint }));
+        if (t->self_sub) topic_self_chip(P, t->self_sub_reliable);
         for (i = 0; i < t->n_subs; i++) topic_node_chip(app, P, t->subs[i], "sub_chip", i);
 
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(11)) },
@@ -325,16 +444,6 @@ static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
     }
 }
 
-static void topics_publish(const Palette *P){
-    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
-                       .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(UISC(16)),
-                       .childGap = UISCI(12), .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
-        CLAY_TEXT(CLAY_STRING("Publishing needs a data-plane endpoint. The explorer is a passive discovery "
-                              "observer: it joins no topic and sends no data, so the composer is disabled."),
-                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint }));
-    }
-}
-
 static void topics_drawer(AppState *app, const Palette *P){
     const Dataset *D = app->data;
     const Topic *t = (D && D->n_topics && app->sel_topic >= 0 && app->sel_topic < D->n_topics)
@@ -345,12 +454,8 @@ static void topics_drawer(AppState *app, const Palette *P){
            .backgroundColor = P->panel,
            .border = { .width = { UISCI(1), 0, 0, 0, 0 }, .color = P->border } }) {
         topics_drawer_header(app, P);
-        if (!t)
-            ui_placeholder(P, CLAY_STRING("no topic selected"));
-        else if (app->drawer_mode == DRW_INSPECT)
-            topics_inspect(app, P, t);
-        else
-            topics_publish(P);
+        if (!t) ui_placeholder(P, CLAY_STRING("no topic selected"));
+        else    topics_inspect(app, P, t);
     }
 }
 

@@ -107,6 +107,12 @@ typedef struct {
        the tree status light: 0 = not subscribed (grey), 1 = subscribed & healthy (green),
        2 = subscribed but dropping/erroring (red). The feed reads live counts directly. */
     int    sub_state;
+    /* the explorer's OWN role on this topic (peer lists above are discovery-only): whether we
+       publish/subscribe and at what reliability, so the topic reflects what we advertise. */
+    int    self_pub;
+    int    self_pub_reliable;
+    int    self_sub;
+    int    self_sub_reliable;
 
     char   preview[256];
 } Topic;

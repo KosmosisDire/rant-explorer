@@ -4,9 +4,9 @@
 #define UI_APP_H
 
 typedef enum { TAB_NODES, TAB_TOPICS, TAB_LOG } Tab;
-typedef enum { DRW_INSPECT, DRW_PUBLISH } DrawerMode;
 
 #define UI_MAX_COLLAPSED 128   /* tracked collapsed tree branches (default = expanded) */
+#define UI_COMPOSE_MAX   1024  /* bytes the message composer accepts (fits one fragment) */
 
 typedef struct {
     int  theme_dark;          /* 1 dark, 0 light */
@@ -16,11 +16,23 @@ typedef struct {
     int  sel_topic;           /* index into data->topics */
 
     int        drawer_open;   /* Topics inspector drawer */
-    DrawerMode drawer_mode;
 
     /* topic tree: a set of COLLAPSED branch-path hashes (absent = expanded, the default) */
     uint64_t collapsed[UI_MAX_COLLAPSED];
     int      n_collapsed;
+
+    /* message composer at the bottom of the Topics feed (publishes to the selected topic) */
+    char     compose[UI_COMPOSE_MAX];
+    int      compose_len;
+    int      compose_send;    /* set by Enter in the event loop; consumed when the feed draws */
+    int      compose_topic;   /* selected topic the draft belongs to (reset draft on change) */
+
+    /* "add a topic" input (the + by the filter): type a name to publish to a new topic */
+    int      adding_topic;    /* 1 = the new-topic name field has focus (text routes here) */
+    char     new_topic[CAP_TOPIC_CAP];
+    int      new_topic_len;
+    int      new_topic_commit;/* set by Enter in the event loop; consumed when the tree draws */
+    char     select_topic[CAP_TOPIC_CAP]; /* pending: select this topic once it appears in the list */
 
     /* Topics feed auto-scroll: stick to the newest message at the bottom while the user
        is parked there; a scroll up unlocks it, returning to the bottom re-locks. */
@@ -39,8 +51,16 @@ static void app_init(AppState *a, const Dataset *data){
     a->sel_node    = 0;
     a->sel_topic   = 0;
     a->drawer_open = 1;
-    a->drawer_mode = DRW_INSPECT;
     a->n_collapsed = 0;
+    a->compose_len   = 0;
+    a->compose_send  = 0;
+    a->compose[0]    = '\0';
+    a->compose_topic = -1;
+    a->adding_topic     = 0;
+    a->new_topic_len    = 0;
+    a->new_topic[0]     = '\0';
+    a->new_topic_commit = 0;
+    a->select_topic[0]  = '\0';
     a->feed_pinned    = 1;
     a->feed_sel_topic = -1;
     a->feed_prev_scroll_y = 0.0f;

@@ -16,10 +16,23 @@
 #define UID_MAX_NODES   CAP_SNAP_NODES
 #define UID_MAX_TOPICS  256
 #define UID_MAX_MACH    CAP_SNAP_NODES
+#define UID_MAX_USER    16    /* user-added topics (via the + button), kept across frames */
 
 static Machine g_machines[UID_MAX_MACH];
 static Node    g_nodes[UID_MAX_NODES];
 static Topic   g_topics[UID_MAX_TOPICS];
+static char    g_user_topics[UID_MAX_USER][CAP_TOPIC_CAP];
+static int     g_n_user_topics;
+
+/* register a topic the user typed in, so it appears in the tree even before any peer
+   advertises it (so we can publish to a brand-new topic). Deduped; capped. */
+static void ui_data_add_user_topic(const char *name){
+    int i;
+    if (!name || !*name) return;
+    for (i = 0; i < g_n_user_topics; i++) if (!strcmp(g_user_topics[i], name)) return;
+    if (g_n_user_topics < UID_MAX_USER)
+        snprintf(g_user_topics[g_n_user_topics++], CAP_TOPIC_CAP, "%s", name);
+}
 
 /* a "machine" is one advertised IP; the host name / OS aren't on discovery. */
 static int uid_machine_for(const char *ip, int *n_mach){
@@ -59,6 +72,10 @@ static int uid_topic_for(const char *path, int *n_top){
 static void ui_data_build(Dataset *D, const CapSnapshot *snap){
     int n_mach = 0, n_top = 0, ni, k;
     int nn = snap->n_nodes < UID_MAX_NODES ? snap->n_nodes : UID_MAX_NODES;
+
+    /* seed user-added topics first so they exist (and merge with any peer that advertises
+       the same name later via uid_topic_for's dedup) even with no publishers/subscribers */
+    for (k = 0; k < g_n_user_topics; k++) uid_topic_for(g_user_topics[k], &n_top);
 
     for (ni = 0; ni < nn; ni++){
         const CapNode *cn = &snap->nodes[ni];
@@ -150,6 +167,15 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
             if (!rel) any_rel = 0;
             if (g_nodes[t->pubs[j]].state != NODE_GONE){ live++; if (!rel) live_all_rel = 0; }
         }
+        /* the explorer publishing this topic counts as a live publisher too, so a topic we
+           publish reliably to reads RELIABLE (not the peer-only best-effort default) */
+        for (j = 0; j < snap->n_subs; j++)
+            if (snap->subs[j].publishing && !strcmp(snap->subs[j].name, t->path)){
+                t->self_pub = 1; t->self_pub_reliable = snap->subs[j].reliable;
+                any = 1; live++;
+                if (!snap->subs[j].reliable){ any_rel = 0; live_all_rel = 0; }
+                break;
+            }
         t->reliable_recommend = !any ? -1 : (live ? live_all_rel : any_rel);
         t->reliable        = (t->reliable_recommend == 1);
         t->qos.reliability = t->reliable ? QOS_RELIABLE : QOS_BEST_EFFORT;
@@ -163,6 +189,8 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         for (ti = 0; ti < n_top; ti++) if (!strcmp(g_topics[ti].path, si->name)) break;
         if (ti >= n_top) continue;
         g_topics[ti].sub_state = si->active ? (si->error ? 2 : 1) : 0;
+        g_topics[ti].self_sub  = si->active;
+        g_topics[ti].self_sub_reliable = si->reliable;
     }
 
     D->machines = g_machines; D->n_machines = n_mach;

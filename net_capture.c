@@ -77,28 +77,33 @@ static int     cap_log_head, cap_log_count;
 static unsigned long long cap_start_ms;
 static Config  cap_cfg;          /* echoed into the snapshot for display */
 
-/* one observer-side subscription to a topic, plus a ring of the messages it has received.
-   A DART channel's reliability is FIXED at creation, but our recommended reliability for a
-   topic can change as publishers come and go, so a subscription owns up to TWO channels for
-   its topic (ch[0] best-effort, ch[1] reliable), each created on demand, with exactly one
-   active (SUB_ONLY) at a time and the other INACTIVE. Re-subscribing just activates the
-   channel matching the current recommendation, so the QoS can change across a resubscribe.
-   The message/event callbacks find the subscription by either channel's local index. */
-#define CAP_MAX_SUBS 32              /* distinct topics subscribed (each may own 2 channels) */
+static unsigned long long cap_now_ms(void);   /* defined below; used by cap_ring_push */
+
+/* one observer-side topic the explorer is using: a ring of recent messages plus the DART
+   channel(s) wiring it up. A channel's reliability is FIXED at creation, but our wanted
+   reliability can change as publishers come and go, so a topic owns up to TWO channels
+   (ch[0] best-effort, ch[1] reliable), created on demand, with exactly one live at a time.
+   That live channel's ROLE is the union of what we want: SUB_ONLY (receive), PUB_ONLY
+   (send), or PUBSUB (both) -- one channel does both directions, since two live channels of
+   the same identity would misroute. cap_sub_reconcile keeps it in sync. The message/event
+   callbacks find the topic by either channel's local index. */
+#define CAP_MAX_SUBS 32              /* distinct topics in use (each may own 2 channels) */
 
 typedef struct {
     double   t_s;
     uint32_t len;
     uint16_t preview_len;
+    int      mine;                        /* 1 = we published it (local echo) */
     char     sender[DART_NODE_NAME_MAX + 1];
     char     preview[CAP_MSG_PREVIEW];
 } CapMsgRec;
 
 typedef struct {
     int          used;
-    int          active;                 /* a channel is currently SUB_ONLY */
-    int          error;                  /* a QoS-incompatible / oversize event hit the active channel */
-    int          reliable;               /* reliability of the currently active channel (0/1) */
+    int          subscribed;             /* user wants to receive (drives the topic light) */
+    int          publishing;             /* user has sent here, so the channel stays PUB-capable */
+    int          error;                  /* a QoS-incompatible / oversize event hit the live channel */
+    int          reliable;               /* reliability of the currently live channel (0/1) */
     char         name[DART_TOPIC_NAME_MAX + 1];
     DartChannel *ch[2];                  /* [0] best-effort, [1] reliable; NULL until first needed */
     uint16_t     index[2];               /* their channel indices (valid where ch[i] != NULL) */
@@ -116,6 +121,15 @@ static CapSub *cap_sub_find(const char *name){
         if (cap_subs[i].used && !strcmp(cap_subs[i].name, name)) return &cap_subs[i];
     return NULL;
 }
+static CapSub *cap_sub_get(const char *name){          /* find or claim a slot */
+    CapSub *s = cap_sub_find(name); int i;
+    if (s) return s;
+    for (i = 0; i < CAP_MAX_SUBS; i++) if (!cap_subs[i].used){
+        s = &cap_subs[i]; memset(s, 0, sizeof *s); s->used = 1;
+        snprintf(s->name, sizeof s->name, "%s", name); return s;
+    }
+    return NULL;
+}
 static CapSub *cap_sub_by_index(uint16_t index){
     int i;
     for (i = 0; i < CAP_MAX_SUBS; i++){
@@ -124,6 +138,20 @@ static CapSub *cap_sub_by_index(uint16_t index){
         if ((s->ch[0] && s->index[0] == index) || (s->ch[1] && s->index[1] == index)) return s;
     }
     return NULL;
+}
+
+/* append one message to a topic's ring (received or our own echo). Does not touch n_msgs. */
+static void cap_ring_push(CapSub *s, const char *sender, const void *data, size_t len, int mine){
+    CapMsgRec *m = &s->ring[s->head];
+    uint16_t c = len < CAP_MSG_PREVIEW ? (uint16_t)len : CAP_MSG_PREVIEW;
+    m->t_s = (double)(cap_now_ms() - cap_start_ms) / 1000.0;
+    m->len = (uint32_t)len;
+    if (c) memcpy(m->preview, data, c);
+    m->preview_len = c;
+    m->mine = mine;
+    snprintf(m->sender, sizeof m->sender, "%s", sender ? sender : "");
+    s->head = (s->head + 1) % CAP_FEED_MAX;
+    if (s->count < CAP_FEED_MAX) s->count++;
 }
 
 static unsigned long long cap_now_ms(void){
@@ -184,22 +212,12 @@ static CapPeer *cap_peer_get(uint32_t id){
     return p;
 }
 
-/* the node's message sink: append a delivered message to its subscription ring. Single
-   threaded with cap_poll, so no locking. We keep only a short preview of the payload. */
+/* the node's message sink: append a delivered message to its topic ring. Single threaded
+   with cap_poll, so no locking. We keep only a short preview of the payload. */
 static void cap_on_message(const DartMsg *msg){
     CapSub *s = cap_sub_by_index(msg->channel_id);
-    CapMsgRec *m;
-    uint16_t c;
     if (!s) return;
-    m = &s->ring[s->head];
-    m->t_s = (double)(cap_now_ms() - cap_start_ms) / 1000.0;
-    m->len = (uint32_t)msg->len;
-    c = msg->len < CAP_MSG_PREVIEW ? (uint16_t)msg->len : CAP_MSG_PREVIEW;
-    if (c) memcpy(m->preview, msg->data, c);
-    m->preview_len = c;
-    snprintf(m->sender, sizeof m->sender, "%s", msg->sender_name);
-    s->head = (s->head + 1) % CAP_FEED_MAX;
-    if (s->count < CAP_FEED_MAX) s->count++;
+    cap_ring_push(s, msg->sender_name, msg->data, msg->len, 0);
     s->n_msgs++;
 }
 
@@ -332,50 +350,82 @@ void cap_stop(Capture *cap){
     cap->rt = NULL; cap->mem = NULL;
 }
 
-int cap_subscribe(Capture *cap, const char *topic, int reliable){
-    DartNode *node = cap ? (DartNode *)cap->rt : NULL;
-    CapSub *s;
-    int want = reliable ? 1 : 0;
-    if (!node || !topic || !*topic) return 0;
-    s = cap_sub_find(topic);
-    if (!s){                                   /* first subscribe to this topic */
-        int i, slot = -1;
-        for (i = 0; i < CAP_MAX_SUBS; i++) if (!cap_subs[i].used){ slot = i; break; }
-        if (slot < 0){ cap_logf("SUBSCRIBE %s refused (subscription table full)", topic); return 0; }
-        s = &cap_subs[slot];
-        memset(s, 0, sizeof *s);
-        s->used = 1;
-        snprintf(s->name, sizeof s->name, "%s", topic);
+/* bring the topic's live channel in line with subscribed/publishing: make the channel for
+   `want` reliability live with the combined role (SUB_ONLY/PUB_ONLY/PUBSUB), creating it once
+   if needed, and turn the other one off. Data is unicast (point-to-point to each subscriber),
+   so a publish reaches every subscriber and a subscribe hears every unicast publisher.
+   Returns 1 on success. */
+static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
+    DartRole role = (s->subscribed && s->publishing) ? DART_PUBSUB
+                  :  s->subscribed                   ? DART_SUB_ONLY
+                  :  s->publishing                   ? DART_PUB_ONLY
+                  :                                    DART_INACTIVE;
+    want = want ? 1 : 0;
+    if (role == DART_INACTIVE){
+        if (s->ch[0]) dart_channel_set_role(s->ch[0], DART_INACTIVE);
+        if (s->ch[1]) dart_channel_set_role(s->ch[1], DART_INACTIVE);
+        return 1;
     }
-    /* get (creating once) the channel for the wanted reliability. multicast: join the topic's
-       group so multicast-only publishers reach us; a join over the OS membership cap is
-       non-fatal (we still hear unicast publishers). */
     if (!s->ch[want]){
-        DartChannel *ch = dart_node_create_channel(node, topic, DART_SUB_ONLY,
+        DartChannel *ch = dart_node_create_channel(node, s->name, role,
                  &(DartChannelOpts){ .qos = { .reliability = want ? DART_RELIABLE : DART_BEST_EFFORT,
-                                              .catch_up = 1 }, .multicast = 1 });
-        if (!ch){ cap_logf("SUBSCRIBE %s failed (create_channel)", topic); return 0; }
+                                              .catch_up = 1 } });
+        if (!ch) return 0;
         s->ch[want] = ch; s->index[want] = dart_channel_index(ch);
     } else {
-        dart_channel_set_role(s->ch[want], DART_SUB_ONLY);
+        dart_channel_set_role(s->ch[want], role);
     }
-    /* keep only the wanted reliability advertised: flip the other channel (if any) off */
-    if (s->ch[!want]) dart_channel_set_role(s->ch[!want], DART_INACTIVE);
+    if (s->ch[!want]) dart_channel_set_role(s->ch[!want], DART_INACTIVE);   /* one live at a time */
     s->reliable = want;
-    s->active   = 1;
-    s->error    = 0;          /* clear stale errors on a fresh subscribe */
-    s->n_drops  = 0;
-    cap_logf("SUBSCRIBE %s (%s)", topic, want ? "reliable" : "best-effort");
+    return 1;
+}
+
+int cap_subscribe(Capture *cap, const char *topic, int reliable){
+    DartNode *node = cap ? (DartNode *)cap->rt : NULL;
+    CapSub *s = node ? cap_sub_get(topic) : NULL;
+    if (!node || !topic || !*topic) return 0;
+    if (!s){ cap_logf("SUBSCRIBE %s refused (topic table full)", topic); return 0; }
+    s->subscribed = 1;
+    if (!cap_sub_reconcile(s, node, reliable ? 1 : 0)){ cap_logf("SUBSCRIBE %s failed (create_channel)", topic); return 0; }
+    s->error = 0; s->n_drops = 0;          /* clear stale errors on a fresh subscribe */
+    cap_logf("SUBSCRIBE %s (%s)", topic, s->reliable ? "reliable" : "best-effort");
     return 1;
 }
 
 int cap_unsubscribe(Capture *cap, const char *topic){
-    CapSub *s = (cap && cap->rt) ? cap_sub_find(topic) : NULL;
+    DartNode *node = (cap && cap->rt) ? (DartNode *)cap->rt : NULL;
+    CapSub *s = node ? cap_sub_find(topic) : NULL;
     if (!s) return 0;
-    if (s->ch[0]) dart_channel_set_role(s->ch[0], DART_INACTIVE);   /* stop advertising interest; */
-    if (s->ch[1]) dart_channel_set_role(s->ch[1], DART_INACTIVE);   /* keep the history */
-    s->active = 0;
+    s->subscribed = 0;
+    cap_sub_reconcile(s, node, s->reliable);   /* drops to PUB_ONLY if still publishing, else INACTIVE */
     cap_logf("UNSUBSCRIBE %s", topic);
+    return 1;
+}
+
+int cap_declare_publish(Capture *cap, const char *topic){
+    DartNode *node = cap ? (DartNode *)cap->rt : NULL;
+    CapSub *s = node ? cap_sub_get(topic) : NULL;
+    int was, want;
+    if (!node || !topic || !*topic) return 0;
+    if (!s){ cap_logf("PUBLISH %s refused (topic table full)", topic); return 0; }
+    was = s->publishing;
+    s->publishing = 1;
+    /* when also subscribed we must reuse the live channel (one identity, one live channel),
+       so the publish rides its reliability; pub-only goes reliable to reach the most subs. */
+    want = s->subscribed ? s->reliable : 1;
+    if (!cap_sub_reconcile(s, node, want)){ s->publishing = was; cap_logf("PUBLISH %s failed (channel)", topic); return 0; }
+    if (!was) cap_logf("PUBLISH %s declared (pub interest)", topic);
+    return 1;
+}
+
+int cap_publish(Capture *cap, const char *topic, const void *data, size_t len){
+    CapSub *s;
+    if (!topic || (!data && len)) return 0;
+    if (!cap_declare_publish(cap, topic)) return 0;   /* ensure the publisher channel is live */
+    s = cap_sub_find(topic);
+    if (!s) return 0;
+    if (dart_channel_send(s->ch[s->reliable], data, len) < 0){ cap_logf("PUBLISH %s send failed", topic); return 0; }
+    cap_ring_push(s, cap_cfg.name, data, len, 1);   /* local echo: show our own message in the feed */
     return 1;
 }
 
@@ -438,10 +488,12 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         if (!s->used) continue;
         si = &out->subs[out->n_subs++];
         snprintf(si->name, sizeof si->name, "%s", s->name);
-        si->active  = s->active;
-        si->error   = (s->error || s->n_drops > 0) ? 1 : 0;
-        si->n_msgs  = (uint32_t)s->n_msgs;
-        si->n_drops = (uint32_t)s->n_drops;
+        si->active     = s->subscribed;
+        si->publishing = s->publishing;
+        si->reliable   = s->reliable;
+        si->error      = (s->error || s->n_drops > 0) ? 1 : 0;
+        si->n_msgs     = (uint32_t)s->n_msgs;
+        si->n_drops    = (uint32_t)s->n_drops;
     }
 
     /* pull the node's zero-copy peer view (it decodes the overlay for us) and refresh each
@@ -493,7 +545,7 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
                    int *subscribed, int *error, int *reliable, uint32_t *n_msgs, uint32_t *n_drops){
     CapSub *s = (cap && cap->rt && topic) ? cap_sub_find(topic) : NULL;
     int i, n = 0, start;
-    if (subscribed) *subscribed = s ? s->active : 0;
+    if (subscribed) *subscribed = s ? s->subscribed : 0;
     if (error)      *error      = s ? ((s->error || s->n_drops > 0) ? 1 : 0) : 0;
     if (reliable)   *reliable   = s ? s->reliable : 0;
     if (n_msgs)     *n_msgs     = s ? (uint32_t)s->n_msgs : 0;
@@ -509,6 +561,7 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
         o->t_s         = m->t_s;
         o->len         = m->len;
         o->preview_len = m->preview_len;
+        o->mine        = m->mine;
         snprintf(o->sender, sizeof o->sender, "%s", m->sender);
         if (m->preview_len) memcpy(o->preview, m->preview, m->preview_len);
     }

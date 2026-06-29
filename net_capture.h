@@ -122,9 +122,10 @@ typedef struct {
 } CapFeedItem;
 
 /* Copy up to `max` of `topic`'s most recent messages (oldest first) into out[] and
-   return the count. Any of subscribed/error/n_msgs/n_drops may be NULL; they report
-   the subscription's current state. Returns 0 for an unknown / never-subscribed topic. */
+   return the count. Any of subscribed/error/reliable/n_msgs/n_drops may be NULL; they
+   report the subscription's current state (reliable = the reliability it was created
+   with). Returns 0 for an unknown / never-subscribed topic. */
 int  cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int max,
-                    int *subscribed, int *error, uint32_t *n_msgs, uint32_t *n_drops);
+                    int *subscribed, int *error, int *reliable, uint32_t *n_msgs, uint32_t *n_drops);
 
 #endif /* NET_CAPTURE_H */

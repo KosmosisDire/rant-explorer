@@ -12,7 +12,7 @@
 
 /* the selected topic's live feed, refetched from the capture each frame */
 static CapFeedItem tt_feed[CAP_FEED_MAX];
-static int         tt_feed_n, tt_subscribed, tt_sub_error;
+static int         tt_feed_n, tt_subscribed, tt_sub_error, tt_sub_reliable;
 static uint32_t    tt_msgs, tt_drops;
 
 /* topic status light: hollow grey not subscribed, green subscribed, red dropping/erroring */
@@ -158,10 +158,10 @@ static void topics_feed(AppState *app, const Palette *P){
     int feed_state, i;
 
     /* refetch the selected topic's live feed for this frame (before drawing the controls) */
-    tt_feed_n = 0; tt_subscribed = tt_sub_error = 0; tt_msgs = tt_drops = 0;
+    tt_feed_n = 0; tt_subscribed = tt_sub_error = tt_sub_reliable = 0; tt_msgs = tt_drops = 0;
     if (t && app->cap)
         tt_feed_n = cap_topic_feed(app->cap, t->path, tt_feed, CAP_FEED_MAX,
-                                   &tt_subscribed, &tt_sub_error, &tt_msgs, &tt_drops);
+                                   &tt_subscribed, &tt_sub_error, &tt_sub_reliable, &tt_msgs, &tt_drops);
     feed_state = tt_subscribed ? (tt_sub_error ? 2 : 1) : 0;
 
     CLAY({ .id = CLAY_ID("topics_feed"),
@@ -200,7 +200,7 @@ static void topics_feed(AppState *app, const Palette *P){
                 if (!tt_subscribed){
                     if (ui_pill(P, CLAY_STRING("Subscribe"), FAM_SANS, WT_SEMI, FS_SMALL,
                                 P->accent, P->accent_bg, UI_NONE, UISC(28)) && app->cap)
-                        cap_subscribe(app->cap, t->path, t->reliable);
+                        cap_subscribe(app->cap, t->path, t->reliable_recommend > 0);
                 } else {
                     if (ui_pill(P, CLAY_STRING("Unsubscribe"), FAM_SANS, WT_SEMI, FS_SMALL,
                                 P->dim, P->panel2, P->border2, UISC(28)) && app->cap)
@@ -208,7 +208,7 @@ static void topics_feed(AppState *app, const Palette *P){
                 }
                 tt_status_dot(P, feed_state);
                 CLAY_TEXT(tt_subscribed ? ui_fmt("subscribed %s  \xC2\xB7  %u msgs",
-                                                 t->reliable ? "reliable" : "best-effort", tt_msgs)
+                                                 tt_sub_reliable ? "reliable" : "best-effort", tt_msgs)
                                         : CLAY_STRING("not subscribed"),
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
                                              .textColor = feed_state == 2 ? P->red : P->dim,

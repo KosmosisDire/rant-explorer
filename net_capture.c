@@ -29,8 +29,8 @@
 
 #define CAP_MAX_PEERS         64
 #define CAP_MAX_TOPICS        32
-#define CAP_OBSERVER_CHANNELS 64   /* channel reserve: sizes the incoming overlay buffer AND bounds how
-                                      many distinct topics we can subscribe to over a session */
+#define CAP_OBSERVER_CHANNELS 64   /* node channel reserve: sizes the incoming overlay buffer and covers
+                                      our own subscriptions (up to 2 channels per topic, see CAP_MAX_SUBS) */
 #define CAP_LOG_LINES         400
 /* CAP_LOG_LINE comes from net_capture.h (shared with the snapshot) */
 
@@ -77,11 +77,15 @@ static int     cap_log_head, cap_log_count;
 static unsigned long long cap_start_ms;
 static Config  cap_cfg;          /* echoed into the snapshot for display */
 
-/* one observer-side subscription: a real DART subscriber channel plus a ring of the
-   messages it has received. Keyed by the channel's local index (== DartMsg.channel_id),
-   so the message and event callbacks can find it without a name lookup. Created lazily
-   by cap_subscribe and reused by name; unsubscribing flips the channel inactive but
-   keeps the record (and its history) so re-subscribing resumes the same feed. */
+/* one observer-side subscription to a topic, plus a ring of the messages it has received.
+   A DART channel's reliability is FIXED at creation, but our recommended reliability for a
+   topic can change as publishers come and go, so a subscription owns up to TWO channels for
+   its topic (ch[0] best-effort, ch[1] reliable), each created on demand, with exactly one
+   active (SUB_ONLY) at a time and the other INACTIVE. Re-subscribing just activates the
+   channel matching the current recommendation, so the QoS can change across a resubscribe.
+   The message/event callbacks find the subscription by either channel's local index. */
+#define CAP_MAX_SUBS 32              /* distinct topics subscribed (each may own 2 channels) */
+
 typedef struct {
     double   t_s;
     uint32_t len;
@@ -92,30 +96,33 @@ typedef struct {
 
 typedef struct {
     int          used;
-    int          active;                 /* role is SUB_ONLY (vs INACTIVE after unsubscribe) */
-    int          error;                  /* a QoS-incompatible / oversize event hit this channel */
-    DartChannel *ch;
-    uint16_t     index;                  /* dart_channel_index(ch) */
-    int          reliable;               /* requested reliability */
+    int          active;                 /* a channel is currently SUB_ONLY */
+    int          error;                  /* a QoS-incompatible / oversize event hit the active channel */
+    int          reliable;               /* reliability of the currently active channel (0/1) */
     char         name[DART_TOPIC_NAME_MAX + 1];
+    DartChannel *ch[2];                  /* [0] best-effort, [1] reliable; NULL until first needed */
+    uint16_t     index[2];               /* their channel indices (valid where ch[i] != NULL) */
     unsigned long long n_msgs;
     unsigned long long n_drops;
     CapMsgRec    ring[CAP_FEED_MAX];
     int          head, count;            /* ring write cursor + fill */
 } CapSub;
 
-static CapSub cap_subs[CAP_OBSERVER_CHANNELS];
+static CapSub cap_subs[CAP_MAX_SUBS];
 
 static CapSub *cap_sub_find(const char *name){
     int i;
-    for (i = 0; i < CAP_OBSERVER_CHANNELS; i++)
+    for (i = 0; i < CAP_MAX_SUBS; i++)
         if (cap_subs[i].used && !strcmp(cap_subs[i].name, name)) return &cap_subs[i];
     return NULL;
 }
 static CapSub *cap_sub_by_index(uint16_t index){
     int i;
-    for (i = 0; i < CAP_OBSERVER_CHANNELS; i++)
-        if (cap_subs[i].used && cap_subs[i].index == index) return &cap_subs[i];
+    for (i = 0; i < CAP_MAX_SUBS; i++){
+        CapSub *s = &cap_subs[i];
+        if (!s->used) continue;
+        if ((s->ch[0] && s->index[0] == index) || (s->ch[1] && s->index[1] == index)) return s;
+    }
     return NULL;
 }
 
@@ -328,37 +335,45 @@ void cap_stop(Capture *cap){
 int cap_subscribe(Capture *cap, const char *topic, int reliable){
     DartNode *node = cap ? (DartNode *)cap->rt : NULL;
     CapSub *s;
+    int want = reliable ? 1 : 0;
     if (!node || !topic || !*topic) return 0;
     s = cap_sub_find(topic);
-    if (!s){                                   /* first subscribe to this topic: a fresh channel */
-        DartChannel *ch; int i, slot = -1;
-        for (i = 0; i < CAP_OBSERVER_CHANNELS; i++) if (!cap_subs[i].used){ slot = i; break; }
-        if (slot < 0){ cap_logf("SUBSCRIBE %s refused (channel reserve full)", topic); return 0; }
-        /* multicast: join the topic's group so multicast-only publishers reach us; a join over
-           the OS membership cap is non-fatal (we still hear unicast publishers). */
-        ch = dart_node_create_channel(node, topic, DART_SUB_ONLY,
-                 &(DartChannelOpts){ .qos = { .reliability = reliable ? DART_RELIABLE : DART_BEST_EFFORT,
-                                              .catch_up = 1 }, .multicast = 1 });
-        if (!ch){ cap_logf("SUBSCRIBE %s failed (create_channel)", topic); return 0; }
+    if (!s){                                   /* first subscribe to this topic */
+        int i, slot = -1;
+        for (i = 0; i < CAP_MAX_SUBS; i++) if (!cap_subs[i].used){ slot = i; break; }
+        if (slot < 0){ cap_logf("SUBSCRIBE %s refused (subscription table full)", topic); return 0; }
         s = &cap_subs[slot];
         memset(s, 0, sizeof *s);
-        s->used = 1; s->ch = ch; s->index = dart_channel_index(ch);
+        s->used = 1;
         snprintf(s->name, sizeof s->name, "%s", topic);
-    } else {                                   /* reactivate a previously created channel */
-        dart_channel_set_role(s->ch, DART_SUB_ONLY);
     }
-    s->reliable = reliable ? 1 : 0;
+    /* get (creating once) the channel for the wanted reliability. multicast: join the topic's
+       group so multicast-only publishers reach us; a join over the OS membership cap is
+       non-fatal (we still hear unicast publishers). */
+    if (!s->ch[want]){
+        DartChannel *ch = dart_node_create_channel(node, topic, DART_SUB_ONLY,
+                 &(DartChannelOpts){ .qos = { .reliability = want ? DART_RELIABLE : DART_BEST_EFFORT,
+                                              .catch_up = 1 }, .multicast = 1 });
+        if (!ch){ cap_logf("SUBSCRIBE %s failed (create_channel)", topic); return 0; }
+        s->ch[want] = ch; s->index[want] = dart_channel_index(ch);
+    } else {
+        dart_channel_set_role(s->ch[want], DART_SUB_ONLY);
+    }
+    /* keep only the wanted reliability advertised: flip the other channel (if any) off */
+    if (s->ch[!want]) dart_channel_set_role(s->ch[!want], DART_INACTIVE);
+    s->reliable = want;
     s->active   = 1;
     s->error    = 0;          /* clear stale errors on a fresh subscribe */
     s->n_drops  = 0;
-    cap_logf("SUBSCRIBE %s (%s)", topic, reliable ? "reliable" : "best-effort");
+    cap_logf("SUBSCRIBE %s (%s)", topic, want ? "reliable" : "best-effort");
     return 1;
 }
 
 int cap_unsubscribe(Capture *cap, const char *topic){
     CapSub *s = (cap && cap->rt) ? cap_sub_find(topic) : NULL;
     if (!s) return 0;
-    dart_channel_set_role(s->ch, DART_INACTIVE);   /* stop advertising interest; keep the history */
+    if (s->ch[0]) dart_channel_set_role(s->ch[0], DART_INACTIVE);   /* stop advertising interest; */
+    if (s->ch[1]) dart_channel_set_role(s->ch[1], DART_INACTIVE);   /* keep the history */
     s->active = 0;
     cap_logf("UNSUBSCRIBE %s", topic);
     return 1;
@@ -417,7 +432,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
     }
 
     /* subscription state, so the UI can colour each topic's status light */
-    for (i = 0; i < CAP_OBSERVER_CHANNELS && out->n_subs < CAP_SNAP_SUBS; i++){
+    for (i = 0; i < CAP_MAX_SUBS && out->n_subs < CAP_SNAP_SUBS; i++){
         const CapSub *s = &cap_subs[i];
         CapSubInfo *si;
         if (!s->used) continue;
@@ -475,11 +490,12 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
 }
 
 int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int max,
-                   int *subscribed, int *error, uint32_t *n_msgs, uint32_t *n_drops){
+                   int *subscribed, int *error, int *reliable, uint32_t *n_msgs, uint32_t *n_drops){
     CapSub *s = (cap && cap->rt && topic) ? cap_sub_find(topic) : NULL;
     int i, n = 0, start;
     if (subscribed) *subscribed = s ? s->active : 0;
     if (error)      *error      = s ? ((s->error || s->n_drops > 0) ? 1 : 0) : 0;
+    if (reliable)   *reliable   = s ? s->reliable : 0;
     if (n_msgs)     *n_msgs     = s ? (uint32_t)s->n_msgs : 0;
     if (n_drops)    *n_drops    = s ? (uint32_t)s->n_drops : 0;
     if (!s || !out || max <= 0) return 0;

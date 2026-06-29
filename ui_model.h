@@ -87,6 +87,7 @@ typedef struct {
     Qos  qos;
     int  pubs[UI_MAX_ENDPOINTS]; int n_pubs;   /* node indices */
     int  subs[UI_MAX_ENDPOINTS]; int n_subs;
+    unsigned char pub_rel[UI_MAX_ENDPOINTS];   /* each publisher's offered reliability (parallel to pubs[]) */
 
     double rate_hz;
     int    rate_on_event;
@@ -94,7 +95,12 @@ typedef struct {
     double last_age_s;
     long   count;
 
-    int    reliable;             /* qos.reliability == QOS_RELIABLE */
+    int    reliable;             /* qos.reliability == QOS_RELIABLE (any publisher offers reliable) */
+    int    reliable_recommend;   /* the reliability to subscribe AS: reliable only if every
+                                    publisher we consider offers it (a mix downgrades to best
+                                    effort, since a reliable sub would refuse the best-effort
+                                    publisher); gone/dropped publishers are ignored unless they
+                                    are the only ones. -1 = no publishers (default best effort). */
     int    drops;                /* valid only when reliable */
 
     /* live subscription state (the explorer can join a topic's data plane on demand), for

@@ -119,19 +119,40 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         }
     }
 
-    /* second pass: attach pub/sub node lists to each topic + derive its reliability
-       (a topic is RELIABLE if any publisher offers reliable). */
+    /* second pass: attach each topic's pub/sub node lists (with per-publisher reliability) */
     for (ni = 0; ni < nn; ni++){
         Node *n = &g_nodes[ni];
         for (k = 0; k < n->n_pubs; k++){
             Topic *t = &g_topics[n->pubs[k]];
-            if (t->n_pubs < UI_MAX_ENDPOINTS) t->pubs[t->n_pubs++] = ni;
-            if (n->pub_rel[k]){ t->qos.reliability = QOS_RELIABLE; t->reliable = 1; }
+            if (t->n_pubs < UI_MAX_ENDPOINTS){
+                t->pub_rel[t->n_pubs] = n->pub_rel[k];
+                t->pubs[t->n_pubs++]  = ni;
+            }
         }
         for (k = 0; k < n->n_subs; k++){
             Topic *t = &g_topics[n->subs[k]];
             if (t->n_subs < UI_MAX_ENDPOINTS) t->subs[t->n_subs++] = ni;
         }
+    }
+
+    /* derive each topic's reliability from its LIVE publishers: reliable only if every
+       publisher we consider offers it (a mix downgrades to best-effort, since a reliable
+       sub would refuse a best-effort publisher and get no data from it). Dropped/gone
+       publishers are ignored unless they are the only ones. This drives both the displayed
+       reliability and the recommended subscribe reliability (reliable_recommend; -1 = no
+       publishers => best-effort). */
+    for (k = 0; k < n_top; k++){
+        Topic *t = &g_topics[k];
+        int j, live = 0, live_all_rel = 1, any_rel = 1, any = 0;
+        for (j = 0; j < t->n_pubs; j++){
+            int rel = t->pub_rel[j];
+            any = 1;
+            if (!rel) any_rel = 0;
+            if (g_nodes[t->pubs[j]].state != NODE_GONE){ live++; if (!rel) live_all_rel = 0; }
+        }
+        t->reliable_recommend = !any ? -1 : (live ? live_all_rel : any_rel);
+        t->reliable        = (t->reliable_recommend == 1);
+        t->qos.reliability = t->reliable ? QOS_RELIABLE : QOS_BEST_EFFORT;
     }
 
     /* third pass: our own live subscription state (the topic light), matched by name.

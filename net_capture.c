@@ -1,8 +1,12 @@
-/* Live DART discovery observer: a bare discovery runtime (no transport, no
-   channels) that decodes every peer's announce blob with the transport core's
-   dart_meta_* codec. Compiled as its own TU (see net_capture.h for why) and owns
-   the DART implementation. For now it runs and echoes events to the console; a
-   later step exposes a peer snapshot to the UI. */
+/* Live DART observer, built on a real NODE (not bare discovery). The node owns the
+   discovery->transport wiring and decodes every peer's announce-metadata overlay, so
+   this TU reads peers back through the node's peer API (dart_node_peers) and never
+   parses the overlay itself. It runs with no channels of its own (it publishes and
+   subscribes nothing); a generous channel reserve only sizes discovery's incoming
+   overlay buffer so we can hold peers that advertise many topics.
+
+   Compiled as its own TU (see net_capture.h for why) and owns the DART implementation.
+   It echoes peer events to the console and exposes a peer snapshot to the UI. */
 
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0601        /* GetTickCount64 */
@@ -23,10 +27,10 @@
 
 #include "net_capture.h"
 
-#define CAP_MAX_PEERS   64
-#define CAP_MAX_TOPICS  32
-#define CAP_RAW_META    256
-#define CAP_LOG_LINES   400
+#define CAP_MAX_PEERS         64
+#define CAP_MAX_TOPICS        32
+#define CAP_OBSERVER_CHANNELS 32   /* our (empty) channel reserve: sizes the incoming overlay buffer */
+#define CAP_LOG_LINES         400
 /* CAP_LOG_LINE comes from net_capture.h (shared with the snapshot) */
 
 typedef enum { CAP_ACTIVE = 0, CAP_DROPPED = 1, CAP_GONE = 2 } CapPeerState;
@@ -37,27 +41,29 @@ typedef struct {
     int      reliable;       /* offered (pub) / requested (sub): flags bit 0 */
 } CapTopic;
 
+/* one observer-side peer record, keyed by the node's local peer id. Events drive the
+   observer metrics (first_seen / updates / last_change / down) and the log; the snapshot
+   refreshes the cached facts from the node and is authoritative for state. A GONE peer is
+   kept (de-emphasized in the UI) with its last-known facts until its slot is reclaimed. */
 typedef struct {
     int          used;
     uint32_t     local_id;
     CapPeerState state;
+    int          seen_frame;   /* the current snapshot found it in the node's peer table */
 
+    /* cached facts: discovery-level (name/addr) + announce-metadata (frag/interest) */
+    int      have_meta;
+    uint16_t frag;
+    uint16_t meta_len;
+    char     name[DART_NODE_NAME_MAX + 1];
     uint8_t  ip[16];
     uint8_t  ip_len;
     uint16_t port;
-
-    int      have_meta;
-    int      meta_version;
-    uint16_t frag;
-    char     name[DART_NODE_NAME_MAX + 1];
-
     int      n_pub, n_sub;
     CapTopic pub[CAP_MAX_TOPICS];
     CapTopic sub[CAP_MAX_TOPICS];
 
-    uint8_t  raw[CAP_RAW_META];
-    uint16_t raw_len;
-
+    /* observer-derived */
     unsigned           updates;
     unsigned long long first_seen_ms;
     unsigned long long last_change_ms;
@@ -69,9 +75,6 @@ static char    cap_log[CAP_LOG_LINES][CAP_LOG_LINE];
 static int     cap_log_head, cap_log_count;
 static unsigned long long cap_start_ms;
 static Config  cap_cfg;          /* echoed into the snapshot for display */
-
-static uint8_t  cap_self_meta[16];   /* the overlay: 'D','N',ver, frag(2), npub(2), nsub(2) (no name) */
-static uint16_t cap_self_meta_len;
 
 static unsigned long long cap_now_ms(void){
 #ifdef _WIN32
@@ -94,16 +97,6 @@ static void cap_logf(const char *fmt, ...){
     cap_log_head = (cap_log_head + 1) % CAP_LOG_LINES;
     if (cap_log_count < CAP_LOG_LINES) cap_log_count++;
     fputs(line, stdout); fputc('\n', stdout);
-}
-
-static void cap_fmt_addr(char *buf, size_t n, const uint8_t *ip, uint8_t ip_len, uint16_t port){
-    if (ip_len == 4)
-        snprintf(buf, n, "%u.%u.%u.%u:%u", ip[0], ip[1], ip[2], ip[3], port);
-    else if (ip_len == 16)
-        snprintf(buf, n, "[%02x%02x:%02x%02x:..:%02x%02x]:%u",
-                 ip[0], ip[1], ip[2], ip[3], ip[14], ip[15], port);
-    else
-        snprintf(buf, n, "(no address):%u", port);
 }
 
 static void cap_fmt_ip(char *buf, size_t n, const uint8_t *ip, uint8_t ip_len){
@@ -141,111 +134,39 @@ static CapPeer *cap_peer_get(uint32_t id){
     return p;
 }
 
-static void cap_decode_meta(CapPeer *p, const uint8_t *meta, uint16_t meta_len){
-    DartInterestIter it; DartTopic t;
-    uint16_t rc;
-
-    p->have_meta = 0;
-    p->frag = 0; p->meta_version = 0; p->raw_len = 0;
-    p->n_pub = p->n_sub = 0;
-    if (!meta || meta_len < 3) return;        /* meta = the overlay (frag + interest); name is separate */
-
-    p->have_meta = 1;
-    p->meta_version = meta[2];
-    p->frag = dart_meta_frag(meta, meta_len);
-
-    /* decode the interest list via the transport codec's public iterator (no hand-parsing) */
-    memset(&it, 0, sizeof it);
-    while (dart_meta_interest_next(meta, meta_len, &it, &t)){
-        CapTopic *arr; int idx;
-        if (t.is_pub){ if (p->n_pub >= CAP_MAX_TOPICS) continue; arr = p->pub; idx = p->n_pub++; }
-        else         { if (p->n_sub >= CAP_MAX_TOPICS) continue; arr = p->sub; idx = p->n_sub++; }
-        {   uint8_t c = t.name_len > DART_TOPIC_NAME_MAX ? DART_TOPIC_NAME_MAX : t.name_len;
-            memcpy(arr[idx].name, t.name, c); arr[idx].name[c] = '\0'; }
-        arr[idx].alias    = t.alias;
-        arr[idx].reliable = t.reliable;
-    }
-
-    rc = meta_len < CAP_RAW_META ? meta_len : CAP_RAW_META;
-    memcpy(p->raw, meta, rc);
-    p->raw_len = rc;
-}
-
-static void cap_topics_csv(const CapTopic *t, int n, char *buf, size_t cap){
-    int i; size_t off = 0;
-    if (!n){ snprintf(buf, cap, "-"); return; }
-    for (i = 0; i < n && off + 1 < cap; i++)
-        off += (size_t)snprintf(buf + off, cap - off, "%s%s", i ? "," : "", t[i].name);
-}
-
-static void cap_peer_up(uint32_t id, const DartDiscoveryAddr *addr, const char *name, uint8_t name_len,
-                           const uint8_t *meta, uint16_t meta_len){
-    CapPeer *p = cap_peer_get(id);
-    CapPeerState was = p->state;
-    char a[80];
-
-    p->state = CAP_ACTIVE;
-    memcpy(p->ip, addr->ip, 16);
-    p->ip_len = addr->ip_len;
-    p->port = addr->port;
-    cap_decode_meta(p, meta, meta_len);
-    {   uint8_t nl = name_len > DART_NODE_NAME_MAX ? (uint8_t)DART_NODE_NAME_MAX : name_len;  /* name: discovery-level now */
-        if (name && nl) memcpy(p->name, name, nl);
-        p->name[nl] = '\0'; }
-    p->updates++;
-    p->last_change_ms = cap_now_ms();
-
-    cap_fmt_addr(a, sizeof a, p->ip, p->ip_len, p->port);
-    cap_logf("UP    id=%u  %-16s %s%s", id, p->name[0] ? p->name : "(no name)", a,
-             was == CAP_DROPPED ? "  (resumed)" : (p->updates > 1 ? "  (updated)" : ""));
-    if (p->have_meta){
-        char pubs[160], subs[160];
-        cap_topics_csv(p->pub, p->n_pub, pubs, sizeof pubs);
-        cap_topics_csv(p->sub, p->n_sub, subs, sizeof subs);
-        cap_logf("        meta v%d, frag=%u   pub[%d]={%s}  sub[%d]={%s}",
-                 p->meta_version, p->frag, p->n_pub, pubs, p->n_sub, subs);
-    }
-}
-
-static void cap_peer_down(uint32_t id, DartDiscoveryDownReason reason){
-    CapPeer *p = cap_peer_find(id);
-    if (!p){
-        cap_logf("DOWN  id=%u  [%s, peer unknown]", id, reason == DART_DISCOVERY_GONE ? "GONE" : "DROP");
-        return;
-    }
-    p->state = (reason == DART_DISCOVERY_GONE) ? CAP_GONE : CAP_DROPPED;
-    p->down_ms = cap_now_ms();
-    cap_logf("DOWN  id=%u  %-16s -> %s", id, p->name[0] ? p->name : "(no name)",
-             reason == DART_DISCOVERY_GONE ? "GONE (state freed)" : "DROPPED (silent, may return)");
-}
-
-static void cap_peer_refused(const DartDiscoveryAddr *addr){
-    char a[80];
-    cap_fmt_addr(a, sizeof a, addr->ip, addr->ip_len, addr->port);
-    cap_logf("REFUSED %s  (peer table full of active peers)", a);
-}
-
-/* one discovery event sink (the generic DartDiscoveryEvent), demuxed to the handlers above */
-static void cap_on_event(const DartDiscoveryEvent *ev){
+/* the node's app event sink: maintain the observer metrics + log. We never call back into
+   dart_* here (the snapshot reads the facts); the cap_peers table is file-static. */
+static void cap_on_event(const DartEvent *ev){
     switch (ev->kind){
-        case DART_DISCOVERY_PEER_UP:      cap_peer_up(ev->peer, &ev->addr, ev->name, ev->name_len, ev->meta, ev->meta_len); break;
-        case DART_DISCOVERY_PEER_DOWN:    cap_peer_down(ev->peer, ev->reason); break;
-        case DART_DISCOVERY_PEER_REFUSED: cap_peer_refused(&ev->addr); break;
-        default: break;
+    case DART_PEER_UP: {
+        CapPeer *p = cap_peer_get(ev->peer);
+        p->last_change_ms = cap_now_ms();
+        if (ev->ip_len == 4)
+            cap_logf("UP    id=%u  %u.%u.%u.%u:%u  (%s)", ev->peer,
+                     ev->ip[0], ev->ip[1], ev->ip[2], ev->ip[3], ev->port, ev->detail ? ev->detail : "");
+        else
+            cap_logf("UP    id=%u  (%s)", ev->peer, ev->detail ? ev->detail : "");
+        break; }
+    case DART_PEER_INTEREST: {                       /* a peer's interest list was (re)applied */
+        CapPeer *p = cap_peer_find(ev->peer);
+        if (p){ p->updates++; p->last_change_ms = cap_now_ms(); }
+        cap_logf("        interest  id=%u  pub-to=%u  sub-from=%u",
+                 ev->peer, ev->publish_topics, ev->receive_topics);
+        break; }
+    case DART_PEER_DOWN: {
+        CapPeer *p = cap_peer_find(ev->peer);
+        if (p) p->down_ms = cap_now_ms();
+        cap_logf("DOWN  id=%u  (%s)", ev->peer, ev->detail ? ev->detail : "");
+        break; }
+    case DART_PEER_REFUSED:
+        if (ev->ip_len == 4)
+            cap_logf("REFUSED %u.%u.%u.%u:%u  (peer table full of active peers)",
+                     ev->ip[0], ev->ip[1], ev->ip[2], ev->ip[3], ev->port);
+        else
+            cap_logf("REFUSED  (peer table full of active peers)");
+        break;
+    default: break;
     }
-}
-
-static void cap_build_self_meta(void){
-    /* the OVERLAY a passive observer advertises: the v6 (no-SHM) prefix ['D','N',6,frag_lo,
-       frag_hi] + an empty interest list [npub16=0][nsub16=0]. The name is NOT here: it rides
-       discovery's own blob section (rcfg.discovery.name). An observer publishes nothing. */
-    uint16_t frag = (uint16_t)dart_clamp_frag(0);
-    uint8_t *o = cap_self_meta;
-    o[0] = 'D'; o[1] = 'N'; o[2] = 6;
-    o[3] = (uint8_t)(frag & 0xFF); o[4] = (uint8_t)(frag >> 8);
-    o[5] = 0; o[6] = 0;              /* npub = 0 */
-    o[7] = 0; o[8] = 0;              /* nsub = 0 */
-    cap_self_meta_len = 9;
 }
 
 /* ---------------------------------------------------------------- public API */
@@ -265,7 +186,7 @@ static void cap_usage(const char *argv0){
            "  --group IP   discovery multicast group   (default 239.255.0.7)\n"
            "  --port  N    discovery port              (default 7400)\n"
            "  --if    IP   multicast interface IP      (default auto; 127.0.0.1 = single-host)\n"
-           "  --name  STR  this observer's name        (default dart-explorer)\n", argv0);
+           "  --name  STR  this observer node's name   (default dart-explorer)\n", argv0);
 }
 
 int cap_parse_args(int argc, char **argv, Config *c){
@@ -286,56 +207,80 @@ int cap_parse_args(int argc, char **argv, Config *c){
 
 int cap_start(Capture *cap, const Config *cfg){
     DartAllocator mem;
-    DartDiscovery *d;
+    DartNode *node;
 
     memset(cap, 0, sizeof *cap);
     cap_start_ms = cap_now_ms();
     cap_cfg = *cfg;          /* group/name point into argv: stable for the run */
 
-    cap_build_self_meta();   /* the opaque overlay we advertise (discovery auto-gens our uuid) */
-
-    /* the defaults-first public open: discovery owns its memory via the allocator.
-       meta_capacity is generous (a node sizes its blob to its own interest, but an
-       observer wants to receive everyone's; the default 64 is too small past a couple
-       of topics). The overlay we pass is opaque to discovery. */
-    mem = dart_allocator_dynamic(1 << 16);
-    d = dart_discovery_open(&mem, cfg->name, &(DartDiscoveryConfig){
-        .domain              = cfg->domain,
-        .discovery_group     = cfg->group,
-        .discovery_port      = cfg->port,
-        .multicast_interface = cfg->ifc,
-        .max_peers           = CAP_MAX_PEERS,
-        .on_event            = cap_on_event,
-        .meta                = cap_self_meta,
-        .meta_len            = cap_self_meta_len,
-        .meta_capacity       = 1408,
+    /* a real node, owning its memory via a dynamic allocator. It creates no channels (the
+       observer publishes/subscribes nothing); CAP_OBSERVER_CHANNELS only sizes discovery's
+       per-peer incoming overlay buffer, so a peer advertising many topics is held in full. */
+    mem  = dart_allocator_dynamic(1 << 20);
+    node = dart_node_open(&mem, cfg->name, NULL, cap_on_event, &(DartNodeOpts){
+        .domain       = cfg->domain,
+        .max_channels = CAP_OBSERVER_CHANNELS,
+        .net          = { .discovery_group     = cfg->group,
+                          .discovery_port      = cfg->port,
+                          .multicast_interface = cfg->ifc },
+        .discovery    = { .max_peers = CAP_MAX_PEERS },
     });
-    if (!d){
-        fprintf(stderr, "cap_start: dart_discovery_open failed (port %u in use? interface?)\n", cfg->port);
+    if (!node){
+        fprintf(stderr, "cap_start: dart_node_open failed (port %u in use? interface?)\n", cfg->port);
         return 0;
     }
-    cap->rt  = d;
-    cap->mem = NULL;         /* discovery owns its memory now; close frees it */
-    cap_logf("observer started on domain %u (%s:%u)", cfg->domain, cfg->group, cfg->port);
+    cap->rt  = node;
+    cap->mem = NULL;         /* the node owns its memory now; close frees it */
+    cap_logf("observer node \"%s\" started on domain %u (%s:%u)", cfg->name, cfg->domain, cfg->group, cfg->port);
     return 1;
 }
 
 int cap_poll(Capture *cap){
-    int guard = 0;
     if (!cap->rt) return 0;
-    while (dart_discovery_poll((DartDiscovery *)cap->rt, 0) > 0 && ++guard < 256){ }
-    return guard;
+    return dart_node_poll((DartNode *)cap->rt, 0);   /* one tick: drains RX, pumps discovery + timers */
 }
 
 void cap_stop(Capture *cap){
-    if (cap->rt) dart_discovery_close((DartDiscovery *)cap->rt, 1);   /* frees discovery's own memory */
+    if (cap->rt) dart_node_close((DartNode *)cap->rt, 1);   /* sends a BYE, frees the node's memory */
     cap->rt = NULL; cap->mem = NULL;
 }
 
+/* copy one peer's facts out of the node's zero-copy view into its observer record:
+   discovery-level name/addr + liveness, then the announce overlay decoded via the node's
+   helpers (so we never touch dart_meta_*). The interest list is walked in full; we keep up
+   to CAP_MAX_TOPICS of each (the observer's own storage bound, not an API limit). */
+static void cap_peer_refresh(CapPeer *p, const DartDiscoveryPeer *dp){
+    DartInterestIter it; DartTopic t;
+    uint16_t frag = dart_node_peer_frag(dp);
+    p->seen_frame = 1;
+    p->state      = (dp->liveness == DART_PEER_DROPPED) ? CAP_DROPPED : CAP_ACTIVE;
+    p->have_meta  = (dp->meta && dp->meta_len) ? 1 : 0;
+    p->frag       = frag;
+    p->meta_len   = dp->meta_len;
+    memcpy(p->ip, dp->addr.ip, 16);
+    p->ip_len = dp->addr.ip_len;
+    p->port   = dp->addr.port;
+    snprintf(p->name, sizeof p->name, "%s", dp->name ? dp->name : "");
+
+    p->n_pub = p->n_sub = 0;
+    memset(&it, 0, sizeof it);
+    while (dart_node_peer_interest_next(dp, &it, &t)){
+        CapTopic *e; int *cnt;
+        uint8_t c = t.name_len > DART_TOPIC_NAME_MAX ? (uint8_t)DART_TOPIC_NAME_MAX : t.name_len;
+        if (t.is_pub){ if (p->n_pub >= CAP_MAX_TOPICS) continue; e = &p->pub[p->n_pub]; cnt = &p->n_pub; }
+        else         { if (p->n_sub >= CAP_MAX_TOPICS) continue; e = &p->sub[p->n_sub]; cnt = &p->n_sub; }
+        memcpy(e->name, t.name, c); e->name[c] = '\0';
+        e->alias = t.alias; e->reliable = t.reliable;
+        (*cnt)++;
+    }
+}
+
 void cap_snapshot(const Capture *cap, CapSnapshot *out){
+    DartNode *node = (DartNode *)cap->rt;
     unsigned long long now = cap_now_ms();
+    const DartDiscoveryPeer *peers;
+    uint16_t slot, n_peers = 0;
     int i, k;
-    (void)cap;   /* the peer table is file-static; cap is kept for API symmetry */
 
     memset(out, 0, sizeof *out);
     out->domain    = cap_cfg.domain;
@@ -352,21 +297,33 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         out->n_log = want;
     }
 
+    /* pull the node's zero-copy peer view (it decodes the overlay for us) and refresh each
+       observer record; peers no longer in the node's table fold to GONE, kept de-emphasized. */
+    for (i = 0; i < CAP_MAX_PEERS; i++) cap_peers[i].seen_frame = 0;
+    peers = dart_node_peers(node, &n_peers);
+    for (slot = 0; slot < n_peers; slot++)
+        cap_peer_refresh(cap_peer_get(peers[slot].id), &peers[slot]);
+    for (i = 0; i < CAP_MAX_PEERS; i++){
+        CapPeer *p = &cap_peers[i];
+        if (p->used && !p->seen_frame && p->state != CAP_GONE){   /* evicted from the node table */
+            p->state = CAP_GONE;
+            if (!p->down_ms) p->down_ms = now;
+        }
+    }
+
     for (i = 0; i < CAP_MAX_PEERS && out->n_nodes < CAP_SNAP_NODES; i++){
         const CapPeer *p = &cap_peers[i];
         CapNode *n;
         if (!p->used) continue;
         n = &out->nodes[out->n_nodes++];
-        n->id           = p->local_id;
-        n->state        = (CapState)p->state;   /* CAP_ACTIVE/DROPPED/GONE align with CapState */
-        n->have_meta    = p->have_meta;
-        n->meta_version = p->meta_version;
-        n->frag         = p->frag;
-        n->meta_len     = p->raw_len;
-        n->port         = p->port;
-        n->updates      = p->updates;
-        n->observed_s   = (double)(now - p->first_seen_ms) / 1000.0;
-        n->age_s        = (double)(now - p->last_change_ms) / 1000.0;
+        n->state      = (CapState)p->state;   /* CAP_ACTIVE/DROPPED/GONE align with CapState */
+        n->have_meta  = p->have_meta;
+        n->frag       = p->frag;
+        n->meta_len   = p->meta_len;
+        n->port       = p->port;
+        n->updates    = p->updates;
+        n->observed_s = (double)(now - p->first_seen_ms) / 1000.0;
+        n->age_s      = p->last_change_ms ? (double)(now - p->last_change_ms) / 1000.0 : -1.0;
         snprintf(n->name, sizeof n->name, "%s", p->name);
         cap_fmt_ip(n->ip, sizeof n->ip, p->ip, p->ip_len);
 

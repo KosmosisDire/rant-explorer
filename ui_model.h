@@ -22,20 +22,22 @@ typedef struct {
     char os[32];
 } Machine;
 
-/* per-node discovery + transport internals, shown in Nodes -> Discovery & transport */
+/* per-node info for the Nodes detail pane, grouped by origin: what discovery itself
+   carries, what the announce-metadata overlay carries (the node decodes it for us), and
+   node-internal facts a peer never advertises (placeholders, shown as an em dash). */
 typedef struct {
-    char   guid[24];
-    char   proto[24];
+    /* discovery-level */
     double announce_period_s;
     double last_announce_age_s;
-    double heartbeat_period_s;
     double lease_s;
-    int    frag_size_bytes;
-    int    max_msg_bytes;
-    int    disc_wire_max;
-    char   transport[24];
     char   unicast[48];
-    char   multicast[48];
+    char   discovery_group[48];
+    /* announce metadata (the transport overlay, decoded by our node) */
+    int    frag_size_bytes;
+    int    blob_bytes;        /* observed overlay size */
+    char   transport[24];
+    /* node-internal placeholders (never on the wire) */
+    int    max_msg_bytes;
     long   announces_sent;
     long   frags_tx;
     long   acknacks_rx;

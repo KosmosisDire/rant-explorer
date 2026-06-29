@@ -15,14 +15,15 @@ if(NOT TARGET dart)
     set(CMAKE_CONFIGURATION_TYPES "Release;Debug;RelWithDebInfo;MinSizeRel"
         CACHE STRING "Build configs (Release first = the default)" FORCE)
   endif()
-  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-  foreach(_cfg ${CMAKE_CONFIGURATION_TYPES})   # optimized configs to build root, Debug keeps Debug/
+  get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+  # land binaries in the repo root, same as the root build (CLAUDE.md); Debug keeps Debug/
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${REPO_ROOT}")
+  foreach(_cfg ${CMAKE_CONFIGURATION_TYPES})
     string(TOUPPER "${_cfg}" _CFG)
     if(NOT _cfg STREQUAL "Debug")
-      set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${_CFG} "${CMAKE_BINARY_DIR}")
+      set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${_CFG} "${REPO_ROOT}")
     endif()
   endforeach()
-  get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
   add_library(dart INTERFACE)
   target_include_directories(dart INTERFACE "${REPO_ROOT}/dist")
 endif()
@@ -91,7 +92,22 @@ else()
   target_link_libraries(dart_explorer PRIVATE m)
 endif()
 
+# demo_scene: a sample-mesh node (plain DART, no SDL) that run_demo.ps1 launches to
+# populate the explorer. Built here so `cmake --build` keeps it in lockstep with dist/:
+# a stale copy speaks an older announce-blob wire and can't exchange metadata with a
+# freshly built explorer (DART keeps no wire back-compat), which looks like "nodes found
+# but never finish joining".
+add_executable(demo_scene demo_scene.c)
+target_include_directories(demo_scene PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(demo_scene PRIVATE dart)
+if(WIN32)
+  target_link_libraries(demo_scene PRIVATE ws2_32 bcrypt winmm)
+elseif(NOT APPLE)
+  target_link_libraries(demo_scene PRIVATE rt)   # shm_open (the SHM fast path is on by default)
+endif()
+
 # regenerate dist/ before building when the root build owns that target
 if(TARGET dist)
   add_dependencies(dart_explorer dist)
+  add_dependencies(demo_scene dist)
 endif()

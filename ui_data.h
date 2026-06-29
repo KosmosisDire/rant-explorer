@@ -1,13 +1,13 @@
 /* Build the UI Dataset from a live net_capture snapshot. Owns the static backing
    arrays the Dataset points into and is rebuilt every frame (cheap: <= 64 nodes).
 
-   What a passive discovery observer CAN see becomes real data: node name, state,
-   advertised unicast locator + UDP fragment size, announce-blob version, the
-   pub/sub interest list (with per-endpoint reliability), and how long we've
-   observed each peer. What never rides discovery (CPU, memory, msg counts, real
-   uptime, the node's own GUID, its transport AckNack counters, the discovery
-   table IT holds) is left as a placeholder, marked < 0 / empty here and drawn as
-   a dim em dash at the draw site.
+   The snapshot already separates origins (net_capture sources peers through a real
+   node). Discovery-level facts become real data: node name, state, advertised unicast
+   locator, and how long we've observed each peer. Announce-metadata facts (the overlay
+   the node decoded) are also real: UDP fragment size + the pub/sub interest list (with
+   per-endpoint reliability). What never rides the wire (CPU, memory, msg counts, real
+   uptime, a peer's transport AckNack counters, the peer table IT holds) is left as a
+   placeholder, marked < 0 / empty here and drawn as a dim em dash at the draw site.
 
    Requires ui_model.h (display structs) and net_capture.h (CapSnapshot). */
 #ifndef UI_DATA_H
@@ -86,21 +86,22 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         n->observed_s = cn->observed_s;      /* real (observer view) */
         n->updates    = cn->updates;         /* real */
 
-        /* discovery + transport spec: real where the announce carries it */
-        snprintf(n->disc.guid,  sizeof n->disc.guid,  "local #%u", cn->id);  /* real GUID not exposed */
-        snprintf(n->disc.proto, sizeof n->disc.proto, "DART meta v%d", cn->meta_version);
+        /* discovery-level: real where the announce header / protocol defaults carry it */
         n->disc.announce_period_s   = 1.0;   /* protocol default (DART_DISCOVERY announce interval) */
         n->disc.last_announce_age_s = cn->age_s;     /* last announce CHANGE we saw */
-        n->disc.heartbeat_period_s  = -1.0;  /* placeholder: transport HB not visible to discovery */
         n->disc.lease_s             = 3.5;   /* protocol default (peer_timeout = 3.5x announce) */
+        snprintf(n->disc.unicast,         sizeof n->disc.unicast,         "%s:%u", cn->ip, cn->port);
+        snprintf(n->disc.discovery_group, sizeof n->disc.discovery_group, "%s:%u", snap->group, snap->disc_port);
+
+        /* announce metadata: real, decoded by our node from the peer's overlay */
         n->disc.frag_size_bytes     = cn->frag;       /* real (advertised) */
-        n->disc.max_msg_bytes       = -1;    /* placeholder */
-        n->disc.disc_wire_max       = cn->meta_len;   /* real: observed announce blob size */
+        n->disc.blob_bytes          = cn->meta_len;   /* real: observed overlay size */
         snprintf(n->disc.transport, sizeof n->disc.transport, "UDP");
-        snprintf(n->disc.unicast,   sizeof n->disc.unicast,   "%s:%u", cn->ip, cn->port);
-        snprintf(n->disc.multicast, sizeof n->disc.multicast, "%s:%u", snap->group, snap->disc_port);
-        n->disc.announces_sent = -1; n->disc.frags_tx = -1;   /* placeholders: TX counters */
-        n->disc.acknacks_rx    = -1; n->disc.nacks_rx = -1;   /* are node-internal */
+
+        /* node-internal: never on the wire */
+        n->disc.max_msg_bytes  = -1;
+        n->disc.announces_sent = -1; n->disc.frags_tx = -1;
+        n->disc.acknacks_rx    = -1; n->disc.nacks_rx = -1;
 
         for (k = 0; k < cn->n_pub && n->n_pubs < UI_MAX_ENDPOINTS; k++){
             int ti = uid_topic_for(cn->pub[k].name, &n_top);

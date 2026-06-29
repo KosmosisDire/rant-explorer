@@ -36,9 +36,21 @@ if ($Stop) {
     return
 }
 
-if ($Build -or -not (Test-Path $exe)) {
+# Rebuild if forced, missing, OR stale: a demo_scene built against an older dist/ speaks
+# the old announce-blob wire and can't exchange metadata with a current explorer (DART
+# keeps no wire back-compat) -- it shows up as "nodes found but never finish joining".
+# (cmake also builds demo_scene now; this gcc path keeps the demo self-contained.)
+$dist  = Join-Path $repo "dist\dart.h"
+$stale = $false
+if (Test-Path $exe) {
+    $exeTime = (Get-Item $exe).LastWriteTime
+    foreach ($dep in @($src, $dist)) {
+        if ((Test-Path $dep) -and (Get-Item $dep).LastWriteTime -gt $exeTime) { $stale = $true; break }
+    }
+}
+if ($Build -or -not (Test-Path $exe) -or $stale) {
     if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
-        throw "demo_scene.exe not found and gcc (MinGW) is not on PATH to build it"
+        throw "demo_scene.exe missing or stale and gcc (MinGW) is not on PATH to (re)build it"
     }
     Write-Host "building demo_scene.exe ..."
     & gcc -std=c99 -Wall -I"$repo\dist" "$src" -o "$exe" -lws2_32 -lbcrypt -lwinmm

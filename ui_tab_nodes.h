@@ -1,9 +1,11 @@
 /* Nodes tab: a node list on the left (grouped by machine = advertised IP) and a
    scrolling detail pane. Both render from the live Dataset (fed by net_capture via
-   ui_data). Values a passive discovery observer cannot know (CPU, memory, msg
-   counts, real uptime, the node's own GUID and AckNack counters, the discovery
-   table it holds) are drawn as a dim em dash placeholder; everything else is real.
-   Requires ui_widgets.h, ui_model.h, ui_app.h. */
+   ui_data). The detail pane groups a peer's info by where it comes from: DISCOVERY
+   (what the discovery protocol carries: locator, cadence, observer metrics), ANNOUNCE
+   METADATA (the transport overlay our node decoded: fragment size + pub/sub interest),
+   and NOT OBSERVABLE (a peer's own runtime internals -- CPU, memory, msg counts, real
+   uptime, its AckNack counters, the peer table it holds -- which never ride the wire,
+   drawn as a dim em dash placeholder). Requires ui_widgets.h, ui_model.h, ui_app.h. */
 #ifndef UI_TAB_NODES_H
 #define UI_TAB_NODES_H
 
@@ -147,6 +149,13 @@ static void node_kv_row(const Palette *P,
         node_kv_cell(P, l2, v2, ph2, al2);
     }
 }
+/* a single full-width kv row (no divider) for an odd trailing entry */
+static void node_kv_single(const Palette *P, Clay_String label, Clay_String value, int placeholder, int alert){
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(34)) } },
+           .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
+        node_kv_cell(P, label, value, placeholder, alert);
+    }
+}
 
 /* one Publishes/Subscribes entry: reliability dot + topic path + qos word */
 static void node_endpoint_row(const Palette *P, Clay_String path, int reliable){
@@ -215,8 +224,44 @@ static void nodes_detail(AppState *app, const Palette *P){
                 }
             }
 
-            /* ---- runtime stat grid (node-internal: all placeholders here) ---- */
-            ui_section_label(P, CLAY_STRING("RUNTIME"));
+            /* ========= DISCOVERY: what the discovery protocol itself carries ========= */
+            ui_section_label(P, CLAY_STRING("DISCOVERY"));
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
+                   .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
+                   .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+                node_kv_row(P, CLAY_STRING("Unicast locator"), ui_str(nd->disc.unicast),         0, 0,
+                               CLAY_STRING("Discovery group"), ui_str(nd->disc.discovery_group), 0, 0);
+                node_kv_row(P, CLAY_STRING("Announce"),      ui_fmt("every %.1f s", nd->disc.announce_period_s), 0, 0,
+                               CLAY_STRING("Last announce"), nf_age(nd->disc.last_announce_age_s), 0, 0);
+                node_kv_row(P, CLAY_STRING("Liveliness lease"), ui_fmt("%.1f s", nd->disc.lease_s), 0, 0,
+                               CLAY_STRING("Observed for"),     nf_dur(nd->observed_s),             0, 0);
+                node_kv_single(P, CLAY_STRING("Announce updates"), nf_grp((long)nd->updates), 0, 0);
+            }
+
+            /* ===== ANNOUNCE METADATA: the transport overlay, decoded by our node ===== */
+            ui_section_label(P, CLAY_STRING("ANNOUNCE METADATA"));
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
+                   .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
+                   .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+                node_kv_row(P, CLAY_STRING("Fragment size"), nf_bytes(nd->disc.frag_size_bytes), 0, 0,
+                               CLAY_STRING("Announce blob"), nf_bytes(nd->disc.blob_bytes),      0, 0);
+                node_kv_single(P, CLAY_STRING("Transport"), ui_str(nd->disc.transport), 0, 0);
+            }
+            ui_section_label(P, ui_fmt("PUBLISHES  %d", nd->n_pubs));
+            node_endpoint_list(P, D, nd->pubs, nd->pub_rel, nd->n_pubs);
+            ui_section_label(P, ui_fmt("SUBSCRIBES  %d", nd->n_subs));
+            node_endpoint_list(P, D, nd->subs, nd->sub_rel, nd->n_subs);
+
+            /* ===== NOT OBSERVABLE: a peer's own runtime internals, never on the wire ===== */
+            ui_section_label(P, CLAY_STRING("NOT OBSERVABLE"));
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(12)) },
+                   .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
+                   .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+                CLAY_TEXT(CLAY_STRING("A peer's own runtime internals. Neither discovery nor the announce "
+                                      "metadata carries them, and they include the peer table the node "
+                                      "holds itself, so they show as a placeholder."),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint }));
+            }
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(10) } }) {
                 node_stat(P, CLAY_STRING("Uptime"),    nf_dur(nd->uptime_s),        1);
                 node_stat(P, CLAY_STRING("Heartbeat"), nf_age(nd->heartbeat_age_s), 1);
@@ -229,47 +274,16 @@ static void nodes_detail(AppState *app, const Palette *P){
                 node_stat_gap();
                 node_stat_gap();
             }
-
-            /* ---- discovery & transport spec (real where the announce carries it) ---- */
-            ui_section_label(P, CLAY_STRING("DISCOVERY & TRANSPORT"));
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
                    .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
                    .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-                node_kv_row(P, CLAY_STRING("Node GUID"),    ui_str(nd->disc.guid),  0, 0,
-                               CLAY_STRING("Protocol"),     ui_str(nd->disc.proto), 0, 0);
-                node_kv_row(P, CLAY_STRING("Announce"),     ui_fmt("every %.1f s", nd->disc.announce_period_s), 0, 0,
-                               CLAY_STRING("Last announce"),nf_age(nd->disc.last_announce_age_s), 0, 0);
-                node_kv_row(P, CLAY_STRING("Heartbeat"),    ui_str(ND_DASH), 1, 0,
-                               CLAY_STRING("Liveliness lease"), ui_fmt("%.1f s", nd->disc.lease_s), 0, 0);
-                node_kv_row(P, CLAY_STRING("Fragment size"),nf_bytes(nd->disc.frag_size_bytes), 0, 0,
-                               CLAY_STRING("Max message"),  ui_str(ND_DASH), 1, 0);
-                node_kv_row(P, CLAY_STRING("Announce blob"),nf_bytes(nd->disc.disc_wire_max), 0, 0,
-                               CLAY_STRING("Transport"),    ui_str(nd->disc.transport), 0, 0);
-                node_kv_row(P, CLAY_STRING("Unicast locator"),  ui_str(nd->disc.unicast),   0, 0,
-                               CLAY_STRING("Multicast locator"),ui_str(nd->disc.multicast), 0, 0);
-                node_kv_row(P, CLAY_STRING("Announces sent"),nf_grp(nd->disc.announces_sent), 1, 0,
-                               CLAY_STRING("Fragments TX"), nf_grp(nd->disc.frags_tx), 1, 0);
-                node_kv_row(P, CLAY_STRING("AckNacks RX"),  nf_grp(nd->disc.acknacks_rx), 1, 0,
-                               CLAY_STRING("NACKs (retransmit)"), nf_grp(nd->disc.nacks_rx), 1, nd->disc.nacks_rx > 100);
-                node_kv_row(P, CLAY_STRING("Observed for"), nf_dur(nd->observed_s), 0, 0,
-                               CLAY_STRING("Announce updates"), nf_grp((long)nd->updates), 0, 0);
+                node_kv_row(P, CLAY_STRING("Max message"),  ui_str(ND_DASH), 1, 0,
+                               CLAY_STRING("Announces sent"), nf_grp(nd->disc.announces_sent), 1, 0);
+                node_kv_row(P, CLAY_STRING("Fragments TX"), nf_grp(nd->disc.frags_tx), 1, 0,
+                               CLAY_STRING("AckNacks RX"),  nf_grp(nd->disc.acknacks_rx), 1, 0);
+                node_kv_row(P, CLAY_STRING("NACKs (retransmit)"), nf_grp(nd->disc.nacks_rx), 1, nd->disc.nacks_rx > 100,
+                               CLAY_STRING("Known peers"), ui_str(ND_DASH), 1, 0);
             }
-
-            /* ---- known peers: the discovery table the NODE holds (not observable) ---- */
-            ui_section_label(P, CLAY_STRING("KNOWN PEERS"));
-            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(12)) },
-                   .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
-                   .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-                CLAY_TEXT(CLAY_STRING("Not observable: this is the peer table the node holds internally, "
-                                      "which discovery does not advertise."),
-                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint }));
-            }
-
-            /* ---- pub/sub interest (real, from the announce) ---- */
-            ui_section_label(P, ui_fmt("PUBLISHES  %d", nd->n_pubs));
-            node_endpoint_list(P, D, nd->pubs, nd->pub_rel, nd->n_pubs);
-            ui_section_label(P, ui_fmt("SUBSCRIBES  %d", nd->n_subs));
-            node_endpoint_list(P, D, nd->subs, nd->sub_rel, nd->n_subs);
         }
       }
     }

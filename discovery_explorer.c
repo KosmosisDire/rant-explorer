@@ -136,6 +136,10 @@ int main(int argc, char **argv){
         fprintf(stderr, "running without live discovery (socket/interface issue)\n");
 
     last_ticks = SDL_GetTicks();
+    /* optional readout (set DART_UI_FPS=1): the node poll is once per frame, so this fps IS
+       the discovery poll rate; render-ms is the per-frame layout+text work, vsync excluded. */
+    int      fps_show = getenv("DART_UI_FPS") != NULL;
+    uint64_t fps_t0 = last_ticks; int fps_frames = 0; double fps_render_ms = 0.0;
     for (;;){
         SDL_Event ev;
         float wheel_x = 0.0f, wheel_y = 0.0f;
@@ -199,6 +203,7 @@ int main(int argc, char **argv){
             app.sel_topic = g_data.n_topics ? g_data.n_topics - 1 : 0;
 
         ui_strpool_reset();
+        uint64_t r0 = SDL_GetPerformanceCounter();
         Clay_BeginLayout();
         ui_frame(&app);
         Clay_RenderCommandArray cmds = Clay_EndLayout();
@@ -207,7 +212,18 @@ int main(int argc, char **argv){
         SDL_SetRenderDrawColor(ren, (Uint8)bg.r, (Uint8)bg.g, (Uint8)bg.b, 255);
         SDL_RenderClear(ren);
         ui_render(&rdata, &cmds, bg);
+        uint64_t r1 = SDL_GetPerformanceCounter();   /* before present: render WORK, not vsync wait */
         SDL_RenderPresent(ren);
+
+        if (fps_show){
+            fps_frames++;
+            fps_render_ms += (double)(r1 - r0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+            if (now - fps_t0 >= 1000){
+                printf("[fps] %d fps  (render %.1f ms/frame work, tab=%d, nodes=%d)\n",
+                       fps_frames, fps_render_ms / fps_frames, app.tab, g_data.n_nodes);
+                fps_t0 = now; fps_frames = 0; fps_render_ms = 0.0;
+            }
+        }
     }
 
     cap_stop(&cap);

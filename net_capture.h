@@ -31,14 +31,18 @@ int  cap_poll(Capture *cap);                              /* drain datagrams + p
 void cap_stop(Capture *cap);
 
 /* ------------------------------------------------------------------ snapshot
-   A flat, plain-types view of the live discovery table, copied out for the UI
-   (the UI TU has no DART/Win32 types). This is EVERYTHING a passive discovery
-   observer can know about a peer: its name, advertised unicast locator + UDP
-   fragment size, announce-blob version, and its pub/sub interest list (with each
-   entry's offered/requested reliability). Node-internal facts (CPU, memory, msg
-   counts, the node's own GUID, its transport AckNack counters, the discovery
-   table IT holds) are NOT here: they never ride discovery, so the UI placeholders
-   them. cap_snapshot() rebuilds the view each frame. */
+   A flat, plain-types view of the live peer table, copied out for the UI (the UI
+   TU has no DART/Win32 types). The explorer runs a real DART NODE, so each peer is
+   sourced through the node's peer API (dart_node_peers): the node decodes the
+   announce-metadata overlay for us, so net_capture never parses it itself.
+
+   Two origins are kept distinct on purpose. Discovery-level facts: the peer's name,
+   advertised unicast locator, liveness, and how long we've observed it. Announce-
+   metadata facts (the transport overlay the node hands back decoded): its UDP
+   fragment size and pub/sub interest list, with each entry's offered/requested
+   reliability. Node-internal facts (CPU, memory, msg counts, a peer's transport
+   AckNack counters, the peer table IT holds) are NOT here: they never ride the wire,
+   so the UI placeholders them. cap_snapshot() rebuilds the view each frame. */
 
 #define CAP_NAME_CAP   33    /* DART_NODE_NAME_MAX (32) + NUL  */
 #define CAP_TOPIC_CAP  65    /* DART_TOPIC_NAME_MAX (64) + NUL */
@@ -56,20 +60,18 @@ typedef struct {
 } CapEndpoint;
 
 typedef struct {
-    uint32_t id;             /* discovery local peer id (a local handle, NOT a GUID) */
     CapState state;
-    int      have_meta;
-    int      meta_version;   /* announce-blob version (6 or 7) */
+    int      have_meta;      /* 1 = the announce overlay was decoded (frag + interest below) */
     char     name[CAP_NAME_CAP];
-    char     ip[40];         /* advertised unicast IP, dotted */
-    uint16_t port;           /* advertised unicast data port */
-    uint16_t frag;           /* advertised UDP fragment size */
-    uint16_t meta_len;       /* size of the announce blob we received */
+    char     ip[40];         /* advertised unicast IP, dotted (discovery) */
+    uint16_t port;           /* advertised unicast data port (discovery) */
+    uint16_t frag;           /* advertised UDP fragment size (announce metadata) */
+    uint16_t meta_len;       /* size of the announce overlay we received (announce metadata) */
     int      n_pub; CapEndpoint pub[CAP_MAX_EP];
     int      n_sub; CapEndpoint sub[CAP_MAX_EP];
-    unsigned updates;        /* times its announce changed (addr/interest) */
+    unsigned updates;        /* times its announce metadata changed (observer view) */
     double   observed_s;     /* seconds since first observed (observer view) */
-    double   age_s;          /* seconds since its last announce change */
+    double   age_s;          /* seconds since its last announce change (observer view) */
 } CapNode;
 
 typedef struct {

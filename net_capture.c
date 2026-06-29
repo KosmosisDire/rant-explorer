@@ -29,7 +29,8 @@
 
 #define CAP_MAX_PEERS         64
 #define CAP_MAX_TOPICS        32
-#define CAP_OBSERVER_CHANNELS 32   /* our (empty) channel reserve: sizes the incoming overlay buffer */
+#define CAP_OBSERVER_CHANNELS 64   /* channel reserve: sizes the incoming overlay buffer AND bounds how
+                                      many distinct topics we can subscribe to over a session */
 #define CAP_LOG_LINES         400
 /* CAP_LOG_LINE comes from net_capture.h (shared with the snapshot) */
 
@@ -75,6 +76,48 @@ static char    cap_log[CAP_LOG_LINES][CAP_LOG_LINE];
 static int     cap_log_head, cap_log_count;
 static unsigned long long cap_start_ms;
 static Config  cap_cfg;          /* echoed into the snapshot for display */
+
+/* one observer-side subscription: a real DART subscriber channel plus a ring of the
+   messages it has received. Keyed by the channel's local index (== DartMsg.channel_id),
+   so the message and event callbacks can find it without a name lookup. Created lazily
+   by cap_subscribe and reused by name; unsubscribing flips the channel inactive but
+   keeps the record (and its history) so re-subscribing resumes the same feed. */
+typedef struct {
+    double   t_s;
+    uint32_t len;
+    uint16_t preview_len;
+    char     sender[DART_NODE_NAME_MAX + 1];
+    char     preview[CAP_MSG_PREVIEW];
+} CapMsgRec;
+
+typedef struct {
+    int          used;
+    int          active;                 /* role is SUB_ONLY (vs INACTIVE after unsubscribe) */
+    int          error;                  /* a QoS-incompatible / oversize event hit this channel */
+    DartChannel *ch;
+    uint16_t     index;                  /* dart_channel_index(ch) */
+    int          reliable;               /* requested reliability */
+    char         name[DART_TOPIC_NAME_MAX + 1];
+    unsigned long long n_msgs;
+    unsigned long long n_drops;
+    CapMsgRec    ring[CAP_FEED_MAX];
+    int          head, count;            /* ring write cursor + fill */
+} CapSub;
+
+static CapSub cap_subs[CAP_OBSERVER_CHANNELS];
+
+static CapSub *cap_sub_find(const char *name){
+    int i;
+    for (i = 0; i < CAP_OBSERVER_CHANNELS; i++)
+        if (cap_subs[i].used && !strcmp(cap_subs[i].name, name)) return &cap_subs[i];
+    return NULL;
+}
+static CapSub *cap_sub_by_index(uint16_t index){
+    int i;
+    for (i = 0; i < CAP_OBSERVER_CHANNELS; i++)
+        if (cap_subs[i].used && cap_subs[i].index == index) return &cap_subs[i];
+    return NULL;
+}
 
 static unsigned long long cap_now_ms(void){
 #ifdef _WIN32
@@ -134,6 +177,25 @@ static CapPeer *cap_peer_get(uint32_t id){
     return p;
 }
 
+/* the node's message sink: append a delivered message to its subscription ring. Single
+   threaded with cap_poll, so no locking. We keep only a short preview of the payload. */
+static void cap_on_message(const DartMsg *msg){
+    CapSub *s = cap_sub_by_index(msg->channel_id);
+    CapMsgRec *m;
+    uint16_t c;
+    if (!s) return;
+    m = &s->ring[s->head];
+    m->t_s = (double)(cap_now_ms() - cap_start_ms) / 1000.0;
+    m->len = (uint32_t)msg->len;
+    c = msg->len < CAP_MSG_PREVIEW ? (uint16_t)msg->len : CAP_MSG_PREVIEW;
+    if (c) memcpy(m->preview, msg->data, c);
+    m->preview_len = c;
+    snprintf(m->sender, sizeof m->sender, "%s", msg->sender_name);
+    s->head = (s->head + 1) % CAP_FEED_MAX;
+    if (s->count < CAP_FEED_MAX) s->count++;
+    s->n_msgs++;
+}
+
 /* the node's app event sink: maintain the observer metrics + log. We never call back into
    dart_* here (the snapshot reads the facts); the cap_peers table is file-static. */
 static void cap_on_event(const DartEvent *ev){
@@ -165,6 +227,24 @@ static void cap_on_event(const DartEvent *ev){
         else
             cap_logf("REFUSED  (peer table full of active peers)");
         break;
+    case DART_MSG_LOST: {                            /* reliable subscriber skipped past a gap */
+        CapSub *s = cap_sub_by_index(ev->channel);
+        if (s) s->n_drops += ev->lost_count;
+        cap_logf("        LOST  ch=%u peer=%u first=%llu count=%llu", ev->channel, ev->peer,
+                 (unsigned long long)ev->lost_first, (unsigned long long)ev->lost_count);
+        break; }
+    case DART_QOS_INCOMPATIBLE: {                    /* our reliable sub refused a best-effort pub */
+        CapSub *s = cap_sub_by_index(ev->channel);
+        if (s) s->error = 1;
+        cap_logf("        QOS_INCOMPATIBLE  ch=%u peer=%u (%s)", ev->channel, ev->peer,
+                 ev->detail ? ev->detail : "");
+        break; }
+    case DART_MSG_TOO_BIG: {
+        CapSub *s = cap_sub_by_index(ev->channel);
+        if (s) s->error = 1;
+        cap_logf("        MSG_TOO_BIG  ch=%u peer=%u bytes=%llu", ev->channel, ev->peer,
+                 (unsigned long long)ev->too_big_bytes);
+        break; }
     default: break;
     }
 }
@@ -213,11 +293,11 @@ int cap_start(Capture *cap, const Config *cfg){
     cap_start_ms = cap_now_ms();
     cap_cfg = *cfg;          /* group/name point into argv: stable for the run */
 
-    /* a real node, owning its memory via a dynamic allocator. It creates no channels (the
-       observer publishes/subscribes nothing); CAP_OBSERVER_CHANNELS only sizes discovery's
-       per-peer incoming overlay buffer, so a peer advertising many topics is held in full. */
+    /* a real node, owning its memory via a dynamic allocator. It starts with no channels but
+       subscribes to topics on demand (cap_subscribe); CAP_OBSERVER_CHANNELS bounds those and
+       sizes discovery's per-peer overlay buffer, so a peer advertising many topics is held in full. */
     mem  = dart_allocator_dynamic(1 << 20);
-    node = dart_node_open(&mem, cfg->name, NULL, cap_on_event, &(DartNodeOpts){
+    node = dart_node_open(&mem, cfg->name, cap_on_message, cap_on_event, &(DartNodeOpts){
         .domain       = cfg->domain,
         .max_channels = CAP_OBSERVER_CHANNELS,
         .net          = { .discovery_group     = cfg->group,
@@ -243,6 +323,45 @@ int cap_poll(Capture *cap){
 void cap_stop(Capture *cap){
     if (cap->rt) dart_node_close((DartNode *)cap->rt, 1);   /* sends a BYE, frees the node's memory */
     cap->rt = NULL; cap->mem = NULL;
+}
+
+int cap_subscribe(Capture *cap, const char *topic, int reliable){
+    DartNode *node = cap ? (DartNode *)cap->rt : NULL;
+    CapSub *s;
+    if (!node || !topic || !*topic) return 0;
+    s = cap_sub_find(topic);
+    if (!s){                                   /* first subscribe to this topic: a fresh channel */
+        DartChannel *ch; int i, slot = -1;
+        for (i = 0; i < CAP_OBSERVER_CHANNELS; i++) if (!cap_subs[i].used){ slot = i; break; }
+        if (slot < 0){ cap_logf("SUBSCRIBE %s refused (channel reserve full)", topic); return 0; }
+        /* multicast: join the topic's group so multicast-only publishers reach us; a join over
+           the OS membership cap is non-fatal (we still hear unicast publishers). */
+        ch = dart_node_create_channel(node, topic, DART_SUB_ONLY,
+                 &(DartChannelOpts){ .qos = { .reliability = reliable ? DART_RELIABLE : DART_BEST_EFFORT,
+                                              .catch_up = 1 }, .multicast = 1 });
+        if (!ch){ cap_logf("SUBSCRIBE %s failed (create_channel)", topic); return 0; }
+        s = &cap_subs[slot];
+        memset(s, 0, sizeof *s);
+        s->used = 1; s->ch = ch; s->index = dart_channel_index(ch);
+        snprintf(s->name, sizeof s->name, "%s", topic);
+    } else {                                   /* reactivate a previously created channel */
+        dart_channel_set_role(s->ch, DART_SUB_ONLY);
+    }
+    s->reliable = reliable ? 1 : 0;
+    s->active   = 1;
+    s->error    = 0;          /* clear stale errors on a fresh subscribe */
+    s->n_drops  = 0;
+    cap_logf("SUBSCRIBE %s (%s)", topic, reliable ? "reliable" : "best-effort");
+    return 1;
+}
+
+int cap_unsubscribe(Capture *cap, const char *topic){
+    CapSub *s = (cap && cap->rt) ? cap_sub_find(topic) : NULL;
+    if (!s) return 0;
+    dart_channel_set_role(s->ch, DART_INACTIVE);   /* stop advertising interest; keep the history */
+    s->active = 0;
+    cap_logf("UNSUBSCRIBE %s", topic);
+    return 1;
 }
 
 /* copy one peer's facts out of the node's zero-copy view into its observer record:
@@ -297,6 +416,19 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         out->n_log = want;
     }
 
+    /* subscription state, so the UI can colour each topic's status light */
+    for (i = 0; i < CAP_OBSERVER_CHANNELS && out->n_subs < CAP_SNAP_SUBS; i++){
+        const CapSub *s = &cap_subs[i];
+        CapSubInfo *si;
+        if (!s->used) continue;
+        si = &out->subs[out->n_subs++];
+        snprintf(si->name, sizeof si->name, "%s", s->name);
+        si->active  = s->active;
+        si->error   = (s->error || s->n_drops > 0) ? 1 : 0;
+        si->n_msgs  = (uint32_t)s->n_msgs;
+        si->n_drops = (uint32_t)s->n_drops;
+    }
+
     /* pull the node's zero-copy peer view (it decodes the overlay for us) and refresh each
        observer record; peers no longer in the node's table fold to GONE, kept de-emphasized. */
     for (i = 0; i < CAP_MAX_PEERS; i++) cap_peers[i].seen_frame = 0;
@@ -340,4 +472,29 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         }
         n->n_sub = k;
     }
+}
+
+int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int max,
+                   int *subscribed, int *error, uint32_t *n_msgs, uint32_t *n_drops){
+    CapSub *s = (cap && cap->rt && topic) ? cap_sub_find(topic) : NULL;
+    int i, n = 0, start;
+    if (subscribed) *subscribed = s ? s->active : 0;
+    if (error)      *error      = s ? ((s->error || s->n_drops > 0) ? 1 : 0) : 0;
+    if (n_msgs)     *n_msgs     = s ? (uint32_t)s->n_msgs : 0;
+    if (n_drops)    *n_drops    = s ? (uint32_t)s->n_drops : 0;
+    if (!s || !out || max <= 0) return 0;
+
+    /* walk the ring oldest first; with a full ring the oldest is at head */
+    n     = s->count < max ? s->count : max;
+    start = (s->head - n) % CAP_FEED_MAX; if (start < 0) start += CAP_FEED_MAX;
+    for (i = 0; i < n; i++){
+        const CapMsgRec *m = &s->ring[(start + i) % CAP_FEED_MAX];
+        CapFeedItem *o = &out[i];
+        o->t_s         = m->t_s;
+        o->len         = m->len;
+        o->preview_len = m->preview_len;
+        snprintf(o->sender, sizeof o->sender, "%s", m->sender);
+        if (m->preview_len) memcpy(o->preview, m->preview, m->preview_len);
+    }
+    return n;
 }

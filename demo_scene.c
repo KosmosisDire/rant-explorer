@@ -1,8 +1,9 @@
 /* demo_scene: one node of the handoff sample mesh, by profile name. Run six of
    these (one per profile) and the DART Explorer shows a populated node list and a
    nice hierarchical topic tree (sensors/lidar/..., robot/..., planning/...,
-   diagnostics/...). It only DECLARES pub/sub interest (the tree is built from the
-   discovery announces); it publishes nothing.
+   diagnostics/...). It DECLARES pub/sub interest (the tree is built from the discovery
+   announces) and also PUBLISHES a small readable payload on each of its pub topics at a
+   per-topic rate, so the explorer's live feed shows real messages once you subscribe.
 
    ONE NODE PER PROCESS on purpose: several DART discovery participants in a single
    process all share the rendezvous port (7400, SO_REUSEADDR), and unicast blob
@@ -14,6 +15,9 @@
      cc  -std=c99 -Wall -Idist explore/demo_scene.c -o demo_scene -lrt          (POSIX)
    Run one: ./demo_scene <profile> [--domain N] [--if IP]
      profiles: perception planner lidar-driver camera-driver controller logger */
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601          /* GetTickCount64 */
+#endif
 #define DART_IMPLEMENTATION
 #include "dart.h"
 
@@ -21,6 +25,38 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#ifndef _WIN32
+#include <time.h>
+#endif
+
+static unsigned long long now_ms(void){
+#ifdef _WIN32
+    return (unsigned long long)GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)(ts.tv_nsec / 1000000);
+#endif
+}
+
+/* a publishing channel: its handle, name, period, and running sequence number */
+typedef struct {
+    DartChannel       *ch;
+    const char        *topic;
+    unsigned           period_ms;
+    unsigned           seq;
+    unsigned long long next_ms;
+} PubCh;
+
+#define MAX_PUBS 8
+
+/* per-topic publish cadence: motion fast, scans medium, status slow */
+static unsigned topic_period_ms(const char *path){
+    if (strstr(path, "pose") || strstr(path, "odom") || strstr(path, "cmd_vel")) return 100;  /* 10 Hz */
+    if (strstr(path, "points") || strstr(path, "image"))                         return 200;  /*  5 Hz */
+    if (strstr(path, "health") || strstr(path, "info") || strstr(path, "heartbeat")) return 1000; /* 1 Hz */
+    return 500;  /* 2 Hz: goal / path / diagnostics */
+}
 
 static volatile sig_atomic_t g_run = 1;
 static void on_sig(int s){ (void)s; g_run = 0; }
@@ -39,17 +75,28 @@ static int reliable(const char *path){
 
 typedef struct { const char *name; const char **pubs; const char **subs; } Profile;
 
-static DartNode *open_node(const Profile *p, uint16_t domain, const char *ifc){
+/* open the node, declare its interest, and record its pub channels into pubs[] (up to
+   MAX_PUBS) so the main loop can publish to them. *n_pubs gets the count. */
+static DartNode *open_node(const Profile *p, uint16_t domain, const char *ifc,
+                           PubCh *pubs, int *n_pubs){
     DartAllocator mem = dart_allocator_dynamic(1u << 20);
     DartNode *n;
     int i;
+    *n_pubs = 0;
     n = dart_node_open(&mem, p->name, NULL, NULL, &(DartNodeOpts){
         .domain = domain, .max_channels = 16,
         .net = { .multicast_interface = ifc } });
     if (!n){ fprintf(stderr, "  open %s failed\n", p->name); return NULL; }
-    for (i = 0; p->pubs && p->pubs[i]; i++)
-        dart_node_create_channel(n, p->pubs[i], DART_PUB_ONLY, &(DartChannelOpts){
-            .qos = { .reliability = reliable(p->pubs[i]) ? DART_RELIABLE : DART_BEST_EFFORT } });
+    for (i = 0; p->pubs && p->pubs[i]; i++){
+        DartChannel *ch = dart_node_create_channel(n, p->pubs[i], DART_PUB_ONLY, &(DartChannelOpts){
+            .qos = { .reliability = reliable(p->pubs[i]) ? DART_RELIABLE : DART_BEST_EFFORT,
+                     .keep_last = 16 } });
+        if (ch && *n_pubs < MAX_PUBS){
+            PubCh *pc = &pubs[(*n_pubs)++];
+            pc->ch = ch; pc->topic = p->pubs[i];
+            pc->period_ms = topic_period_ms(p->pubs[i]); pc->seq = 0; pc->next_ms = 0;
+        }
+    }
     for (i = 0; p->subs && p->subs[i]; i++)
         dart_node_create_channel(n, p->subs[i], DART_SUB_ONLY, &(DartChannelOpts){
             .qos = { .reliability = reliable(p->subs[i]) ? DART_RELIABLE : DART_BEST_EFFORT } });
@@ -62,7 +109,9 @@ int main(int argc, char **argv){
     const char *want = NULL;         /* which profile to run */
     const Profile *prof = NULL;
     DartNode *node;
-    int i;
+    PubCh pubs[MAX_PUBS];
+    int n_pubs = 0, i;
+    unsigned long long start_ms;
 
     /* topic sets per node (from the handoff's data.js sample) */
     static const char *perception_p[] = { "sensors/lidar/points", "robot/pose", NULL };
@@ -102,12 +151,29 @@ int main(int argc, char **argv){
 
     signal(SIGINT, on_sig);
     setvbuf(stdout, NULL, _IONBF, 0);
-    node = open_node(prof, domain, ifc);
+    node = open_node(prof, domain, ifc, pubs, &n_pubs);
     if (!node) return 1;
-    printf("%s: up on domain %u (interface %s), interest only -- Ctrl-C to stop\n",
-           prof->name, domain, ifc);
+    printf("%s: up on domain %u (interface %s), publishing %d topic(s) -- Ctrl-C to stop\n",
+           prof->name, domain, ifc, n_pubs);
 
-    while (g_run) dart_node_poll(node, 20);
+    start_ms = now_ms();
+    while (g_run){
+        unsigned long long t = now_ms();
+        for (i = 0; i < n_pubs; i++){
+            if (t >= pubs[i].next_ms){
+                char buf[120];
+                int len = snprintf(buf, sizeof buf, "%s #%u from %s @ %.2fs",
+                                   pubs[i].topic, pubs[i].seq, prof->name,
+                                   (double)(t - start_ms) / 1000.0);
+                if (len < 0) len = 0;
+                if (len > (int)sizeof buf) len = (int)sizeof buf;
+                dart_channel_send(pubs[i].ch, buf, (size_t)len);
+                pubs[i].seq++;
+                pubs[i].next_ms = t + pubs[i].period_ms;
+            }
+        }
+        dart_node_poll(node, 10);
+    }
 
     dart_node_close(node, 1);
     return 0;

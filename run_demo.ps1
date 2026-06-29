@@ -3,7 +3,8 @@
 
   Spins up the handoff sample mesh: 6 nodes (perception, planner, lidar-driver,
   camera-driver, controller, logger) declaring a hierarchical topic set, one node
-  per process. Interest only -- nothing is published. See explore/demo_scene.c.
+  per process, each publishing a small payload on its topics so the explorer's live
+  feed shows real messages once you subscribe. See explore/demo_scene.c.
 
   Usage (from the repo root):
     powershell -ExecutionPolicy Bypass -File .\explore\run_demo.ps1            # start

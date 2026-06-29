@@ -97,6 +97,11 @@ typedef struct {
     int    reliable;             /* qos.reliability == QOS_RELIABLE */
     int    drops;                /* valid only when reliable */
 
+    /* live subscription state (the explorer can join a topic's data plane on demand), for
+       the tree status light: 0 = not subscribed (grey), 1 = subscribed & healthy (green),
+       2 = subscribed but dropping/erroring (red). The feed reads live counts directly. */
+    int    sub_state;
+
     char   preview[256];
 } Topic;
 

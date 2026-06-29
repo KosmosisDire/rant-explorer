@@ -1,12 +1,35 @@
 /* Topics tab: topic tree (264) + center feed (grow) + inline Inspect/Publish drawer
    (332, only when open). Wired to live discovery: the tree, each topic's reliability,
    and its publisher/subscriber node lists are real (from the announce interest blobs).
-   The per-message FEED and the durability/history/deadline QoS ride the data plane,
-   which a passive observer never sees, so those are placeholders. Subscribe/Publish
-   need a data-plane endpoint, so they are shown as read-only notes.
-   Requires ui_tree.h, ui_widgets.h, ui_model.h, ui_app.h. */
+   The center FEED is live too: the explorer subscribes to the selected topic on demand
+   (cap_subscribe) and shows messages as they arrive, newest at the bottom, auto-scrolling
+   while the user is parked there. A topic's status light is its subscription state: green
+   subscribed, red dropping/erroring, hollow grey not subscribed. Durability/history/deadline
+   QoS ride the data plane out of band, so those stay placeholders; Publish is a read-only note.
+   Requires ui_tree.h, ui_widgets.h, ui_model.h, ui_app.h, net_capture.h. */
 #ifndef UI_TAB_TOPICS_H
 #define UI_TAB_TOPICS_H
+
+/* the selected topic's live feed, refetched from the capture each frame */
+static CapFeedItem tt_feed[CAP_FEED_MAX];
+static int         tt_feed_n, tt_subscribed, tt_sub_error;
+static uint32_t    tt_msgs, tt_drops;
+
+/* topic status light: hollow grey not subscribed, green subscribed, red dropping/erroring */
+static void tt_status_dot(const Palette *P, int sub_state){
+    if (sub_state == 0) ui_dot(UISC(7), UI_NONE, P->faint);
+    else                ui_dot(UISC(7), sub_state == 2 ? P->red : P->green, UI_NONE);
+}
+
+/* copy a payload preview as printable ASCII (non-printable bytes become '.') into dst */
+static void tt_sanitize(char *dst, int cap, const char *src, int n){
+    int i, j = 0;
+    for (i = 0; i < n && j < cap - 1; i++){
+        unsigned char c = (unsigned char)src[i];
+        dst[j++] = (c >= 0x20 && c < 0x7f) ? (char)c : '.';
+    }
+    dst[j] = '\0';
+}
 
 static void ui_filter_box(const Palette *P, Clay_String hint){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(30)) },
@@ -64,10 +87,10 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
                                          .textColor = row->has_topic ? P->text : P->dim,
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
         }
-        /* status dot: per-topic reliability (subscription/drops aren't observable) */
+        /* status dot: live subscription state (green subscribed, red dropping, grey not) */
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(40)) },
                            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
-            if (row->has_topic) ui_dot(UISC(7), ui_qos_color(P, row->topic->reliable), UI_NONE);
+            if (row->has_topic) tt_status_dot(P, row->topic->sub_state);
         }
     }
 }
@@ -100,10 +123,47 @@ static void topics_tree(AppState *app, const Palette *P){
 
 /* ================================================================= center: feed */
 
+/* one received message: time + sender + size on top, the payload preview below */
+static void tt_feed_row(const Palette *P, const CapFeedItem *m, int idx){
+    char buf[CAP_MSG_PREVIEW + 1];
+    tt_sanitize(buf, (int)sizeof buf, m->preview, m->preview_len);
+    CLAY({ .id = CLAY_IDI("feed_row", (uint32_t)idx),
+           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                       .padding = { .left = UISCI(2), .right = UISCI(2), .top = UISCI(5), .bottom = UISCI(6) },
+                       .childGap = UISCI(3) },
+           .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8),
+                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+            CLAY_TEXT(ui_fmt("%8.2fs", m->t_s),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION), .textColor = P->faint,
+                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
+            CLAY_TEXT(ui_str(m->sender),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_CAPTION), .textColor = P->dim,
+                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+            CLAY_TEXT(ui_fmt("%u B", m->len),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION), .textColor = P->faint,
+                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        }
+        CLAY_TEXT(ui_fmt("%s", buf),
+                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
+                                     .wrapMode = CLAY_TEXT_WRAP_WORDS }));
+    }
+}
+
 static void topics_feed(AppState *app, const Palette *P){
     const Dataset *D = app->data;
     const Topic *t = (D && D->n_topics && app->sel_topic >= 0 && app->sel_topic < D->n_topics)
                      ? &D->topics[app->sel_topic] : NULL;
+    int feed_state, i;
+
+    /* refetch the selected topic's live feed for this frame (before drawing the controls) */
+    tt_feed_n = 0; tt_subscribed = tt_sub_error = 0; tt_msgs = tt_drops = 0;
+    if (t && app->cap)
+        tt_feed_n = cap_topic_feed(app->cap, t->path, tt_feed, CAP_FEED_MAX,
+                                   &tt_subscribed, &tt_sub_error, &tt_msgs, &tt_drops);
+    feed_state = tt_subscribed ? (tt_sub_error ? 2 : 1) : 0;
+
     CLAY({ .id = CLAY_ID("topics_feed"),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(UISC(16)),
@@ -134,14 +194,40 @@ static void topics_feed(AppState *app, const Palette *P){
                 CLAY_TEXT(ui_fmt("%d subscribers", t->n_subs),
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
             }
+            /* control row: subscribe toggle + live subscription status */
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(12),
+                               .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+                if (!tt_subscribed){
+                    if (ui_pill(P, CLAY_STRING("Subscribe"), FAM_SANS, WT_SEMI, FS_SMALL,
+                                P->accent, P->accent_bg, UI_NONE, UISC(28)) && app->cap)
+                        cap_subscribe(app->cap, t->path, t->reliable);
+                } else {
+                    if (ui_pill(P, CLAY_STRING("Unsubscribe"), FAM_SANS, WT_SEMI, FS_SMALL,
+                                P->dim, P->panel2, P->border2, UISC(28)) && app->cap)
+                        cap_unsubscribe(app->cap, t->path);
+                }
+                tt_status_dot(P, feed_state);
+                CLAY_TEXT(tt_subscribed ? ui_fmt("subscribed %s  \xC2\xB7  %u msgs",
+                                                 t->reliable ? "reliable" : "best-effort", tt_msgs)
+                                        : CLAY_STRING("not subscribed"),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
+                                             .textColor = feed_state == 2 ? P->red : P->dim,
+                                             .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                if (tt_drops > 0)
+                    CLAY_TEXT(ui_fmt("%u dropped", tt_drops),
+                              CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->red,
+                                                 .wrapMode = CLAY_TEXT_WRAP_NONE }));
+            }
             ui_section_label(P, CLAY_STRING("MESSAGE FEED"));
-            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
-                               .padding = CLAY_PADDING_ALL(UISC(24)),
-                               .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
-                CLAY_TEXT(CLAY_STRING("The explorer observes discovery only. Per-message payloads ride the "
-                                      "data plane, which a passive observer does not subscribe to, so there "
-                                      "is no live feed. The topic's QoS and endpoints (right) are real."),
-                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint }));
+            /* scrolling stream, newest at the bottom; topics_feed_autoscroll keeps it pinned */
+            CLAY({ .id = CLAY_ID("topics_feed_scroll"),
+                   .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
+                               .layoutDirection = CLAY_TOP_TO_BOTTOM },
+                   .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+                if (tt_feed_n == 0)
+                    ui_placeholder(P, tt_subscribed ? CLAY_STRING("waiting for messages...")
+                                                    : CLAY_STRING("subscribe to see live messages"));
+                for (i = 0; i < tt_feed_n; i++) tt_feed_row(P, &tt_feed[i], i);
             }
         }
     }
@@ -272,6 +358,36 @@ static void topics_tab(AppState *app, const Palette *P){
     topics_tree(app, P);
     topics_feed(app, P);
     if (app->drawer_open) topics_drawer(app, P);
+}
+
+/* Keep the feed glued to the newest message while the user is parked at the bottom. Runs
+   AFTER Clay_EndLayout (the scroll container's content/size are final then) and writes Clay's
+   stored scroll position for the next frame. The user scrolling up unlocks the pin; scrolling
+   back to the bottom re-locks it; selecting another topic resets to pinned. Content growing
+   (new messages) does not move Clay's stored offset, so it never reads as a user scroll. */
+static void topics_feed_autoscroll(AppState *app){
+    Clay_ScrollContainerData d;
+    float max_scroll, y;
+    if (app->tab != TAB_TOPICS) return;          /* the feed container only exists on this tab */
+    d = Clay_GetScrollContainerData(Clay_GetElementId(CLAY_STRING("topics_feed_scroll")));
+    if (!d.found || !d.scrollPosition) return;
+    max_scroll = d.contentDimensions.height - d.scrollContainerDimensions.height;
+    if (max_scroll < 0.0f) max_scroll = 0.0f;
+    y = d.scrollPosition->y;                      /* <= 0: 0 = top, -max_scroll = bottom */
+
+    if (app->feed_sel_topic != app->sel_topic){   /* new topic: start pinned, no false unlock */
+        app->feed_sel_topic = app->sel_topic;
+        app->feed_pinned = 1;
+        app->feed_prev_scroll_y = y;
+    }
+    if (app->feed_pinned){
+        if (y > app->feed_prev_scroll_y + 1.0f) app->feed_pinned = 0;   /* user pulled up: unlock */
+    } else if (-y >= max_scroll - 2.0f){
+        app->feed_pinned = 1;                                           /* back at bottom: re-lock */
+    }
+    if (app->feed_pinned) y = -max_scroll;
+    d.scrollPosition->y = y;
+    app->feed_prev_scroll_y = y;
 }
 
 #endif /* UI_TAB_TOPICS_H */

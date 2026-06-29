@@ -134,6 +134,16 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         }
     }
 
+    /* third pass: our own live subscription state (the topic light), matched by name.
+       active + clean = subscribed (green), active + error/drops = red, absent = grey. */
+    for (k = 0; k < snap->n_subs; k++){
+        const CapSubInfo *si = &snap->subs[k];
+        int ti;
+        for (ti = 0; ti < n_top; ti++) if (!strcmp(g_topics[ti].path, si->name)) break;
+        if (ti >= n_top) continue;
+        g_topics[ti].sub_state = si->active ? (si->error ? 2 : 1) : 0;
+    }
+
     D->machines = g_machines; D->n_machines = n_mach;
     D->nodes    = g_nodes;    D->n_nodes    = nn;
     D->topics   = g_topics;   D->n_topics   = n_top;

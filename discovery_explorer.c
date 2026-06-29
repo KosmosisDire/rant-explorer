@@ -134,6 +134,7 @@ int main(int argc, char **argv){
 
     if (!cap_start(&cap, &cfg))
         fprintf(stderr, "running without live discovery (socket/interface issue)\n");
+    app.cap = &cap;          /* lets the Topics tab subscribe and read the live feed */
 
     last_ticks = SDL_GetTicks();
     /* optional readout (set DART_UI_FPS=1): the node poll is once per frame, so this fps IS
@@ -207,6 +208,7 @@ int main(int argc, char **argv){
         Clay_BeginLayout();
         ui_frame(&app);
         Clay_RenderCommandArray cmds = Clay_EndLayout();
+        topics_feed_autoscroll(&app);    /* pin the feed to the newest message (uses final layout) */
 
         bg = app.theme_dark ? UI_DARK.bg : UI_LIGHT.bg;
         SDL_SetRenderDrawColor(ren, (Uint8)bg.r, (Uint8)bg.g, (Uint8)bg.b, 255);

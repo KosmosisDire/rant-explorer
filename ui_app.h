@@ -22,6 +22,13 @@ typedef struct {
     uint64_t collapsed[UI_MAX_COLLAPSED];
     int      n_collapsed;
 
+    /* Topics feed auto-scroll: stick to the newest message at the bottom while the user
+       is parked there; a scroll up unlocks it, returning to the bottom re-locks. */
+    int      feed_pinned;       /* 1 = glued to the bottom */
+    int      feed_sel_topic;    /* selected topic the pin state belongs to (reset on change) */
+    float    feed_prev_scroll_y;/* the scroll offset we left set last frame (detects user scroll) */
+
+    Capture          *cap;    /* live observer (subscribe / read the feed); NULL if not started */
     const Dataset     *data;  /* rebuilt each frame from the live snapshot */
     const CapSnapshot *snap;  /* the raw snapshot (Log tab reads its event lines) */
 } AppState;
@@ -34,6 +41,10 @@ static void app_init(AppState *a, const Dataset *data){
     a->drawer_open = 1;
     a->drawer_mode = DRW_INSPECT;
     a->n_collapsed = 0;
+    a->feed_pinned    = 1;
+    a->feed_sel_topic = -1;
+    a->feed_prev_scroll_y = 0.0f;
+    a->cap         = NULL;
     a->data        = data;
     a->snap        = NULL;
 }

@@ -65,6 +65,7 @@ typedef struct {
 typedef struct {
     CapState state;
     int      have_meta;      /* 1 = the announce overlay was decoded (frag + interest below) */
+    int      meta_stale;     /* 1 = peer advertises a newer blob version than the one we hold */
     char     name[CAP_NAME_CAP];
     char     ip[40];         /* advertised unicast IP, dotted (discovery) */
     uint16_t port;           /* advertised unicast data port (discovery) */

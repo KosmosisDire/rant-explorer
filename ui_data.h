@@ -89,11 +89,11 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         n->machine = uid_machine_for(cn->ip, &n_mach);
         n->pid = -1;                         /* placeholder */
 
-        /* discovery state -> display state. A freshly-seen active peer (or one whose
-           announce blob hasn't arrived yet) reads as JOINING; dropped/gone fold to
-           GONE (kept visible, de-emphasized). */
+        /* discovery state -> display state. An active peer whose announce blob hasn't arrived
+           yet, or whose blob we hold is behind the version it now advertises (re-fetch pending),
+           reads as JOINING; dropped/gone fold to GONE (kept visible, de-emphasized). */
         if (cn->state == CAP_ST_ACTIVE)
-            n->state = (cn->observed_s < 2.5 || !cn->have_meta) ? NODE_JOINING : NODE_ALIVE;
+            n->state = (!cn->have_meta || cn->meta_stale) ? NODE_JOINING : NODE_ALIVE;
         else
             n->state = NODE_GONE;
 

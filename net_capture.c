@@ -54,6 +54,7 @@ typedef struct {
 
     /* cached facts: discovery-level (name/addr) + announce-metadata (frag/interest) */
     int      have_meta;
+    int      meta_stale;   /* peer advertises a newer blob version than the one we hold (re-fetch pending) */
     uint16_t frag;
     uint16_t meta_len;
     char     name[DART_NODE_NAME_MAX + 1];
@@ -439,6 +440,7 @@ static void cap_peer_refresh(CapPeer *p, const DartDiscoveryPeer *dp){
     p->seen_frame = 1;
     p->state      = (dp->liveness == DART_PEER_DROPPED) ? CAP_DROPPED : CAP_ACTIVE;
     p->have_meta  = (dp->meta.data && dp->meta.len) ? 1 : 0;
+    p->meta_stale = (dp->adv_meta_version > dp->meta_version) ? 1 : 0;
     p->frag       = frag;
     p->meta_len   = (uint16_t)dp->meta.len;
     memcpy(p->ip, dp->addr.ip, 16);
@@ -517,6 +519,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         n = &out->nodes[out->n_nodes++];
         n->state      = (CapState)p->state;   /* CAP_ACTIVE/DROPPED/GONE align with CapState */
         n->have_meta  = p->have_meta;
+        n->meta_stale = p->meta_stale;
         n->frag       = p->frag;
         n->meta_len   = p->meta_len;
         n->port       = p->port;

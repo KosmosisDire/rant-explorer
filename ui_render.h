@@ -87,29 +87,42 @@ static void ui_fill_rounded_rect(SDL_Renderer *ren, const SDL_FRect rect, const 
     free(indices);
 }
 
-/* ported from Clay's SDL3 renderer: a stroked arc (rounded-border corners) */
-static void ui_fill_arc(SDL_Renderer *ren, const SDL_FPoint center, const float radius,
-                        const float startAngle, const float endAngle, const float thickness, const Clay_Color color){
+/* a filled annular sector (one rounded-border corner) via SDL_RenderGeometry.
+   It uses the SAME center, outer radius and angular sampling as
+   ui_fill_rounded_rect's corner fans, so the border's outer edge is vertex-for-
+   vertex coincident with the fill edge: no seam, no offset, no AA fringe. The
+   ring spans rOuter (the corner radius) inward to rInner (radius - border width;
+   0 = a solid pie when the border is thicker than the radius). */
+static void ui_fill_arc(SDL_Renderer *ren, const SDL_FPoint center, const float rOuter, const float rInner,
+                        const float startAngle, const float endAngle, const Clay_Color _color){
+    const SDL_FColor color = { _color.r/255, _color.g/255, _color.b/255, _color.a/255 };
     const float radStart = startAngle * (SDL_PI_F / 180.0f);
-    const float radEnd = endAngle * (SDL_PI_F / 180.0f);
-    const int numCircleSegments = SDL_max(UI_CIRCLE_SEGMENTS, (int)(radius * 1.5f));
-    const float angleStep = (radEnd - radStart) / (float)numCircleSegments;
-    const float thicknessStep = 0.4f;
-    /* heap, not a VLA (MSVC); the segment count is constant across the loop, so
-       allocate once and reuse. */
-    SDL_FPoint *points = (SDL_FPoint *)malloc((size_t)(numCircleSegments + 1) * sizeof *points);
-    if (!points) return;
-    SDL_SetRenderDrawColor(ren, (Uint8)color.r, (Uint8)color.g, (Uint8)color.b, (Uint8)color.a);
-    for (float t = thicknessStep; t < thickness - thicknessStep; t += thicknessStep) {
-        const float clampedRadius = SDL_max(radius - t, 1.0f);
-        for (int i = 0; i <= numCircleSegments; i++) {
-            const float angle = radStart + i * angleStep;
-            points[i] = (SDL_FPoint){ SDL_roundf(center.x + SDL_cosf(angle) * clampedRadius),
-                                      SDL_roundf(center.y + SDL_sinf(angle) * clampedRadius) };
+    const float radEnd   = endAngle   * (SDL_PI_F / 180.0f);
+    /* segment count computed exactly as the fill does, so the shared outer-arc
+       vertices land on the same points and the seam is perfect. */
+    const int   segs = SDL_max(UI_CIRCLE_SEGMENTS, (int)rOuter * 0.5f);
+    const float step = (radEnd - radStart) / (float)segs;
+    const int   vtxCount = (segs + 1) * 2;
+    const int   idxCount = segs * 6;
+    /* heap, not a VLA (MSVC); counts grow with the corner radius. */
+    SDL_Vertex *vertices = (SDL_Vertex *)malloc((size_t)vtxCount * sizeof *vertices);
+    int        *indices  = (int *)       malloc((size_t)idxCount * sizeof *indices);
+    if (!vertices || !indices){ free(vertices); free(indices); return; }
+    int vc = 0, ic = 0;
+    for (int i = 0; i <= segs; i++) {
+        const float a = radStart + (float)i * step;
+        const float ca = SDL_cosf(a), sa = SDL_sinf(a);
+        vertices[vc++] = (SDL_Vertex){ {center.x + ca * rOuter, center.y + sa * rOuter}, color, {0, 0} };
+        vertices[vc++] = (SDL_Vertex){ {center.x + ca * rInner, center.y + sa * rInner}, color, {0, 0} };
+        if (i < segs) {                                  /* two triangles per quad of the strip */
+            const int o0 = i*2, in0 = i*2 + 1, o1 = i*2 + 2, in1 = i*2 + 3;
+            indices[ic++] = o0;  indices[ic++] = in0; indices[ic++] = o1;
+            indices[ic++] = in0; indices[ic++] = in1; indices[ic++] = o1;
         }
-        SDL_RenderLines(ren, points, numCircleSegments + 1);
     }
-    free(points);
+    SDL_RenderGeometry(ren, NULL, vertices, vc, indices, ic);
+    free(vertices);
+    free(indices);
 }
 
 /* run a Clay command array: rects/borders direct, text alpha-blended over them. */
@@ -154,15 +167,18 @@ static void ui_render(UiRenderer *rd, Clay_RenderCommandArray *cmds){
                 float minR = SDL_min(rect.w, rect.h) / 2.0f;
                 float tl = SDL_min(c->cornerRadius.topLeft, minR),    tr = SDL_min(c->cornerRadius.topRight, minR);
                 float bl = SDL_min(c->cornerRadius.bottomLeft, minR), br = SDL_min(c->cornerRadius.bottomRight, minR);
+                SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
                 SDL_SetRenderDrawColor(ren, (Uint8)c->color.r, (Uint8)c->color.g, (Uint8)c->color.b, (Uint8)c->color.a);
                 if (c->width.left > 0){   SDL_FRect l = { rect.x, rect.y + tl, (float)c->width.left, rect.h - tl - bl }; SDL_RenderFillRect(ren, &l); }
                 if (c->width.right > 0){  SDL_FRect l = { rect.x + rect.w - (float)c->width.right, rect.y + tr, (float)c->width.right, rect.h - tr - br }; SDL_RenderFillRect(ren, &l); }
                 if (c->width.top > 0){    SDL_FRect l = { rect.x + tl, rect.y, rect.w - tl - tr, (float)c->width.top }; SDL_RenderFillRect(ren, &l); }
                 if (c->width.bottom > 0){ SDL_FRect l = { rect.x + bl, rect.y + rect.h - (float)c->width.bottom, rect.w - bl - br, (float)c->width.bottom }; SDL_RenderFillRect(ren, &l); }
-                if (tl > 0) ui_fill_arc(ren, (SDL_FPoint){ rect.x + tl - 1, rect.y + tl }, tl, 180.0f, 270.0f, c->width.top, c->color);
-                if (tr > 0) ui_fill_arc(ren, (SDL_FPoint){ rect.x + rect.w - tr - 1, rect.y + tr }, tr, 270.0f, 360.0f, c->width.top, c->color);
-                if (bl > 0) ui_fill_arc(ren, (SDL_FPoint){ rect.x + bl - 1, rect.y + rect.h - bl - 1 }, bl, 90.0f, 180.0f, c->width.bottom, c->color);
-                if (br > 0) ui_fill_arc(ren, (SDL_FPoint){ rect.x + rect.w - br - 1, rect.y + rect.h - br - 1 }, br, 0.0f, 90.0f, c->width.bottom, c->color);
+                /* centers match ui_fill_rounded_rect's corner centers exactly (no fudge offset);
+                   inner radius = corner radius - the adjoining border width. */
+                if (tl > 0) ui_fill_arc(ren, (SDL_FPoint){ rect.x + tl, rect.y + tl }, tl, SDL_max(tl - (float)c->width.top, 0.0f), 180.0f, 270.0f, c->color);
+                if (tr > 0) ui_fill_arc(ren, (SDL_FPoint){ rect.x + rect.w - tr, rect.y + tr }, tr, SDL_max(tr - (float)c->width.top, 0.0f), 270.0f, 360.0f, c->color);
+                if (bl > 0) ui_fill_arc(ren, (SDL_FPoint){ rect.x + bl, rect.y + rect.h - bl }, bl, SDL_max(bl - (float)c->width.bottom, 0.0f), 90.0f, 180.0f, c->color);
+                if (br > 0) ui_fill_arc(ren, (SDL_FPoint){ rect.x + rect.w - br, rect.y + rect.h - br }, br, SDL_max(br - (float)c->width.bottom, 0.0f), 0.0f, 90.0f, c->color);
             } break;
 
             case CLAY_RENDER_COMMAND_TYPE_SCISSOR_START: {

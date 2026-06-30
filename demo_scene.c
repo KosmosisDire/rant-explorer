@@ -167,7 +167,7 @@ int main(int argc, char **argv){
                                    (double)(t - start_ms) / 1000.0);
                 if (len < 0) len = 0;
                 if (len > (int)sizeof buf) len = (int)sizeof buf;
-                dart_channel_send(pubs[i].ch, buf, (size_t)len);
+                dart_channel_send(pubs[i].ch, dart_bytes(buf, (size_t)len));
                 pubs[i].seq++;
                 pubs[i].next_ms = t + pubs[i].period_ms;
             }

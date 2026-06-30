@@ -97,7 +97,7 @@ int main(int argc, char **argv){
         fprintf(stderr, "SDL_CreateWindowAndRenderer failed: %s\n", SDL_GetError());
         return 1;
     }
-    SDL_SetRenderVSync(ren, 1);
+    SDL_SetRenderVSync(ren, 0);
     SDL_StartTextInput(win);   /* deliver SDL_EVENT_TEXT_INPUT for the Topics message composer */
 
     dpi = SDL_GetWindowPixelDensity(win);   /* physical px per logical px (1.0 = 100%) */

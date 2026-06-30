@@ -141,7 +141,7 @@ static CapSub *cap_sub_by_index(uint16_t index){
 }
 
 /* append one message to a topic's ring (received or our own echo). Does not touch n_msgs. */
-static void cap_ring_push(CapSub *s, const char *sender, const void *data, size_t len, int mine){
+static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t len, int mine){
     CapMsgRec *m = &s->ring[s->head];
     uint16_t c = len < CAP_MSG_PREVIEW ? (uint16_t)len : CAP_MSG_PREVIEW;
     m->t_s = (double)(cap_now_ms() - cap_start_ms) / 1000.0;
@@ -149,7 +149,7 @@ static void cap_ring_push(CapSub *s, const char *sender, const void *data, size_
     if (c) memcpy(m->preview, data, c);
     m->preview_len = c;
     m->mine = mine;
-    snprintf(m->sender, sizeof m->sender, "%s", sender ? sender : "");
+    snprintf(m->sender, sizeof m->sender, "%.*s", (int)sender.len, sender.data ? sender.data : "");
     s->head = (s->head + 1) % CAP_FEED_MAX;
     if (s->count < CAP_FEED_MAX) s->count++;
 }
@@ -217,7 +217,7 @@ static CapPeer *cap_peer_get(uint32_t id){
 static void cap_on_message(const DartMsg *msg){
     CapSub *s = cap_sub_by_index(msg->channel_id);
     if (!s) return;
-    cap_ring_push(s, msg->sender_name, msg->data, msg->len, 0);
+    cap_ring_push(s, msg->sender_name, msg->data.data, msg->data.len, 0);
     s->n_msgs++;
 }
 
@@ -424,8 +424,8 @@ int cap_publish(Capture *cap, const char *topic, const void *data, size_t len){
     if (!cap_declare_publish(cap, topic)) return 0;   /* ensure the publisher channel is live */
     s = cap_sub_find(topic);
     if (!s) return 0;
-    if (dart_channel_send(s->ch[s->reliable], data, len) < 0){ cap_logf("PUBLISH %s send failed", topic); return 0; }
-    cap_ring_push(s, cap_cfg.name, data, len, 1);   /* local echo: show our own message in the feed */
+    if (dart_channel_send(s->ch[s->reliable], dart_bytes(data, len)) < 0){ cap_logf("PUBLISH %s send failed", topic); return 0; }
+    cap_ring_push(s, dart_cstr(cap_cfg.name), data, len, 1);   /* local echo: show our own message in the feed */
     return 1;
 }
 
@@ -438,22 +438,22 @@ static void cap_peer_refresh(CapPeer *p, const DartDiscoveryPeer *dp){
     uint16_t frag = dart_node_peer_frag(dp);
     p->seen_frame = 1;
     p->state      = (dp->liveness == DART_PEER_DROPPED) ? CAP_DROPPED : CAP_ACTIVE;
-    p->have_meta  = (dp->meta && dp->meta_len) ? 1 : 0;
+    p->have_meta  = (dp->meta.data && dp->meta.len) ? 1 : 0;
     p->frag       = frag;
-    p->meta_len   = dp->meta_len;
+    p->meta_len   = (uint16_t)dp->meta.len;
     memcpy(p->ip, dp->addr.ip, 16);
     p->ip_len = dp->addr.ip_len;
     p->port   = dp->addr.port;
-    snprintf(p->name, sizeof p->name, "%s", dp->name ? dp->name : "");
+    snprintf(p->name, sizeof p->name, "%.*s", (int)dp->name.len, dp->name.data ? dp->name.data : "");
 
     p->n_pub = p->n_sub = 0;
     memset(&it, 0, sizeof it);
     while (dart_node_peer_interest_next(dp, &it, &t)){
         CapTopic *e; int *cnt;
-        uint8_t c = t.name_len > DART_TOPIC_NAME_MAX ? (uint8_t)DART_TOPIC_NAME_MAX : t.name_len;
+        uint8_t c = t.name.len > DART_TOPIC_NAME_MAX ? (uint8_t)DART_TOPIC_NAME_MAX : (uint8_t)t.name.len;
         if (t.is_pub){ if (p->n_pub >= CAP_MAX_TOPICS) continue; e = &p->pub[p->n_pub]; cnt = &p->n_pub; }
         else         { if (p->n_sub >= CAP_MAX_TOPICS) continue; e = &p->sub[p->n_sub]; cnt = &p->n_sub; }
-        memcpy(e->name, t.name, c); e->name[c] = '\0';
+        memcpy(e->name, t.name.data, c); e->name[c] = '\0';
         e->alias = t.alias; e->reliable = t.reliable;
         (*cnt)++;
     }

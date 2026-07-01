@@ -322,7 +322,7 @@ int cap_start(Capture *cap, const Config *cfg){
     /* a real node, owning its memory via a dynamic allocator. It starts with no channels but
        subscribes to topics on demand (cap_subscribe); CAP_OBSERVER_CHANNELS bounds those and
        sizes discovery's per-peer overlay buffer, so a peer advertising many topics is held in full. */
-    mem  = dart_allocator_dynamic(1 << 20);
+    mem  = dart_allocator_dynamic(dart_plat_realloc, 0);
     node = dart_node_open(&mem, cfg->name, cap_on_message, cap_on_event, &(DartNodeOpts){
         .domain       = cfg->domain,
         .max_channels = CAP_OBSERVER_CHANNELS,

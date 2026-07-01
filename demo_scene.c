@@ -79,7 +79,7 @@ typedef struct { const char *name; const char **pubs; const char **subs; } Profi
    MAX_PUBS) so the main loop can publish to them. *n_pubs gets the count. */
 static DartNode *open_node(const Profile *p, uint16_t domain, const char *ifc,
                            PubCh *pubs, int *n_pubs){
-    DartAllocator mem = dart_allocator_dynamic(1u << 20);
+    DartAllocator mem = dart_allocator_dynamic(dart_plat_realloc, 0);
     DartNode *n;
     int i;
     *n_pubs = 0;

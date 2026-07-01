@@ -368,7 +368,7 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
         return 1;
     }
     if (!s->ch[want]){
-        DartChannel *ch = dart_node_create_channel(node, s->name, role,
+        DartChannel *ch = dart_node_create_channel(node, s->name, role, NULL,
                  &(DartChannelOpts){ .qos = { .reliability = want ? DART_RELIABLE : DART_BEST_EFFORT,
                                               .catch_up = 1 } });
         if (!ch) return 0;

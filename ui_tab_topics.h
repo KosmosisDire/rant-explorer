@@ -173,12 +173,12 @@ static void topics_tree(AppState *app, const Palette *P){
 /* ================================================================= center: feed */
 
 /* one decoded field of a message: a table row, fixed name column then the value
-   (left-aligned so values line up down the column) */
+   (left-aligned so values line up down the column); nested members indent by depth */
 static void tt_feed_field_row(const Palette *P, const CapMsgField *f){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(18)) },
-                       .padding = { .left = UISCI(14) }, .childGap = UISCI(9),
+                       .padding = { .left = UISCI(14 + f->depth * 14) }, .childGap = UISCI(9),
                        .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(130)), .height = CLAY_SIZING_GROW(0) },
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(130 - f->depth * 14)), .height = CLAY_SIZING_GROW(0) },
                            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
             CLAY_TEXT(ui_str(f->name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
                                                           .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
@@ -189,16 +189,22 @@ static void tt_feed_field_row(const Palette *P, const CapMsgField *f){
     }
 }
 
-/* one received message: time + sender + type + size on top; below, the reflected decode
-   as one row per field (the writer's declared structure), or the raw payload head */
-static void tt_feed_row(const Palette *P, const CapFeedItem *m, int idx){
+/* one received message. COLLAPSED (the default): a single line, meta + the one-line
+   summary whose arrays/structs fold to [...]/{...}. Clicking toggles the EXPANDED view:
+   the full reflected field table, nested members indented. */
+static void tt_feed_row(AppState *app, const Palette *P, const char *topic,
+                        const CapFeedItem *m, int idx){
+    uint64_t key = app_msg_key(topic, m->uid);
+    int open = m->decoded && app_msg_is_expanded(app, key);
     CLAY({ .id = CLAY_IDI("feed_row", (uint32_t)idx),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM,
                        .padding = { .left = UISCI(2), .right = UISCI(2), .top = UISCI(5), .bottom = UISCI(6) },
                        .childGap = UISCI(3) },
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
+        if (m->decoded && Clay_Hovered() && g_pointer_pressed) app_msg_toggle(app, key);
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8),
                            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+            if (m->decoded) ui_icon(open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 11, P->faint);
             CLAY_TEXT(ui_fmt("%8.2fs", m->t_s),
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION), .textColor = P->faint,
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
@@ -210,18 +216,27 @@ static void tt_feed_row(const Palette *P, const CapFeedItem *m, int idx){
                 CLAY_TEXT(ui_str(m->type_name),
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
                                              .textColor = P->accent, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+            if (m->decoded && !open){                       /* collapsed: the one-line summary */
+                CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
+                                   .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+                    CLAY_TEXT(ui_fmt("%s", m->preview),
+                              CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
+                                                 .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                }
+            } else {
+                CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+            }
             CLAY_TEXT(ui_fmt("%u B", m->len),
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION), .textColor = P->faint,
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
         }
-        if (m->decoded){
+        if (open){
             int f;
             for (f = 0; f < m->n_fields; f++) tt_feed_field_row(P, &m->fields[f]);
             if (m->total_fields > m->n_fields)
                 CLAY_TEXT(ui_fmt("  +%d more fields", m->total_fields - m->n_fields),
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint }));
-        } else {
+        } else if (!m->decoded){
             char buf[CAP_MSG_PREVIEW + 1];
             tt_sanitize(buf, (int)sizeof buf, m->preview, m->preview_len);
             CLAY_TEXT(ui_fmt("%s", buf),
@@ -239,12 +254,122 @@ static void tt_do_send(AppState *app, const char *topic){
     app->compose[0]  = '\0';
 }
 
+/* ------------------------------------------------- structured publish form (typed topics) */
+
+/* the prefilled default for a form field, by its display type */
+static const char *tt_form_default(const CapSchemaField *f){
+    if (!strcmp(f->type, "bool"))   return "false";
+    if (!strcmp(f->type, "struct")) return "";       /* no setter yet: stays default */
+    if (strchr(f->type, '['))       return "";       /* array: empty = all zero */
+    return "0";
+}
+
+static void tt_form_reset(AppState *app, const CapSchema *sc, int n){
+    int i;
+    for (i = 0; i < n; i++){
+        snprintf(app->form_val[i], UI_FORM_VAL, "%s", tt_form_default(&sc->fields[i]));
+        app->form_len[i] = (int)strlen(app->form_val[i]);
+    }
+    app->form_focus = 0;
+}
+
+static void tt_form_send(AppState *app, const Topic *t, int n){
+    const char *vals[UI_FORM_MAX]; int i;
+    if (!app->cap) return;
+    for (i = 0; i < n; i++) vals[i] = app->form_val[i];
+    cap_publish_form(app->cap, t->path, vals, n);   /* the values stay for the next send */
+}
+
+/* one editable field: name | input box | type, nested members indented. Clicking focuses
+   it; a struct row is a read-only group header (its members are the inputs). */
+static void tt_form_field_row(AppState *app, const Palette *P, const CapSchemaField *f, int i){
+    int editable = strcmp(f->type, "struct") != 0;
+    int focused  = editable && app->form_focus == i && !app->adding_topic;
+    CLAY({ .id = CLAY_IDI("form_field", (uint32_t)i),
+           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(26)) },
+                       .padding = { .left = UISCI(f->depth * 14) },
+                       .childGap = UISCI(8), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(110 - f->depth * 14)), .height = CLAY_SIZING_GROW(0) },
+                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+            CLAY_TEXT(ui_str(f->name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                                          .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        }
+        if (editable){
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(24)) },
+                               .padding = { .left = UISCI(8), .right = UISCI(8) },
+                               .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+                   .backgroundColor = P->panel2,
+                   .cornerRadius = CLAY_CORNER_RADIUS(UISC(4)),
+                   .border = { .width = CLAY_BORDER_OUTSIDE(1),
+                               .color = focused ? P->accent : P->border } }) {
+                if (Clay_Hovered() && g_pointer_pressed){ app->form_focus = i; app->adding_topic = 0; }
+                CLAY_TEXT(ui_fmt("%s%s", app->form_val[i], focused ? (g_caret_on ? "|" : " ") : ""),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                             .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+            }
+        } else {
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+        }
+        CLAY_TEXT(ui_str(f->type), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                                      .textColor = P->accent, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+}
+
+/* the structured composer, COLLAPSED by default to its header bar; expanded it is one
+   input per schema field (nested members indented), prefilled with defaults; Enter or
+   Send publishes (empty fields keep the canonical default zero). */
+static void topics_form(AppState *app, const Palette *P, const Topic *t, const CapSchema *sc){
+    int i, n = sc->n_fields < UI_FORM_MAX ? sc->n_fields : UI_FORM_MAX;
+    int send = app->form_send;
+    app->form_send = 0; app->compose_send = 0;   /* the form owns Enter on this topic */
+    if (app->form_topic != app->sel_topic){       /* switched topic: fresh defaults, folded */
+        app->form_topic = app->sel_topic;
+        app->form_open  = 0;
+        tt_form_reset(app, sc, n);
+    }
+    app->form_n = app->form_open ? n : 0;         /* input routes to the form only when open */
+    if (send && app->form_open) tt_form_send(app, t, n);
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                       .padding = CLAY_PADDING_ALL(UISC(10)), .childGap = UISCI(4) },
+           .backgroundColor = P->panel, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
+           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8),
+                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+            CLAY({ .id = CLAY_ID("form_fold"),        /* chevron + label: the fold toggle */
+                   .layout = { .childGap = UISCI(8), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+                if (Clay_Hovered() && g_pointer_pressed) app->form_open = !app->form_open;
+                ui_icon(app->form_open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12, P->dim);
+                ui_section_label(P, ui_fmt("PUBLISH  %s", sc->type_name));
+            }
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+            if (app->form_open)
+                CLAY_TEXT(CLAY_STRING("Tab: next field \xC2\xB7 Enter: send \xC2\xB7 empty = default"),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint,
+                                             .wrapMode = CLAY_TEXT_WRAP_NONE }));
+            if (app->form_open &&
+                ui_pill(P, CLAY_STRING("Send"), FAM_SANS, WT_SEMI, FS_SMALL,
+                        P->accent, P->accent_bg, UI_NONE, UISC(26)))
+                tt_form_send(app, t, n);
+        }
+        if (app->form_open)
+            for (i = 0; i < n; i++) tt_form_field_row(app, P, &sc->fields[i], i);
+    }
+}
+
 /* The message composer pinned under the feed: an input box that grows in height with the
    wrapped text (pushing the feed up) plus a Send button. Enter (app->compose_send, set in
    the event loop) sends too. Text is captured into app->compose by the SDL text-input
    handler whenever the Topics tab is active. Room for QoS/options beside Send comes later. */
 static void topics_composer(AppState *app, const Palette *P, const Topic *t){
-    int can, focused, send = app->compose_send;
+    static CapSchema tt_form_schema;   /* the selected topic's advertised schema, per frame */
+    int can, focused, send;
+    if (app->cap && cap_topic_schema(app->cap, t->path, &tt_form_schema)
+        && tt_form_schema.inlined && tt_form_schema.n_fields > 0){
+        topics_form(app, P, t, &tt_form_schema);   /* typed topic: the structured form */
+        return;
+    }
+    app->form_focus = -1; app->form_n = 0;         /* free-text composer owns input */
+    send = app->compose_send;
     app->compose_send = 0;
     if (app->compose_topic != app->sel_topic){      /* switched topic: drop the stale draft */
         app->compose_topic = app->sel_topic;
@@ -361,7 +486,7 @@ static void topics_feed(AppState *app, const Palette *P){
                 if (tt_feed_n == 0)
                     ui_placeholder(P, tt_subscribed ? CLAY_STRING("waiting for messages...")
                                                     : CLAY_STRING("subscribe to see live messages"));
-                for (i = 0; i < tt_feed_n; i++) tt_feed_row(P, &tt_feed[i], i);
+                for (i = 0; i < tt_feed_n; i++) tt_feed_row(app, P, t->path, &tt_feed[i], i);
             }
             topics_composer(app, P, t);
         }
@@ -432,11 +557,11 @@ static void topic_self_chip(const Palette *P, int reliable){
     }
 }
 
-/* one schema field: name | type | @offset */
+/* one schema field: name | type | @offset (nested members indented by depth) */
 static void topic_schema_field_row(const Palette *P, const CapSchemaField *f, int idx){
     CLAY({ .id = CLAY_IDI("schema_field", (uint32_t)idx),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(24)) },
-                       .padding = { .left = UISCI(10), .right = UISCI(10) },
+                       .padding = { .left = UISCI(10 + f->depth * 12), .right = UISCI(10) },
                        .childGap = UISCI(9), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
         CLAY_TEXT(ui_str(f->name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),

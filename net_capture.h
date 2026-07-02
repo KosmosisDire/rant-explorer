@@ -126,29 +126,43 @@ int  cap_declare_publish(Capture *cap, const char *topic);
    message is echoed into the topic's own feed (mine=1) so the sender sees it. Returns 1 ok. */
 int  cap_publish(Capture *cap, const char *topic, const void *data, size_t len);
 
+/* Publish a STRUCTURED message built from per-field value strings, one per top-level
+   field of the topic's schema in field order (the publish form). Empty/NULL values keep
+   the canonical default (zero); scalars parse by kind ("42", "-1.5", "true"); arrays take
+   comma/space-separated numbers (at most the element count, the rest zero); struct fields
+   stay default (no setter yet). Requires the topic's live channel to carry the schema
+   (created while a publisher advertised one). Returns 1, or 0 with the reason logged. */
+int  cap_publish_form(Capture *cap, const char *topic, const char *const *values, int n_values);
+
 /* One captured message, oldest-first, copied out for the selected topic's feed. When the
-   sender advertised a schema the message is REFLECTED into per-field rows (decoded
-   exactly as the writer declared it, no content guessing: a u8 array is an array) and
-   type_name is the schema's root name; otherwise preview holds the raw payload head. */
-#define CAP_MSG_FIELDS    12   /* top-level fields captured per message */
-#define CAP_MSG_FIELD_VAL 44   /* rendered value text per field */
+   sender advertised a schema the message is REFLECTED into per-field rows (every depth,
+   nested members flattened with their depth; decoded exactly as the writer declared it,
+   no content guessing: a u8 array is an array) AND a one-line summary in preview[] whose
+   arrays/structs are expanded inline (arrays up to 4 elements, structs up to 4 members
+   recursed 2 levels deep; past either cap the rest folds to " .."/{...}). For a schema-less sender
+   preview holds the raw payload head instead. uid identifies the message across snapshot
+   rebuilds (for per-message expand/collapse UI state). */
+#define CAP_MSG_FIELDS    24   /* fields captured per message (all depths) */
+#define CAP_MSG_FIELD_VAL 96   /* rendered value text per field */
 
 typedef struct {
-    char name[CAP_TOPIC_CAP];        /* field name */
-    char value[CAP_MSG_FIELD_VAL];   /* rendered value ("42", "1.5", "[104 101 108 ..]", "{..}") */
+    char    name[CAP_TOPIC_CAP];     /* field's own name */
+    char    value[CAP_MSG_FIELD_VAL];/* rendered value ("42", "1.5", "[104 101 108 ..]", "{...}") */
+    uint8_t depth;                   /* 0 = top level */
 } CapMsgField;
 
 typedef struct {
     double   t_s;                    /* seconds since the observer started */
+    uint32_t uid;                    /* stable per-topic message id (expand/collapse key) */
     uint32_t len;                    /* true payload length */
-    uint16_t preview_len;            /* bytes filled in preview[] (raw messages) */
+    uint16_t preview_len;            /* bytes filled in preview[] */
     int      mine;                   /* 1 = we published it (local echo) */
     int      decoded;                /* 1 = fields[] holds the reflected decode */
     int      n_fields;               /* fields filled (capped to CAP_MSG_FIELDS) */
     int      total_fields;           /* fields the schema actually has */
     char     type_name[CAP_TOPIC_CAP];  /* schema root name when decoded, else "" */
     char     sender[CAP_NAME_CAP];   /* sending node's name */
-    char     preview[CAP_MSG_PREVIEW];
+    char     preview[CAP_MSG_PREVIEW];  /* decoded: one-line summary; raw: payload head */
     CapMsgField fields[CAP_MSG_FIELDS];
 } CapFeedItem;
 
@@ -167,9 +181,10 @@ int  cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int
 #define CAP_SCHEMA_FIELDS 24    /* top-level fields captured per schema */
 
 typedef struct {
-    char     name[CAP_TOPIC_CAP];  /* field name */
-    char     type[24];             /* display type: "u64", "u8[256]", "raw[16]", "struct" */
-    uint32_t offset;               /* byte offset in a message */
+    char     name[CAP_TOPIC_CAP];  /* field's own name */
+    char     type[24];             /* display type: "u64", "u8[256]", "struct" */
+    uint8_t  depth;                /* 0 = top level; nested members are one deeper */
+    uint32_t offset;               /* absolute byte offset in a message */
     uint32_t size;                 /* byte size of the field */
 } CapSchemaField;
 

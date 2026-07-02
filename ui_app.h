@@ -6,7 +6,10 @@
 typedef enum { TAB_NODES, TAB_TOPICS, TAB_LOG } Tab;
 
 #define UI_MAX_COLLAPSED 128   /* tracked collapsed tree branches (default = expanded) */
+#define UI_MAX_EXPANDED  64    /* tracked expanded feed messages (default = collapsed) */
 #define UI_COMPOSE_MAX   1024  /* bytes the message composer accepts (fits one fragment) */
+#define UI_FORM_MAX      24    /* fields the structured publish form edits (all depths) */
+#define UI_FORM_VAL      40    /* value text per form field */
 
 typedef struct {
     int  theme_dark;          /* 1 dark, 0 light */
@@ -26,6 +29,21 @@ typedef struct {
     int      compose_len;
     int      compose_send;    /* set by Enter in the event loop; consumed when the feed draws */
     int      compose_topic;   /* selected topic the draft belongs to (reset draft on change) */
+
+    /* structured publish form (replaces the composer on a typed topic): one value string
+       per top-level schema field, prefilled with the type's default */
+    char     form_val[UI_FORM_MAX][UI_FORM_VAL];
+    int      form_len[UI_FORM_MAX];
+    int      form_n;          /* fields shown this frame (the composer sets it) */
+    int      form_focus;      /* focused field, or -1 (the free-text composer owns input) */
+    int      form_topic;      /* sel_topic the values belong to; re-defaulted on change */
+    int      form_send;       /* Enter in a form field: publish (consumed by the composer) */
+    int      form_open;       /* the publish form starts collapsed to its header bar */
+
+    /* feed messages EXPANDED by click (collapsed one-liners are the default): a small
+       replaceable set of hash(topic path) ^ message uid keys */
+    uint64_t msg_expanded[UI_MAX_EXPANDED];
+    int      n_msg_expanded;
 
     /* "add a topic" input (the + by the filter): type a name to publish to a new topic */
     int      adding_topic;    /* 1 = the new-topic name field has focus (text routes here) */
@@ -56,6 +74,12 @@ static void app_init(AppState *a, const Dataset *data){
     a->compose_send  = 0;
     a->compose[0]    = '\0';
     a->compose_topic = -1;
+    a->form_n     = 0;
+    a->form_focus = -1;
+    a->form_topic = -1;
+    a->form_send  = 0;
+    a->form_open  = 0;
+    a->n_msg_expanded = 0;
     a->adding_topic     = 0;
     a->new_topic_len    = 0;
     a->new_topic[0]     = '\0';
@@ -85,6 +109,26 @@ static void app_toggle_collapsed(AppState *a, const char *path){
     for (i = 0; i < a->n_collapsed; i++)
         if (a->collapsed[i] == h){ a->collapsed[i] = a->collapsed[--a->n_collapsed]; return; }
     if (a->n_collapsed < UI_MAX_COLLAPSED) a->collapsed[a->n_collapsed++] = h;
+}
+
+/* per-message feed expansion (default collapsed); key = topic path + message uid */
+static uint64_t app_msg_key(const char *topic, uint32_t uid){
+    return ui_path_hash(topic) ^ ((uint64_t)uid * 0x9E3779B97F4A7C15ull);
+}
+static int app_msg_is_expanded(const AppState *a, uint64_t key){
+    int i;
+    for (i = 0; i < a->n_msg_expanded; i++) if (a->msg_expanded[i] == key) return 1;
+    return 0;
+}
+static void app_msg_toggle(AppState *a, uint64_t key){
+    int i;
+    for (i = 0; i < a->n_msg_expanded; i++)
+        if (a->msg_expanded[i] == key){ a->msg_expanded[i] = a->msg_expanded[--a->n_msg_expanded]; return; }
+    if (a->n_msg_expanded == UI_MAX_EXPANDED){          /* full: drop the oldest entry */
+        memmove(a->msg_expanded, a->msg_expanded + 1, (UI_MAX_EXPANDED - 1) * sizeof a->msg_expanded[0]);
+        a->n_msg_expanded--;
+    }
+    a->msg_expanded[a->n_msg_expanded++] = key;
 }
 
 #endif /* UI_APP_H */

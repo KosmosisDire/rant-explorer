@@ -79,6 +79,8 @@ static unsigned long long cap_start_ms;
 static Config  cap_cfg;          /* echoed into the snapshot for display */
 
 static unsigned long long cap_now_ms(void);   /* defined below; used by cap_ring_push */
+static void *cap_schema_alloc(void *user, void *ptr, size_t size);          /* defined below */
+static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic);/* defined below */
 
 /* one observer-side topic the explorer is using: a ring of recent messages plus the DART
    channel(s) wiring it up. A channel's reliability is FIXED at creation, but our wanted
@@ -92,6 +94,7 @@ static unsigned long long cap_now_ms(void);   /* defined below; used by cap_ring
 
 typedef struct {
     double   t_s;
+    uint32_t uid;                         /* per-topic message id (UI expand/collapse key) */
     uint32_t len;
     uint16_t preview_len;
     int      mine;                        /* 1 = we published it (local echo) */
@@ -99,8 +102,8 @@ typedef struct {
     int      n_fields, total_fields;
     char     type_name[DART_TOPIC_NAME_MAX + 1];   /* sender's schema root name when decoded */
     char     sender[DART_NODE_NAME_MAX + 1];
-    char     preview[CAP_MSG_PREVIEW];    /* raw payload head (schema-less messages) */
-    CapMsgField fields[CAP_MSG_FIELDS];   /* per-field rendered decode */
+    char     preview[CAP_MSG_PREVIEW];    /* decoded: one-line summary; raw: payload head */
+    CapMsgField fields[CAP_MSG_FIELDS];   /* per-field rendered decode (all depths) */
 } CapMsgRec;
 
 typedef struct {
@@ -114,6 +117,7 @@ typedef struct {
     uint16_t     index[2];               /* their channel indices (valid where ch[i] != NULL) */
     unsigned long long n_msgs;
     unsigned long long n_drops;
+    uint32_t     uid_next;               /* next message uid (expand/collapse key) */
     CapMsgRec    ring[CAP_FEED_MAX];
     int          head, count;            /* ring write cursor + fill */
 } CapSub;
@@ -158,58 +162,143 @@ static int cap_val_append(char *dst, int cap, int at, const char *fmt, ...){
     if (n < 0 || at + n >= cap) return cap - 1;   /* clamped (still NUL-terminated) */
     return at + n;
 }
-/* an array value: the first few elements decoded by their kind */
-static void cap_fmt_arr(char *dst, int cap, DartBytes a, uint8_t elem, uint16_t count){
+/* an array value: elements decoded by their kind. Appends at most `max_items` of them
+   (0 = as many as the buffer holds), then " .." if any were left out. Floats print
+   %g normally, or fixed-width (see cap_fmt_float) when `fixed_float`. */
+static void cap_fmt_arr(char *dst, int cap, int *at, DartBytes a, uint8_t elem, uint16_t count,
+                        uint16_t max_items, int fixed_float){
     uint32_t esz = dart_schema_scalar_size((DartSchemaTypeKind)elem);
-    uint16_t j, show = count < 6 ? count : 6;
-    int at = 0;
-    dst[0] = '\0';
-    at = cap_val_append(dst, cap, at, "[");
-    for (j = 0; j < show && esz; j++){
+    uint16_t limit = (max_items && max_items < count) ? max_items : count;
+    uint16_t j;
+    *at = cap_val_append(dst, cap, *at, "[");
+    for (j = 0; j < limit && esz && *at < cap - 8; j++){   /* keep room for " ..]" */
         const uint8_t *p = a.data + (size_t)j * esz;
-        if (j) at = cap_val_append(dst, cap, at, " ");
+        if (j) *at = cap_val_append(dst, cap, *at, " ");
         switch ((DartSchemaTypeKind)elem){
-            case DART_U8:  at = cap_val_append(dst,cap,at,"%u",  p[0]); break;
-            case DART_U16: at = cap_val_append(dst,cap,at,"%u",  i_dart_le_r16(p)); break;
-            case DART_U32: at = cap_val_append(dst,cap,at,"%lu", (unsigned long)i_dart_le_r32(p)); break;
-            case DART_U64: at = cap_val_append(dst,cap,at,"%llu",(unsigned long long)i_dart_le_r64(p)); break;
-            case DART_I8:  at = cap_val_append(dst,cap,at,"%d",  (int)(int8_t)p[0]); break;
-            case DART_I16: at = cap_val_append(dst,cap,at,"%d",  (int)(int16_t)i_dart_le_r16(p)); break;
-            case DART_I32: at = cap_val_append(dst,cap,at,"%ld", (long)(int32_t)i_dart_le_r32(p)); break;
-            case DART_I64: at = cap_val_append(dst,cap,at,"%lld",(long long)(int64_t)i_dart_le_r64(p)); break;
+            case DART_U8:  *at = cap_val_append(dst,cap,*at,"%u",  p[0]); break;
+            case DART_U16: *at = cap_val_append(dst,cap,*at,"%u",  i_dart_le_r16(p)); break;
+            case DART_U32: *at = cap_val_append(dst,cap,*at,"%lu", (unsigned long)i_dart_le_r32(p)); break;
+            case DART_U64: *at = cap_val_append(dst,cap,*at,"%llu",(unsigned long long)i_dart_le_r64(p)); break;
+            case DART_I8:  *at = cap_val_append(dst,cap,*at,"%d",  (int)(int8_t)p[0]); break;
+            case DART_I16: *at = cap_val_append(dst,cap,*at,"%d",  (int)(int16_t)i_dart_le_r16(p)); break;
+            case DART_I32: *at = cap_val_append(dst,cap,*at,"%ld", (long)(int32_t)i_dart_le_r32(p)); break;
+            case DART_I64: *at = cap_val_append(dst,cap,*at,"%lld",(long long)(int64_t)i_dart_le_r64(p)); break;
             case DART_F32: { uint32_t b = i_dart_le_r32(p); float  v; memcpy(&v,&b,4);
-                             at = cap_val_append(dst,cap,at,"%g",(double)v); } break;
+                             *at = cap_val_append(dst,cap,*at, fixed_float ? "%8.3f" : "%g",(double)v); } break;
             case DART_F64: { uint64_t b = i_dart_le_r64(p); double v; memcpy(&v,&b,8);
-                             at = cap_val_append(dst,cap,at,"%g",v); } break;
-            case DART_BOOL: at = cap_val_append(dst,cap,at,"%s", p[0] ? "true" : "false"); break;
+                             *at = cap_val_append(dst,cap,*at, fixed_float ? "%8.3f" : "%g",v); } break;
+            case DART_BOOL: *at = cap_val_append(dst,cap,*at,"%s", p[0] ? "true" : "false"); break;
             default: break;
         }
     }
-    if (show < count) at = cap_val_append(dst, cap, at, " ..");
-    cap_val_append(dst, cap, at, "]");
+    if (j < count) *at = cap_val_append(dst, cap, *at, " ..");
+    *at = cap_val_append(dst, cap, *at, "]");
 }
+/* one field's value text, from its reflected DartValue */
+static void cap_fmt_value(char *dst, int cap, const DartSchemaFieldInfo *fi, const DartValue *v){
+    int at = 0;
+    switch ((DartSchemaTypeKind)fi->kind){
+        case DART_BOOL: snprintf(dst, (size_t)cap, "%s", v->v.u ? "true" : "false"); break;
+        case DART_U8: case DART_U16: case DART_U32: case DART_U64:
+            snprintf(dst, (size_t)cap, "%llu", (unsigned long long)v->v.u); break;
+        case DART_I8: case DART_I16: case DART_I32: case DART_I64:
+            snprintf(dst, (size_t)cap, "%lld", (long long)v->v.i); break;
+        case DART_F32: case DART_F64:
+            snprintf(dst, (size_t)cap, "%g", v->v.f); break;
+        case DART_ARR:    dst[0] = '\0'; cap_fmt_arr(dst, cap, &at, v->bytes, fi->elem, fi->count, 0, 0); break;
+        case DART_STRUCT: snprintf(dst, (size_t)cap, "{...}"); break;
+        default:          snprintf(dst, (size_t)cap, "?"); break;
+    }
+}
+/* a float, fixed-width (unlike %g, which varies with magnitude/precision and can jump to
+   scientific notation) so values line up in the single-line preview */
+static void cap_fmt_float(char *dst, int cap, int *at, double v){
+    *at = cap_val_append(dst, cap, *at, "%8.3f", v);
+}
+
+#define CAP_PREVIEW_MAX_DEPTH 2   /* nested struct levels the preview expands (root = 0) */
+#define CAP_PREVIEW_MAX_ITEMS 4   /* array elements / struct members shown before " .." */
+
+/* advance past the field at `idx` and, if it is a struct, all of its members (the flat
+   table is depth-first: a struct's subtree is every following entry deeper than it) */
+static uint16_t cap_field_skip(const DartSchema *s, uint16_t nf, uint16_t idx){
+    DartSchemaFieldInfo fi;
+    uint16_t depth;
+    if (!dart_schema_field_at(s, idx, &fi)) return (uint16_t)(idx + 1);
+    depth = fi.depth;
+    idx++;
+    while (idx < nf){
+        DartSchemaFieldInfo next;
+        if (!dart_schema_field_at(s, idx, &next) || next.depth <= depth) break;
+        idx++;
+    }
+    return idx;
+}
+
+/* the preview's value for one field: scalars as cap_fmt_value, arrays up to
+   CAP_PREVIEW_MAX_ITEMS elements, structs expanded member-by-member (up to
+   CAP_PREVIEW_MAX_ITEMS shown, " .." past that) recursively up to CAP_PREVIEW_MAX_DEPTH
+   levels of nesting; deeper structs fold to "{...}" */
+static void cap_fmt_value_preview(char *dst, int cap, int *at, const DartSchema *s, DartBytes data,
+                                  uint16_t nf, uint16_t field_idx, const DartSchemaFieldInfo *fi,
+                                  const DartValue *v){
+    if (fi->kind == DART_STRUCT){
+        if (fi->depth < CAP_PREVIEW_MAX_DEPTH){
+            uint16_t idx = (uint16_t)(field_idx + 1);
+            int shown = 0;
+            *at = cap_val_append(dst, cap, *at, "{");
+            while (idx < nf){
+                DartSchemaFieldInfo mfi; DartValue mv;
+                if (!dart_schema_field_at(s, idx, &mfi) || mfi.depth <= fi->depth) break;
+                if (!dart_get_value(data, s, idx, &mv)) break;
+                if (shown >= CAP_PREVIEW_MAX_ITEMS){
+                    *at = cap_val_append(dst, cap, *at, " ..");
+                    break;
+                }
+                *at = cap_val_append(dst, cap, *at, shown ? " %.*s=" : "%.*s=",
+                                     (int)mfi.name.len, mfi.name.data ? mfi.name.data : "");
+                cap_fmt_value_preview(dst, cap, at, s, data, nf, idx, &mfi, &mv);
+                shown++;
+                idx = cap_field_skip(s, nf, idx);
+            }
+            *at = cap_val_append(dst, cap, *at, "}");
+        } else {
+            *at = cap_val_append(dst, cap, *at, "{...}");
+        }
+    } else if (fi->kind == DART_ARR){
+        cap_fmt_arr(dst, cap, at, v->bytes, fi->elem, fi->count, CAP_PREVIEW_MAX_ITEMS, 1);
+    } else if (fi->kind == DART_F32 || fi->kind == DART_F64){
+        cap_fmt_float(dst, cap, at, v->v.f);
+    } else {
+        char one[32];
+        cap_fmt_value(one, (int)sizeof one, fi, v);
+        *at = cap_val_append(dst, cap, *at, "%s", one);
+    }
+}
+/* reflect a message into per-field rows (every depth) + a one-line summary (top-level
+   fields only; arrays/structs are expanded inline via cap_fmt_value_preview) */
 static void cap_decode_fields(CapMsgRec *m, DartBytes data, const DartSchema *s){
     uint16_t i, nf = dart_schema_field_count(s);
+    int at = 0;
     m->n_fields = 0;
     m->total_fields = nf;
-    for (i = 0; i < nf && m->n_fields < CAP_MSG_FIELDS; i++){
-        DartSchemaFieldInfo fi; CapMsgField *f;
-        if (!dart_schema_field_at(s, i, &fi)) break;
-        f = &m->fields[m->n_fields++];
-        snprintf(f->name, sizeof f->name, "%.*s", (int)fi.name.len, fi.name.data ? fi.name.data : "");
-        switch ((DartSchemaTypeKind)fi.kind){
-            case DART_BOOL: snprintf(f->value, sizeof f->value, "%s", dart_get_uint(data,s,i) ? "true" : "false"); break;
-            case DART_U8: case DART_U16: case DART_U32: case DART_U64:
-                snprintf(f->value, sizeof f->value, "%llu", (unsigned long long)dart_get_uint(data,s,i)); break;
-            case DART_I8: case DART_I16: case DART_I32: case DART_I64:
-                snprintf(f->value, sizeof f->value, "%lld", (long long)dart_get_int(data,s,i)); break;
-            case DART_F32: snprintf(f->value, sizeof f->value, "%g", (double)dart_get_f32(data,s,i)); break;
-            case DART_F64: snprintf(f->value, sizeof f->value, "%g", dart_get_f64(data,s,i)); break;
-            case DART_ARR: cap_fmt_arr(f->value, sizeof f->value, dart_get_array(data,s,i), fi.elem, fi.count); break;
-            case DART_STRUCT: snprintf(f->value, sizeof f->value, "{..}"); break;
-            default:          snprintf(f->value, sizeof f->value, "?"); break;
+    m->preview[0] = '\0';
+    for (i = 0; i < nf; i++){
+        DartSchemaFieldInfo fi; DartValue v;
+        if (!dart_schema_field_at(s, i, &fi) || !dart_get_value(data, s, i, &v)) break;
+        if (m->n_fields < CAP_MSG_FIELDS){
+            CapMsgField *f = &m->fields[m->n_fields++];
+            snprintf(f->name, sizeof f->name, "%.*s", (int)fi.name.len, fi.name.data ? fi.name.data : "");
+            f->depth = (uint8_t)(fi.depth > 255 ? 255 : fi.depth);
+            cap_fmt_value(f->value, (int)sizeof f->value, &fi, &v);
+        }
+        if (fi.depth == 0){                                /* the collapsed summary line */
+            at = cap_val_append(m->preview, CAP_MSG_PREVIEW, at, at ? "  %.*s=" : "%.*s=",
+                                (int)fi.name.len, fi.name.data ? fi.name.data : "");
+            cap_fmt_value_preview(m->preview, CAP_MSG_PREVIEW, &at, s, data, nf, i, &fi, &v);
         }
     }
+    m->preview_len = (uint16_t)strlen(m->preview);
 }
 
 /* append one message to a topic's ring (received or our own echo). Does not touch
@@ -218,6 +307,7 @@ static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t
                           const DartSchema *schema){
     CapMsgRec *m = &s->ring[s->head];
     m->t_s = (double)(cap_now_ms() - cap_start_ms) / 1000.0;
+    m->uid = ++s->uid_next;
     m->len = (uint32_t)len;
     m->decoded = 0; m->type_name[0] = '\0';
     m->n_fields = m->total_fields = 0;
@@ -451,9 +541,15 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
         return 1;
     }
     if (!s->ch[want]){
-        DartChannel *ch = dart_node_create_channel(node, s->name, role, NULL,
+        /* a typed topic gets a typed channel: adopt the schema its advertisers carry, so
+           our publishes reach typed readers and the schema gate matches us. Trade-off:
+           this channel then matches only that schema (the drawer flags topics whose
+           publishers disagree); a topic with no advertised schema stays generic. */
+        DartSchema *sch = cap_topic_schema_parse(node, s->name);
+        DartChannel *ch = dart_node_create_channel(node, s->name, role, sch,
                  &(DartChannelOpts){ .qos = { .reliability = want ? DART_RELIABLE : DART_BEST_EFFORT,
                                               .catch_up = 1 } });
+        if (sch) dart_schema_free(sch, cap_schema_alloc, NULL);   /* the node keeps its own copy */
         if (!ch) return 0;
         s->ch[want] = ch; s->index[want] = dart_channel_index(ch);
     } else {
@@ -503,13 +599,118 @@ int cap_declare_publish(Capture *cap, const char *topic){
 }
 
 int cap_publish(Capture *cap, const char *topic, const void *data, size_t len){
-    CapSub *s;
+    CapSub *s; const DartSchema *echo;
     if (!topic || (!data && len)) return 0;
     if (!cap_declare_publish(cap, topic)) return 0;   /* ensure the publisher channel is live */
     s = cap_sub_find(topic);
     if (!s) return 0;
     if (dart_channel_send(s->ch[s->reliable], dart_bytes(data, len)) < 0){ cap_logf("PUBLISH %s send failed", topic); return 0; }
-    cap_ring_push(s, dart_cstr(cap_cfg.name), data, len, 1, NULL);   /* local echo: raw (our channels are schema-less) */
+    echo = s->ch[s->reliable] ? dart_channel_schema(s->ch[s->reliable]) : NULL;   /* decoded echo when typed */
+    if (echo && !dart_schema_validate(echo, dart_bytes(data, len))) echo = NULL;
+    cap_ring_push(s, dart_cstr(cap_cfg.name), data, len, 1, echo);
+    return 1;
+}
+
+/* parse one form value into flat field i of the message being built (dart_set_value).
+   Empty keeps the default; a struct row has no value of its own (its members do). */
+static int cap_form_set(const DartSchema *sch, uint16_t i, const char *v, uint8_t *buf, size_t size){
+    DartSchemaFieldInfo fi; DartValue val; char *end;
+    if (!dart_schema_field_at(sch, i, &fi)) return 0;
+    while (*v == ' ' || *v == '\t') v++;
+    if (!*v || fi.kind == DART_STRUCT) return 1;          /* empty/struct: the default stays */
+    memset(&val, 0, sizeof val);
+    switch ((DartSchemaTypeKind)fi.kind){
+        case DART_BOOL:
+            if      (!strcmp(v, "true"))  val.v.u = 1;
+            else if (!strcmp(v, "false")) val.v.u = 0;
+            else {
+                val.v.u = strtoull(v, &end, 0);
+                while (*end == ' ') end++;
+                if (*end != '\0') return 0;
+            }
+            break;
+        case DART_U8: case DART_U16: case DART_U32: case DART_U64:
+            val.v.u = strtoull(v, &end, 0);
+            while (*end == ' ') end++;
+            if (*end != '\0') return 0;
+            break;
+        case DART_I8: case DART_I16: case DART_I32: case DART_I64:
+            val.v.i = strtoll(v, &end, 0);
+            while (*end == ' ') end++;
+            if (*end != '\0') return 0;
+            break;
+        case DART_F32: case DART_F64:
+            val.v.f = strtod(v, &end);
+            while (*end == ' ') end++;
+            if (*end != '\0') return 0;
+            break;
+        case DART_ARR: {                                  /* comma/space-separated elements */
+            uint32_t esz = dart_schema_scalar_size((DartSchemaTypeKind)fi.elem);
+            uint8_t *w = (uint8_t *)malloc(fi.size ? fi.size : 1);
+            uint16_t n = 0; const char *p = v; int ok;
+            if (!w || !esz){ free(w); return 0; }
+            for (;;){
+                while (*p == ' ' || *p == ',' || *p == '\t') p++;
+                if (!*p || n >= fi.count) break;
+                if (fi.elem == DART_F32 || fi.elem == DART_F64){
+                    double d = strtod(p, &end);
+                    if (end == p) break;
+                    if (fi.elem == DART_F32){ float x = (float)d; uint32_t b; memcpy(&b, &x, 4); i_dart_le_w32(w + (size_t)n*esz, b); }
+                    else                    { uint64_t b; memcpy(&b, &d, 8); i_dart_le_w64(w + (size_t)n*esz, b); }
+                } else if (fi.elem >= DART_I8 && fi.elem <= DART_I64){
+                    long long d = strtoll(p, &end, 0);
+                    if (end == p) break;
+                    if      (esz == 1) w[n] = (uint8_t)d;
+                    else if (esz == 2) i_dart_le_w16(w + (size_t)n*2, (uint16_t)d);
+                    else if (esz == 4) i_dart_le_w32(w + (size_t)n*4, (uint32_t)d);
+                    else               i_dart_le_w64(w + (size_t)n*8, (uint64_t)d);
+                } else {                                   /* unsigned + bool elements */
+                    unsigned long long u = strtoull(p, &end, 0);
+                    if (end == p) break;
+                    if      (esz == 1) w[n] = (uint8_t)u;
+                    else if (esz == 2) i_dart_le_w16(w + (size_t)n*2, (uint16_t)u);
+                    else if (esz == 4) i_dart_le_w32(w + (size_t)n*4, (uint32_t)u);
+                    else               i_dart_le_w64(w + (size_t)n*8, (uint64_t)u);
+                }
+                p = end; n++;
+            }
+            while (*p == ' ' || *p == ',' || *p == '\t') p++;
+            val.bytes = dart_bytes(w, (size_t)n * esz);
+            ok = (*p == '\0') && dart_set_value(buf, size, sch, i, &val);
+            free(w);
+            return ok;                                    /* leftovers = junk or too many elements */
+        }
+        default: return 0;
+    }
+    return dart_set_value(buf, size, sch, i, &val);
+}
+
+int cap_publish_form(Capture *cap, const char *topic, const char *const *values, int n_values){
+    CapSub *s; const DartSchema *sch; uint8_t *buf; size_t size; uint16_t i, nf; int ok = 1;
+    if (!topic || !values) return 0;
+    if (!cap_declare_publish(cap, topic)) return 0;
+    s = cap_sub_find(topic);
+    sch = (s && s->ch[s->reliable]) ? dart_channel_schema(s->ch[s->reliable]) : NULL;
+    if (!sch){ cap_logf("PUBLISH %s refused: channel carries no schema", topic); return 0; }
+    size = dart_schema_size(sch);
+    buf = (uint8_t *)malloc(size ? size : 1);
+    if (!buf) return 0;
+    dart_schema_message_default(sch, buf, size);
+    nf = dart_schema_field_count(sch);
+    for (i = 0; i < nf && ok; i++)
+        ok = cap_form_set(sch, i, (i < (uint16_t)n_values && values[i]) ? values[i] : "", buf, size);
+    if (!ok){
+        cap_logf("PUBLISH %s refused: field %u value invalid", topic, (unsigned)(i ? i - 1u : 0u));
+        free(buf);
+        return 0;
+    }
+    if (dart_channel_send(s->ch[s->reliable], dart_bytes(buf, size)) < 0){
+        cap_logf("PUBLISH %s send failed", topic);
+        free(buf);
+        return 0;
+    }
+    cap_ring_push(s, dart_cstr(cap_cfg.name), buf, size, 1, sch);   /* decoded local echo */
+    free(buf);
     return 1;
 }
 
@@ -646,6 +847,7 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
         CapFeedItem *o = &out[i];
         int k;
         o->t_s         = m->t_s;
+        o->uid         = m->uid;
         o->len         = m->len;
         o->preview_len = m->preview_len;
         o->mine        = m->mine;
@@ -696,10 +898,31 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
         snprintf(f->name, sizeof f->name, "%.*s", (int)fi.name.len, fi.name.data ? fi.name.data : "");
         if (fi.kind == DART_ARR) snprintf(f->type, sizeof f->type, "%s[%u]", cap_kind_str(fi.elem), fi.count);
         else                     snprintf(f->type, sizeof f->type, "%s", cap_kind_str(fi.kind));
+        f->depth  = (uint8_t)(fi.depth > 255 ? 255 : fi.depth);
         f->offset = fi.offset;
         f->size   = fi.size;
         out->n_fields++;
     }
+}
+
+/* the topic's advertised schema, freshly parsed from any live advertiser (pub or sub
+   entry); the caller frees it via cap_schema_alloc. NULL when nobody advertises one. */
+static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic){
+    const DartDiscoveryPeer *peers; uint16_t n_peers = 0, s;
+    size_t tlen = topic ? strlen(topic) : 0;
+    if (!node || tlen == 0) return NULL;
+    peers = dart_node_peers(node, &n_peers);
+    for (s = 0; s < n_peers; s++){
+        DartInterestIter it; DartTopic t;
+        memset(&it, 0, sizeof it);
+        while (dart_node_peer_interest_next(&peers[s], &it, &t)){
+            uint64_t hash; DartBytes wire;
+            if (t.name.len != tlen || memcmp(t.name.data, topic, tlen) != 0) continue;
+            if (!dart_node_peer_schema(&peers[s], t.alias, &hash, &wire) || !wire.data) continue;
+            return dart_schema_parse(wire.data, wire.len, cap_schema_alloc, NULL);
+        }
+    }
+    return NULL;
 }
 
 int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){

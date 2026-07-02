@@ -119,6 +119,7 @@ int main(int argc, char **argv){
     rdata = (UiRenderer){ .renderer = ren, .fonts = g_fonts };
 
     SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
+    Clay_SetMaxElementCount(1024 * 1024);   /* default 64k is too small for the UI's flexbox tree */
     clay_mem = Clay_MinMemorySize();
     arena = Clay_CreateArenaWithCapacityAndMemory(clay_mem, malloc(clay_mem));
     Clay_Initialize(arena, (Clay_Dimensions){ (float)ow, (float)oh },
@@ -174,10 +175,11 @@ int main(int argc, char **argv){
                         if (!ev.key.repeat){ debug_enabled = !debug_enabled; Clay_SetDebugModeEnabled(debug_enabled); }
                         break;
                     }
-                    if (app.tab == TAB_TOPICS){               /* composer is focused unless adding a topic */
-                        char *buf = app.adding_topic ? app.new_topic : app.compose;
-                        int  *len = app.adding_topic ? &app.new_topic_len : &app.compose_len;
-                        int   cap = app.adding_topic ? (int)sizeof app.new_topic : UI_COMPOSE_MAX;
+                    if (app.tab == TAB_TOPICS){               /* active field: new-topic > form > composer */
+                        int   form = !app.adding_topic && app.form_focus >= 0 && app.form_focus < UI_FORM_MAX;
+                        char *buf = app.adding_topic ? app.new_topic : form ? app.form_val[app.form_focus] : app.compose;
+                        int  *len = app.adding_topic ? &app.new_topic_len : form ? &app.form_len[app.form_focus] : &app.compose_len;
+                        int   cap = app.adding_topic ? (int)sizeof app.new_topic : form ? UI_FORM_VAL : UI_COMPOSE_MAX;
                         if (ev.key.key == SDLK_BACKSPACE){    /* (repeat allowed: hold to delete) */
                             if (*len > 0){
                                 int n = *len - 1;
@@ -185,24 +187,33 @@ int main(int argc, char **argv){
                                 *len = n; buf[n] = '\0';
                             }
                         } else if ((ev.key.key == SDLK_RETURN || ev.key.key == SDLK_KP_ENTER) && !ev.key.repeat){
-                            if (!app.adding_topic && (ev.key.mod & SDL_KMOD_SHIFT)){   /* shift+enter: newline */
+                            if (!app.adding_topic && !form && (ev.key.mod & SDL_KMOD_SHIFT)){   /* shift+enter: newline */
                                 if (*len + 1 < cap - 1){ buf[*len] = '\n'; (*len)++; buf[*len] = '\0'; }
                             } else if (app.adding_topic){
                                 app.new_topic_commit = 1;
+                            } else if (form){
+                                app.form_send = 1;
                             } else {
                                 app.compose_send = 1;
                             }
+                        } else if (ev.key.key == SDLK_TAB && !ev.key.repeat){
+                            if (form && app.form_n > 0)       /* tab cycles the form fields */
+                                app.form_focus = (ev.key.mod & SDL_KMOD_SHIFT)
+                                    ? (app.form_focus + app.form_n - 1) % app.form_n
+                                    : (app.form_focus + 1) % app.form_n;
                         } else if (ev.key.key == SDLK_ESCAPE && !ev.key.repeat){
                             if (app.adding_topic){ app.adding_topic = 0; app.new_topic_len = 0; app.new_topic[0] = '\0'; }
+                            else if (form){ app.form_val[app.form_focus][0] = '\0'; app.form_len[app.form_focus] = 0; }
                             else { app.compose_len = 0; app.compose[0] = '\0'; }
                         }
                     }
                     break;
                 case SDL_EVENT_TEXT_INPUT:                    /* typed characters -> active field */
                     if (app.tab == TAB_TOPICS && ev.text.text){
-                        char  *buf = app.adding_topic ? app.new_topic : app.compose;
-                        int   *len = app.adding_topic ? &app.new_topic_len : &app.compose_len;
-                        int    cap = app.adding_topic ? (int)sizeof app.new_topic : UI_COMPOSE_MAX;
+                        int    form = !app.adding_topic && app.form_focus >= 0 && app.form_focus < UI_FORM_MAX;
+                        char  *buf = app.adding_topic ? app.new_topic : form ? app.form_val[app.form_focus] : app.compose;
+                        int   *len = app.adding_topic ? &app.new_topic_len : form ? &app.form_len[app.form_focus] : &app.compose_len;
+                        int    cap = app.adding_topic ? (int)sizeof app.new_topic : form ? UI_FORM_VAL : UI_COMPOSE_MAX;
                         size_t add = strlen(ev.text.text);
                         if (add && *len + (int)add < cap - 1){
                             memcpy(buf + *len, ev.text.text, add);

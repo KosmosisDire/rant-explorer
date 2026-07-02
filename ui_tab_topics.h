@@ -172,10 +172,26 @@ static void topics_tree(AppState *app, const Palette *P){
 
 /* ================================================================= center: feed */
 
-/* one received message: time + sender + size on top, the payload preview below */
+/* one decoded field of a message: a table row, fixed name column then the value
+   (left-aligned so values line up down the column) */
+static void tt_feed_field_row(const Palette *P, const CapMsgField *f){
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(18)) },
+                       .padding = { .left = UISCI(14) }, .childGap = UISCI(9),
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(130)), .height = CLAY_SIZING_GROW(0) },
+                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+            CLAY_TEXT(ui_str(f->name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                                          .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        }
+        CLAY_TEXT(ui_str(f->value), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                       .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+    }
+}
+
+/* one received message: time + sender + type + size on top; below, the reflected decode
+   as one row per field (the writer's declared structure), or the raw payload head */
 static void tt_feed_row(const Palette *P, const CapFeedItem *m, int idx){
-    char buf[CAP_MSG_PREVIEW + 1];
-    tt_sanitize(buf, (int)sizeof buf, m->preview, m->preview_len);
     CLAY({ .id = CLAY_IDI("feed_row", (uint32_t)idx),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM,
                        .padding = { .left = UISCI(2), .right = UISCI(2), .top = UISCI(5), .bottom = UISCI(6) },
@@ -190,14 +206,28 @@ static void tt_feed_row(const Palette *P, const CapFeedItem *m, int idx){
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_CAPTION),
                                          .textColor = m->mine ? P->accent : P->dim,
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
+            if (m->decoded && m->type_name[0])
+                CLAY_TEXT(ui_str(m->type_name),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                             .textColor = P->accent, .wrapMode = CLAY_TEXT_WRAP_NONE }));
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
             CLAY_TEXT(ui_fmt("%u B", m->len),
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION), .textColor = P->faint,
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
         }
-        CLAY_TEXT(ui_fmt("%s", buf),
-                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
-                                     .wrapMode = CLAY_TEXT_WRAP_WORDS }));
+        if (m->decoded){
+            int f;
+            for (f = 0; f < m->n_fields; f++) tt_feed_field_row(P, &m->fields[f]);
+            if (m->total_fields > m->n_fields)
+                CLAY_TEXT(ui_fmt("  +%d more fields", m->total_fields - m->n_fields),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint }));
+        } else {
+            char buf[CAP_MSG_PREVIEW + 1];
+            tt_sanitize(buf, (int)sizeof buf, m->preview, m->preview_len);
+            CLAY_TEXT(ui_fmt("%s", buf),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
+                                         .wrapMode = CLAY_TEXT_WRAP_WORDS }));
+        }
     }
 }
 

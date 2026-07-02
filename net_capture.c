@@ -95,8 +95,12 @@ typedef struct {
     uint32_t len;
     uint16_t preview_len;
     int      mine;                        /* 1 = we published it (local echo) */
+    int      decoded;                     /* 1 = fields[] holds the reflected decode */
+    int      n_fields, total_fields;
+    char     type_name[DART_TOPIC_NAME_MAX + 1];   /* sender's schema root name when decoded */
     char     sender[DART_NODE_NAME_MAX + 1];
-    char     preview[CAP_MSG_PREVIEW];
+    char     preview[CAP_MSG_PREVIEW];    /* raw payload head (schema-less messages) */
+    CapMsgField fields[CAP_MSG_FIELDS];   /* per-field rendered decode */
 } CapMsgRec;
 
 typedef struct {
@@ -141,14 +145,93 @@ static CapSub *cap_sub_by_index(uint16_t index){
     return NULL;
 }
 
-/* append one message to a topic's ring (received or our own echo). Does not touch n_msgs. */
-static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t len, int mine){
+/* ---- reflected decode: the explorer subscribes without a schema of its own, so a
+   delivered message's DartMsg.schema is the SENDER's. Each message becomes per-field
+   rows rendered exactly as the writer declared them; no content guessing (a u8 array
+   is an array of numbers, not assumed text). */
+static int cap_val_append(char *dst, int cap, int at, const char *fmt, ...){
+    va_list ap; int n;
+    if (at >= cap - 1) return cap - 1;
+    va_start(ap, fmt);
+    n = vsnprintf(dst + at, (size_t)(cap - at), fmt, ap);
+    va_end(ap);
+    if (n < 0 || at + n >= cap) return cap - 1;   /* clamped (still NUL-terminated) */
+    return at + n;
+}
+/* an array value: the first few elements decoded by their kind */
+static void cap_fmt_arr(char *dst, int cap, DartBytes a, uint8_t elem, uint16_t count){
+    uint32_t esz = dart_schema_scalar_size((DartSchemaTypeKind)elem);
+    uint16_t j, show = count < 6 ? count : 6;
+    int at = 0;
+    dst[0] = '\0';
+    at = cap_val_append(dst, cap, at, "[");
+    for (j = 0; j < show && esz; j++){
+        const uint8_t *p = a.data + (size_t)j * esz;
+        if (j) at = cap_val_append(dst, cap, at, " ");
+        switch ((DartSchemaTypeKind)elem){
+            case DART_U8:  at = cap_val_append(dst,cap,at,"%u",  p[0]); break;
+            case DART_U16: at = cap_val_append(dst,cap,at,"%u",  i_dart_le_r16(p)); break;
+            case DART_U32: at = cap_val_append(dst,cap,at,"%lu", (unsigned long)i_dart_le_r32(p)); break;
+            case DART_U64: at = cap_val_append(dst,cap,at,"%llu",(unsigned long long)i_dart_le_r64(p)); break;
+            case DART_I8:  at = cap_val_append(dst,cap,at,"%d",  (int)(int8_t)p[0]); break;
+            case DART_I16: at = cap_val_append(dst,cap,at,"%d",  (int)(int16_t)i_dart_le_r16(p)); break;
+            case DART_I32: at = cap_val_append(dst,cap,at,"%ld", (long)(int32_t)i_dart_le_r32(p)); break;
+            case DART_I64: at = cap_val_append(dst,cap,at,"%lld",(long long)(int64_t)i_dart_le_r64(p)); break;
+            case DART_F32: { uint32_t b = i_dart_le_r32(p); float  v; memcpy(&v,&b,4);
+                             at = cap_val_append(dst,cap,at,"%g",(double)v); } break;
+            case DART_F64: { uint64_t b = i_dart_le_r64(p); double v; memcpy(&v,&b,8);
+                             at = cap_val_append(dst,cap,at,"%g",v); } break;
+            case DART_BOOL: at = cap_val_append(dst,cap,at,"%s", p[0] ? "true" : "false"); break;
+            default: break;
+        }
+    }
+    if (show < count) at = cap_val_append(dst, cap, at, " ..");
+    cap_val_append(dst, cap, at, "]");
+}
+static void cap_decode_fields(CapMsgRec *m, DartBytes data, const DartSchema *s){
+    uint16_t i, nf = dart_schema_field_count(s);
+    m->n_fields = 0;
+    m->total_fields = nf;
+    for (i = 0; i < nf && m->n_fields < CAP_MSG_FIELDS; i++){
+        DartSchemaFieldInfo fi; CapMsgField *f;
+        if (!dart_schema_field_at(s, i, &fi)) break;
+        f = &m->fields[m->n_fields++];
+        snprintf(f->name, sizeof f->name, "%.*s", (int)fi.name.len, fi.name.data ? fi.name.data : "");
+        switch ((DartSchemaTypeKind)fi.kind){
+            case DART_BOOL: snprintf(f->value, sizeof f->value, "%s", dart_get_uint(data,s,i) ? "true" : "false"); break;
+            case DART_U8: case DART_U16: case DART_U32: case DART_U64:
+                snprintf(f->value, sizeof f->value, "%llu", (unsigned long long)dart_get_uint(data,s,i)); break;
+            case DART_I8: case DART_I16: case DART_I32: case DART_I64:
+                snprintf(f->value, sizeof f->value, "%lld", (long long)dart_get_int(data,s,i)); break;
+            case DART_F32: snprintf(f->value, sizeof f->value, "%g", (double)dart_get_f32(data,s,i)); break;
+            case DART_F64: snprintf(f->value, sizeof f->value, "%g", dart_get_f64(data,s,i)); break;
+            case DART_ARR: cap_fmt_arr(f->value, sizeof f->value, dart_get_array(data,s,i), fi.elem, fi.count); break;
+            case DART_STRUCT: snprintf(f->value, sizeof f->value, "{..}"); break;
+            default:          snprintf(f->value, sizeof f->value, "?"); break;
+        }
+    }
+}
+
+/* append one message to a topic's ring (received or our own echo). Does not touch
+   n_msgs. With a schema the message is reflected into field rows; raw bytes else. */
+static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t len, int mine,
+                          const DartSchema *schema){
     CapMsgRec *m = &s->ring[s->head];
-    uint16_t c = len < CAP_MSG_PREVIEW ? (uint16_t)len : CAP_MSG_PREVIEW;
     m->t_s = (double)(cap_now_ms() - cap_start_ms) / 1000.0;
     m->len = (uint32_t)len;
-    if (c) memcpy(m->preview, data, c);
-    m->preview_len = c;
+    m->decoded = 0; m->type_name[0] = '\0';
+    m->n_fields = m->total_fields = 0;
+    m->preview_len = 0;
+    if (schema){
+        DartString tn = dart_schema_name(schema);
+        cap_decode_fields(m, dart_bytes(data, len), schema);
+        m->decoded = 1;
+        snprintf(m->type_name, sizeof m->type_name, "%.*s", (int)tn.len, tn.data ? tn.data : "");
+    } else {
+        uint16_t c = len < CAP_MSG_PREVIEW ? (uint16_t)len : CAP_MSG_PREVIEW;
+        if (c) memcpy(m->preview, data, c);
+        m->preview_len = c;
+    }
     m->mine = mine;
     snprintf(m->sender, sizeof m->sender, "%.*s", (int)sender.len, sender.data ? sender.data : "");
     s->head = (s->head + 1) % CAP_FEED_MAX;
@@ -218,7 +301,7 @@ static CapPeer *cap_peer_get(uint32_t id){
 static void cap_on_message(const DartMsg *msg){
     CapSub *s = cap_sub_by_index(msg->channel_id);
     if (!s) return;
-    cap_ring_push(s, msg->sender_name, msg->data.data, msg->data.len, 0);
+    cap_ring_push(s, msg->sender_name, msg->data.data, msg->data.len, 0, msg->schema);
     s->n_msgs++;
 }
 
@@ -426,7 +509,7 @@ int cap_publish(Capture *cap, const char *topic, const void *data, size_t len){
     s = cap_sub_find(topic);
     if (!s) return 0;
     if (dart_channel_send(s->ch[s->reliable], dart_bytes(data, len)) < 0){ cap_logf("PUBLISH %s send failed", topic); return 0; }
-    cap_ring_push(s, dart_cstr(cap_cfg.name), data, len, 1);   /* local echo: show our own message in the feed */
+    cap_ring_push(s, dart_cstr(cap_cfg.name), data, len, 1, NULL);   /* local echo: raw (our channels are schema-less) */
     return 1;
 }
 
@@ -561,10 +644,16 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
     for (i = 0; i < n; i++){
         const CapMsgRec *m = &s->ring[(start + i) % CAP_FEED_MAX];
         CapFeedItem *o = &out[i];
+        int k;
         o->t_s         = m->t_s;
         o->len         = m->len;
         o->preview_len = m->preview_len;
         o->mine        = m->mine;
+        o->decoded     = m->decoded;
+        o->n_fields    = m->n_fields;
+        o->total_fields= m->total_fields;
+        for (k = 0; k < m->n_fields; k++) o->fields[k] = m->fields[k];
+        snprintf(o->type_name, sizeof o->type_name, "%s", m->type_name);
         snprintf(o->sender, sizeof o->sender, "%s", m->sender);
         if (m->preview_len) memcpy(o->preview, m->preview, m->preview_len);
     }

@@ -132,8 +132,10 @@ int main(int argc, char **argv){
                   else if (!strcmp(tab, "log")) app.tab = TAB_LOG;
                   else if (!strcmp(tab, "nodes")) app.tab = TAB_NODES; }
     }
+    static char auto_sub[CAP_TOPIC_CAP];           /* DART_UI_TOPIC: also subscribe once it appears */
     {   const char *tp = getenv("DART_UI_TOPIC");  /* optional: select a topic (+drawer) once it appears */
-        if (tp && *tp){ snprintf(app.select_topic, sizeof app.select_topic, "%s", tp); app.drawer_open = 1; }
+        if (tp && *tp){ snprintf(app.select_topic, sizeof app.select_topic, "%s", tp); app.drawer_open = 1;
+                        snprintf(auto_sub, sizeof auto_sub, "%s", tp); }
     }
 
     if (!cap_start(&cap, &cfg))
@@ -240,6 +242,15 @@ int main(int argc, char **argv){
             int ti;
             for (ti = 0; ti < g_data.n_topics; ti++)
                 if (!strcmp(g_data.topics[ti].path, app.select_topic)){ app.sel_topic = ti; app.select_topic[0] = '\0'; break; }
+        }
+        if (auto_sub[0]){                /* the deep-linked topic: subscribe to it once it appears */
+            int ti;
+            for (ti = 0; ti < g_data.n_topics; ti++)
+                if (!strcmp(g_data.topics[ti].path, auto_sub)){
+                    cap_subscribe(&cap, auto_sub, g_data.topics[ti].reliable_recommend > 0);
+                    auto_sub[0] = '\0';
+                    break;
+                }
         }
         if (app.sel_node >= g_data.n_nodes)
             app.sel_node = g_data.n_nodes ? g_data.n_nodes - 1 : 0;

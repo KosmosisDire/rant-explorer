@@ -126,14 +126,30 @@ int  cap_declare_publish(Capture *cap, const char *topic);
    message is echoed into the topic's own feed (mine=1) so the sender sees it. Returns 1 ok. */
 int  cap_publish(Capture *cap, const char *topic, const void *data, size_t len);
 
-/* One captured message, oldest-first, copied out for the selected topic's feed. */
+/* One captured message, oldest-first, copied out for the selected topic's feed. When the
+   sender advertised a schema the message is REFLECTED into per-field rows (decoded
+   exactly as the writer declared it, no content guessing: a u8 array is an array) and
+   type_name is the schema's root name; otherwise preview holds the raw payload head. */
+#define CAP_MSG_FIELDS    12   /* top-level fields captured per message */
+#define CAP_MSG_FIELD_VAL 44   /* rendered value text per field */
+
+typedef struct {
+    char name[CAP_TOPIC_CAP];        /* field name */
+    char value[CAP_MSG_FIELD_VAL];   /* rendered value ("42", "1.5", "[104 101 108 ..]", "{..}") */
+} CapMsgField;
+
 typedef struct {
     double   t_s;                    /* seconds since the observer started */
     uint32_t len;                    /* true payload length */
-    uint16_t preview_len;            /* bytes filled in preview[] */
+    uint16_t preview_len;            /* bytes filled in preview[] (raw messages) */
     int      mine;                   /* 1 = we published it (local echo) */
+    int      decoded;                /* 1 = fields[] holds the reflected decode */
+    int      n_fields;               /* fields filled (capped to CAP_MSG_FIELDS) */
+    int      total_fields;           /* fields the schema actually has */
+    char     type_name[CAP_TOPIC_CAP];  /* schema root name when decoded, else "" */
     char     sender[CAP_NAME_CAP];   /* sending node's name */
     char     preview[CAP_MSG_PREVIEW];
+    CapMsgField fields[CAP_MSG_FIELDS];
 } CapFeedItem;
 
 /* Copy up to `max` of `topic`'s most recent messages (oldest first) into out[] and

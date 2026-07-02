@@ -132,6 +132,9 @@ int main(int argc, char **argv){
                   else if (!strcmp(tab, "log")) app.tab = TAB_LOG;
                   else if (!strcmp(tab, "nodes")) app.tab = TAB_NODES; }
     }
+    {   const char *tp = getenv("DART_UI_TOPIC");  /* optional: select a topic (+drawer) once it appears */
+        if (tp && *tp){ snprintf(app.select_topic, sizeof app.select_topic, "%s", tp); app.drawer_open = 1; }
+    }
 
     if (!cap_start(&cap, &cfg))
         fprintf(stderr, "running without live discovery (socket/interface issue)\n");

@@ -402,6 +402,72 @@ static void topic_self_chip(const Palette *P, int reliable){
     }
 }
 
+/* one schema field: name | type | @offset */
+static void topic_schema_field_row(const Palette *P, const CapSchemaField *f, int idx){
+    CLAY({ .id = CLAY_IDI("schema_field", (uint32_t)idx),
+           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(24)) },
+                       .padding = { .left = UISCI(10), .right = UISCI(10) },
+                       .childGap = UISCI(9), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+           .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
+        CLAY_TEXT(ui_str(f->name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                      .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+        CLAY_TEXT(ui_str(f->type), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                      .textColor = P->accent, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        CLAY_TEXT(ui_fmt("@%u", f->offset), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                                               .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+}
+
+/* the selected topic's advertised message schema (from the publishers' announce blobs) */
+static CapSchema tt_schema;
+static void topic_schema_section(AppState *app, const Palette *P, const Topic *t){
+    int have = app->cap ? cap_topic_schema(app->cap, t->path, &tt_schema) : 0;
+    int i;
+    ui_section_label(P, CLAY_STRING("SCHEMA"));
+    if (!have){
+        CLAY_TEXT(CLAY_STRING("none advertised (raw bytes)"),
+                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint }));
+    } else {
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
+               .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
+               .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+            /* header: root type name + message size, hash underneath */
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                               .padding = CLAY_PADDING_ALL(UISC(9)), .childGap = UISCI(4) },
+                   .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
+                CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8),
+                                   .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+                    CLAY_TEXT(tt_schema.inlined ? ui_str(tt_schema.type_name) : CLAY_STRING("(hash only)"),
+                              CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_SEMI, FS_SMALL),
+                                                 .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+                    if (tt_schema.inlined)
+                        CLAY_TEXT(ui_fmt("%u B/msg", tt_schema.msg_size),
+                                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                                     .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                }
+                CLAY_TEXT(ui_fmt("id %08x%08x", (unsigned)(tt_schema.hash >> 32), (unsigned)tt_schema.hash),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                             .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+            }
+            if (tt_schema.inlined)
+                for (i = 0; i < tt_schema.n_fields; i++) topic_schema_field_row(P, &tt_schema.fields[i], i);
+            if (tt_schema.inlined && tt_schema.total_fields > tt_schema.n_fields)
+                CLAY_TEXT(ui_fmt("  +%d more fields", tt_schema.total_fields - tt_schema.n_fields),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint }));
+            if (!tt_schema.inlined)
+                CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(9)) } }) {
+                    CLAY_TEXT(CLAY_STRING("schema advertised by hash only (too large to inline)"),
+                              CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint }));
+                }
+        }
+        if (tt_schema.hash_conflict)
+            CLAY_TEXT(CLAY_STRING("publishers disagree on this topic's schema"),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_CAPTION), .textColor = P->red }));
+    }
+}
+
 static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
     int i;
     CLAY({ .id = CLAY_ID("topics_inspect_scroll"),
@@ -420,6 +486,8 @@ static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
             topic_qos_cell(P, CLAY_STRING("History"), ui_str(ND_DASH), P->text, 1);
             topic_qos_cell(P, CLAY_STRING("Deadline"), ui_str(ND_DASH), P->text, 1);
         }
+
+        topic_schema_section(app, P, t);
 
         ui_section_label(P, ui_fmt("PUBLISHERS  %d", t->n_pubs + t->self_pub));
         if (t->n_pubs == 0 && !t->self_pub)

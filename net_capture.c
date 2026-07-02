@@ -570,3 +570,82 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
     }
     return n;
 }
+
+/* ------------------------------------------------------------------ topic schema */
+
+/* schema decode scratch: a realloc hook for the short-lived parsed copy */
+static void *cap_schema_alloc(void *user, void *ptr, size_t size){
+    (void)user;
+    if (size == 0){ free(ptr); return NULL; }
+    return realloc(ptr, size);
+}
+
+static const char *cap_kind_str(uint8_t kind){
+    switch ((DartSchemaTypeKind)kind){
+        case DART_U8:  return "u8";  case DART_U16: return "u16";
+        case DART_U32: return "u32"; case DART_U64: return "u64";
+        case DART_I8:  return "i8";  case DART_I16: return "i16";
+        case DART_I32: return "i32"; case DART_I64: return "i64";
+        case DART_F32: return "f32"; case DART_F64: return "f64";
+        case DART_BOOL: return "bool";
+        case DART_STRUCT: return "struct";
+        default: return "?";
+    }
+}
+
+/* fill out->fields from a parsed schema (top-level fields, capped to the UI's bound) */
+static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
+    DartSchemaFieldInfo fi; uint16_t i, nf = dart_schema_field_count(sch);
+    DartString tn = dart_schema_name(sch);
+    out->inlined      = 1;
+    out->msg_size     = dart_schema_size(sch);
+    out->total_fields = nf;
+    snprintf(out->type_name, sizeof out->type_name, "%.*s", (int)tn.len, tn.data ? tn.data : "");
+    for (i = 0; i < nf && out->n_fields < CAP_SCHEMA_FIELDS; i++){
+        CapSchemaField *f = &out->fields[out->n_fields];
+        if (!dart_schema_field_at(sch, i, &fi)) break;
+        snprintf(f->name, sizeof f->name, "%.*s", (int)fi.name.len, fi.name.data ? fi.name.data : "");
+        if (fi.kind == DART_ARR) snprintf(f->type, sizeof f->type, "%s[%u]", cap_kind_str(fi.elem), fi.count);
+        else                     snprintf(f->type, sizeof f->type, "%s", cap_kind_str(fi.kind));
+        f->offset = fi.offset;
+        f->size   = fi.size;
+        out->n_fields++;
+    }
+}
+
+int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
+    DartNode *node = cap ? (DartNode *)cap->rt : NULL;
+    const DartDiscoveryPeer *peers; uint16_t n_peers = 0, s;
+    size_t tlen = topic ? strlen(topic) : 0;
+    int found = 0;
+    memset(out, 0, sizeof *out);
+    if (!node || tlen == 0) return 0;
+    peers = dart_node_peers(node, &n_peers);
+    for (s = 0; s < n_peers; s++){
+        const DartDiscoveryPeer *dp = &peers[s];
+        DartInterestIter it; DartTopic t;
+        memset(&it, 0, sizeof it);
+        while (dart_node_peer_interest_next(dp, &it, &t)){
+            uint64_t hash; DartBytes wire;
+            if (!t.is_pub || t.name.len != tlen || memcmp(t.name.data, topic, tlen) != 0) continue;
+            if (!dart_node_peer_schema(dp, t.alias, &hash, &wire)) continue;
+            if (found){   /* another publisher: agreement check only */
+                if (hash == out->hash) out->n_pubs_hash++;
+                else out->hash_conflict = 1;
+                continue;
+            }
+            found = 1;
+            out->hash = hash;
+            out->n_pubs_hash = 1;
+            snprintf(out->from, sizeof out->from, "%.*s", (int)dp->name.len, dp->name.data ? dp->name.data : "");
+            if (wire.data && wire.len){   /* inlined: decode the wire for the field list */
+                DartSchema *sch = dart_schema_parse(wire.data, wire.len, cap_schema_alloc, NULL);
+                if (sch){
+                    cap_schema_fields(out, sch);
+                    dart_schema_free(sch, cap_schema_alloc, NULL);
+                }
+            }
+        }
+    }
+    return found;
+}

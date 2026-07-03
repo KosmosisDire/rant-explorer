@@ -51,6 +51,9 @@
 #include "ui_tab_log.h"
 #include "ui_shell.h"
 
+/* mouse-wheel scroll speed: pixels (at 1x DPI) per wheel notch, scaled by UISC */
+#define UI_SCROLL_SPEED 8
+
 /* the dataset the UI draws from, rebuilt each frame from the live capture snapshot
    by ui_data_build(). g_snap is the plain-types view copied out of net_capture. */
 static Dataset     g_data;
@@ -245,7 +248,8 @@ int main(int argc, char **argv){
 
         Clay_SetLayoutDimensions((Clay_Dimensions){ (float)ow, (float)oh });
         Clay_SetPointerState((Clay_Vector2){ mx, my }, mouse_held);
-        Clay_UpdateScrollContainers(true, (Clay_Vector2){ wheel_x * UISC(40), wheel_y * UISC(40) }, dt);
+        Clay_UpdateScrollContainers(true, (Clay_Vector2){ wheel_x * UISC(UI_SCROLL_SPEED),
+                                                          wheel_y * UISC(UI_SCROLL_SPEED) }, dt);
 
         cap_snapshot(&cap, &g_snap);     /* live discovery table -> plain view */
         ui_data_build(&g_data, &g_snap); /* -> the UI Dataset (rebuilt every frame) */

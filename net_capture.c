@@ -858,6 +858,7 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
         snprintf(o->type_name, sizeof o->type_name, "%s", m->type_name);
         snprintf(o->sender, sizeof o->sender, "%s", m->sender);
         if (m->preview_len) memcpy(o->preview, m->preview, m->preview_len);
+        if (m->preview_len < CAP_MSG_PREVIEW) o->preview[m->preview_len] = '\0';  /* terminate: %s reads it, slot is reused */
     }
     return n;
 }

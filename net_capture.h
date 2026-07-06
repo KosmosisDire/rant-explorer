@@ -89,6 +89,8 @@ typedef struct {
     int      error;          /* 1 = dropped messages or a QoS/oversize error */
     uint32_t n_msgs;         /* messages received on this subscription */
     uint32_t n_drops;        /* messages the reliable layer reported skipped */
+    double   rate_hz;        /* publish rate across the stored feed window; 0 = too few to measure */
+    double   last_age_s;     /* seconds since the newest stored message; < 0 = none received */
 } CapSubInfo;
 
 typedef struct {

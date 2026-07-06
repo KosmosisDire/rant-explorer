@@ -191,6 +191,8 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         g_topics[ti].sub_state = si->active ? (si->error ? 2 : 1) : 0;
         g_topics[ti].self_sub  = si->active;
         g_topics[ti].self_sub_reliable = si->reliable;
+        g_topics[ti].rate_hz    = si->rate_hz;     /* live: publish rate over the stored window */
+        g_topics[ti].last_age_s = si->last_age_s;  /* live: age of the newest received message */
     }
 
     D->machines = g_machines; D->n_machines = n_mach;

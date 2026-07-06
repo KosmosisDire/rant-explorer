@@ -49,49 +49,115 @@ static Clay_String tt_rel_word(int reliable){
 
 /* ============================================================= left: topic tree */
 
+/* the tree is a table: the name column (indented) plus fixed stat columns. These are the
+   stat-column widths (unscaled px); the name column measures to fit its content. */
+#define TT_COL_DOT  14
+#define TT_COL_RATE 58
+#define TT_COL_LAST 66
+#define TT_COL_QOS  42
+#define TT_COL_GAP  6
+
+/* mono-small text width in physical px, for fitting the name column to its content */
+static float tt_name_w(const char *s){
+    TTF_Font *f = g_fonts[ui_font_id(FAM_MONO, WT_REG, FS_SMALL)];
+    int w = 0, h = 0;
+    if (f && s && *s) TTF_GetStringSize(f, s, strlen(s), &w, &h);
+    return (float)w;
+}
+
+/* publish rate for the tree's Rate column; dash-ish handling is done by the caller */
+static Clay_String tt_rate(double hz){
+    if (hz <= 0.0)   return ui_str(ND_DASH);
+    if (hz < 10.0)   return ui_fmt("%.1f Hz", hz);
+    if (hz < 1000.0) return ui_fmt("%.0f Hz", hz);
+    return ui_fmt("%.1fk Hz", hz / 1000.0);
+}
+static Clay_String tt_qos_short(int reliable){ return reliable ? CLAY_STRING("REL") : CLAY_STRING("BE"); }
+
+/* one fixed-width stat cell (caption mono, left-aligned) shared by the rows and header */
+static void tt_stat_cell(const Palette *P, float w, Clay_String value, Clay_Color col){
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(w), .height = CLAY_SIZING_GROW(0) },
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+        CLAY_TEXT(value, CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                            .textColor = col, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+}
+
+/* the table header: "TOPIC" then the stat columns, laid out to match the rows so the
+   fixed columns (right-anchored by a grow spacer) line up under their labels */
+static void tt_tree_header(const Palette *P){
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(24)) },
+                       .padding = { .left = UISCI(12), .right = UISCI(10) }, .childGap = UISCI(TT_COL_GAP),
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+           .border = { .width = { 0, 0, UISCI(1), 0, 0 }, .color = P->border } }) {
+        CLAY_TEXT(CLAY_STRING("TOPIC"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
+                                          .textColor = P->faint, .letterSpacing = 1, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer */
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(TT_COL_DOT)) } } }) {}
+        tt_stat_cell(P, UISC(TT_COL_RATE), CLAY_STRING("RATE"), P->faint);
+        tt_stat_cell(P, UISC(TT_COL_LAST), CLAY_STRING("LAST"), P->faint);
+        tt_stat_cell(P, UISC(TT_COL_QOS),  CLAY_STRING("QOS"),  P->faint);
+    }
+}
+
 static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, int idx){
     const Dataset *D = app->data;
-    int sel = row->has_topic && app->sel_topic >= 0 && app->sel_topic < D->n_topics
-              && row->topic == &D->topics[app->sel_topic];
+    int sel  = row->has_topic && app->sel_topic >= 0 && app->sel_topic < D->n_topics
+               && row->topic == &D->topics[app->sel_topic];
+    int live = row->has_topic && row->topic->sub_state != 0;         /* rate/last need the data plane */
+    int qos  = row->has_topic && row->topic->reliable_recommend != -1; /* reliability rides discovery */
     CLAY({ .id = CLAY_IDI("tree_row", (uint32_t)idx),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(29)) },
+                       .padding = { .right = UISCI(10) }, .childGap = UISCI(TT_COL_GAP),
                        .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
            .backgroundColor = sel ? P->accent_bg : UI_NONE,
            .border = { .width = { sel ? UISCI(2) : 0, 0, 0, 0, 0 }, .color = P->accent } }) {
-        /* a pure namespace (collapsible, no topic of its own) has nothing to select,
-           so a click anywhere on the row toggles its collapse */
-        if (row->is_branch && !row->has_topic && Clay_Hovered() && g_pointer_pressed)
-            app_toggle_collapsed(app, row->path);
-        /* caret zone: spans the indent + caret so a click anywhere left of the name
-           toggles collapse; on a selectable branch the name itself still selects.
-           The indent is left padding, so the chevron stays centered after it. */
+        /* caret zone: spans the indent + caret. A click here toggles collapse and is
+           consumed, so it doesn't also select the row below. The indent is left padding,
+           so the chevron stays centered after it. */
         CLAY({ .id = CLAY_IDI("tree_caret", (uint32_t)idx),
                .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(10 + row->depth * 15 + 24)), .height = CLAY_SIZING_GROW(0) },
                            .padding = { .left = UISCI(10 + row->depth * 15) },
                            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
             if (row->is_branch){
-                if (row->has_topic && Clay_Hovered() && g_pointer_pressed) app_toggle_collapsed(app, row->path);
+                if (Clay_Hovered() && g_pointer_pressed){ app_toggle_collapsed(app, row->path); g_pointer_pressed = false; }
                 ui_icon(row->open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12, P->dim);
             }
         }
-        /* name: selectable when it's a topic, dim when a pure namespace */
+        /* name: a branch (has children) gets a trailing '/' so a namespace reads as a
+           path segment; dim when it's a pure namespace, normal when it's a topic */
         CLAY({ .id = CLAY_IDI("tree_name", (uint32_t)idx),
-               .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
+               .layout = { .sizing = { .height = CLAY_SIZING_GROW(0) },
                            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-            if (row->has_topic && Clay_Hovered() && g_pointer_pressed){
-                app->sel_topic = (int)(row->topic - D->topics);
-                app->drawer_open = 1;
-                app->adding_topic = 0;     /* selecting a topic exits the new-topic field */
-            }
-            CLAY_TEXT(ui_str(row->name),
+            CLAY_TEXT(ui_fmt("%s%s", row->name, row->is_branch ? "/" : ""),
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
                                          .textColor = row->has_topic ? P->text : P->dim,
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
         }
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer: right-anchor the stat columns */
         /* status dot: live subscription state (green subscribed, red dropping, grey not) */
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(40)) },
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(TT_COL_DOT)) },
                            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
             if (row->has_topic) tt_status_dot(P, row->topic->sub_state);
+        }
+        /* Rate / Last: ride the data plane, so real only while subscribed (dash otherwise);
+           QoS rides discovery, so it shows whenever the topic has a publisher. */
+        tt_stat_cell(P, UISC(TT_COL_RATE), live ? tt_rate(row->topic->rate_hz) : ui_str(ND_DASH),
+                     live && row->topic->rate_hz > 0.0 ? P->dim : P->faint);
+        tt_stat_cell(P, UISC(TT_COL_LAST), live ? nf_age(row->topic->last_age_s) : ui_str(ND_DASH),
+                     live && row->topic->last_age_s >= 0.0 ? P->dim : P->faint);
+        tt_stat_cell(P, UISC(TT_COL_QOS),  qos ? tt_qos_short(row->topic->reliable) : ui_str(ND_DASH),
+                     qos ? ui_qos_color(P, row->topic->reliable) : P->faint);
+        /* whole-row click selects the topic (the caret already consumed its own click);
+           a pure namespace has nothing to select, so a click toggles its collapse */
+        if (Clay_Hovered() && g_pointer_pressed){
+            if (row->has_topic){
+                app->sel_topic = (int)(row->topic - D->topics);
+                app->drawer_open = 1;
+                app->adding_topic = 0;     /* selecting a topic exits the new-topic field */
+            } else if (row->is_branch){
+                app_toggle_collapsed(app, row->path);
+            }
         }
     }
 }
@@ -137,8 +203,26 @@ static void tt_new_topic_input(AppState *app, const Palette *P){
 static void topics_tree(AppState *app, const Palette *P){
     const Dataset *D = app->data;
     int n = ui_tree_build(app), i;
+    /* fit the panel to its content: widest name column (indent + measured text) plus the
+       fixed stat columns, clamped so one long name can't blow it out and the header
+       controls stay usable */
+    float gap        = UISC(TT_COL_GAP);
+    float data_block = UISC(TT_COL_DOT) + UISC(TT_COL_RATE) + UISC(TT_COL_LAST) + UISC(TT_COL_QOS) + gap * 4;
+    float name_max   = UISC(70);
+    float panel_w;
+    for (i = 0; i < n; i++){
+        const TreeRow *r = &ut_rows[i];
+        char  lbl[CAP_TOPIC_CAP + 2];
+        float w;
+        snprintf(lbl, sizeof lbl, "%s%s", r->name, r->is_branch ? "/" : "");
+        w = UISC(10 + r->depth * 15 + 24) + gap + tt_name_w(lbl);
+        if (w > name_max) name_max = w;
+    }
+    if (name_max > UISC(300)) name_max = UISC(300);
+    panel_w = name_max + gap + data_block + UISC(10) + UISC(16);   /* right pad + breathing room */
+    if (panel_w < UISC(300)) panel_w = UISC(300);                  /* keep filter + add usable */
     CLAY({ .id = CLAY_ID("topics_tree"),
-           .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(264)), .height = CLAY_SIZING_GROW(0) },
+           .layout = { .sizing = { .width = CLAY_SIZING_FIXED(panel_w), .height = CLAY_SIZING_GROW(0) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM },
            .backgroundColor = P->panel,
            .border = { .width = { 0, UISCI(1), 0, 0, 0 }, .color = P->border } }) {
@@ -155,6 +239,7 @@ static void topics_tree(AppState *app, const Palette *P){
             }
             tt_new_topic_input(app, P);
         }
+        if (n > 0) tt_tree_header(P);
         CLAY({ .id = CLAY_ID("topics_tree_scroll"),
                .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                            .layoutDirection = CLAY_TOP_TO_BOTTOM },

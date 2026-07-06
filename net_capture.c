@@ -120,6 +120,9 @@ typedef struct {
     uint32_t     uid_next;               /* next message uid (expand/collapse key) */
     CapMsgRec    ring[CAP_FEED_MAX];
     int          head, count;            /* ring write cursor + fill */
+    double       rate_hz;                /* publish rate (msgs/s), refreshed ~1 Hz (below) */
+    double       rate_prev_hr;           /* high-res time of the last rate-window boundary */
+    unsigned long long rate_prev_msgs;   /* n_msgs at that boundary (rate = dmsgs / dt) */
 } CapSub;
 
 static CapSub cap_subs[CAP_MAX_SUBS];
@@ -335,6 +338,22 @@ static unsigned long long cap_now_ms(void){
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)(ts.tv_nsec / 1000000);
+#endif
+}
+
+/* high-resolution monotonic seconds. GetTickCount64 quantizes to ~15.6 ms, which is too
+   coarse for a rate window (it snaps a 250 Hz reading to a couple of discrete values); the
+   performance counter is sub-microsecond, so a message-count / elapsed-time rate is exact. */
+static double cap_now_hr(void){
+#ifdef _WIN32
+    LARGE_INTEGER c, f;
+    QueryPerformanceCounter(&c);
+    QueryPerformanceFrequency(&f);
+    return (double)c.QuadPart / (double)f.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 #endif
 }
 
@@ -769,7 +788,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
 
     /* subscription state, so the UI can colour each topic's status light */
     for (i = 0; i < CAP_MAX_SUBS && out->n_subs < CAP_SNAP_SUBS; i++){
-        const CapSub *s = &cap_subs[i];
+        CapSub *s = &cap_subs[i];
         CapSubInfo *si;
         if (!s->used) continue;
         si = &out->subs[out->n_subs++];
@@ -780,6 +799,30 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         si->error      = (s->error || s->n_drops > 0) ? 1 : 0;
         si->n_msgs     = (uint32_t)s->n_msgs;
         si->n_drops    = (uint32_t)s->n_drops;
+        /* recency from the ring: age of the newest stored message (a live count-up). */
+        si->last_age_s = -1.0;
+        if (s->count > 0){
+            double now_s  = (double)(now - cap_start_ms) / 1000.0;
+            int    newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
+            si->last_age_s = now_s - s->ring[newest].t_s;
+            if (si->last_age_s < 0.0) si->last_age_s = 0.0;
+        }
+        /* publish rate: messages received over an accurately measured window (exact count /
+           high-res elapsed). Counting over wall-clock rather than a ring timespan avoids the
+           ~15.6 ms stamp quantization that snapped a steady 250 Hz reading to two values.
+           The window is ADAPTIVE so it spans all rates: it closes once we have enough
+           messages for a stable estimate (fast topics update ~1 Hz) OR a max time has passed
+           (a slow, sub-Hz, or now-silent topic still reports, and silence decays to 0). */
+        {   double t_hr = cap_now_hr(), dt = t_hr - s->rate_prev_hr;
+            unsigned long long dmsgs = s->n_msgs - s->rate_prev_msgs;
+            if (s->rate_prev_hr <= 0.0){             /* first sample on this slot: seed the baseline */
+                s->rate_prev_hr = t_hr; s->rate_prev_msgs = s->n_msgs;
+            } else if (dt >= 1.0 && (dmsgs >= 4 || dt >= 4.0)){
+                s->rate_hz = (double)dmsgs / dt;
+                s->rate_prev_hr = t_hr; s->rate_prev_msgs = s->n_msgs;
+            }
+        }
+        si->rate_hz = s->rate_hz;
     }
 
     /* pull the node's zero-copy peer view (it decodes the overlay for us) and refresh each

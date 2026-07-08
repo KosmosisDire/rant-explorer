@@ -422,10 +422,10 @@ static void cap_on_event(const DartEvent *ev){
         CapPeer *p = cap_peer_get(ev->peer);
         p->last_change_ms = cap_now_ms();
         if (ev->ip_len == 4)
-            cap_logf("UP    id=%u  %u.%u.%u.%u:%u  (%s)", ev->peer,
-                     ev->ip[0], ev->ip[1], ev->ip[2], ev->ip[3], ev->port, ev->detail ? ev->detail : "");
+            cap_logf("UP    id=%u  %u.%u.%u.%u:%u", ev->peer,
+                     ev->ip[0], ev->ip[1], ev->ip[2], ev->ip[3], ev->port);
         else
-            cap_logf("UP    id=%u  (%s)", ev->peer, ev->detail ? ev->detail : "");
+            cap_logf("UP    id=%u", ev->peer);
         break; }
     case DART_PEER_INTEREST: {                       /* a peer's interest list was (re)applied */
         CapPeer *p = cap_peer_find(ev->peer);
@@ -436,32 +436,22 @@ static void cap_on_event(const DartEvent *ev){
     case DART_PEER_DOWN: {
         CapPeer *p = cap_peer_find(ev->peer);
         if (p) p->down_ms = cap_now_ms();
-        cap_logf("DOWN  id=%u  (%s)", ev->peer, ev->detail ? ev->detail : "");
+        cap_logf("DOWN  id=%u", ev->peer);
         break; }
-    case DART_PEER_REFUSED:
-        if (ev->ip_len == 4)
-            cap_logf("REFUSED %u.%u.%u.%u:%u  (peer table full of active peers)",
-                     ev->ip[0], ev->ip[1], ev->ip[2], ev->ip[3], ev->port);
-        else
-            cap_logf("REFUSED  (peer table full of active peers)");
-        break;
     case DART_MSG_LOST: {                            /* reliable subscriber skipped past a gap */
         CapSub *s = cap_sub_by_index(ev->channel);
         if (s) s->n_drops += ev->lost_count;
         cap_logf("        LOST  ch=%u peer=%u first=%llu count=%llu", ev->channel, ev->peer,
                  (unsigned long long)ev->lost_first, (unsigned long long)ev->lost_count);
         break; }
-    case DART_QOS_INCOMPATIBLE: {                    /* our reliable sub refused a best-effort pub */
-        CapSub *s = cap_sub_by_index(ev->channel);
-        if (s) s->error = 1;
-        cap_logf("        QOS_INCOMPATIBLE  ch=%u peer=%u (%s)", ev->channel, ev->peer,
-                 ev->detail ? ev->detail : "");
-        break; }
-    case DART_MSG_TOO_BIG: {
-        CapSub *s = cap_sub_by_index(ev->channel);
-        if (s) s->error = 1;
-        cap_logf("        MSG_TOO_BIG  ch=%u peer=%u bytes=%llu", ev->channel, ev->peer,
-                 (unsigned long long)ev->too_big_bytes);
+    case DART_ERROR: {                               /* every failure funnels here; mark the sub if channel-scoped */
+        char line[160];
+        if (ev->error == DART_E_QOS_INCOMPATIBLE || ev->error == DART_E_SCHEMA_MISMATCH ||
+            ev->error == DART_E_MSG_TOO_BIG){
+            CapSub *s = cap_sub_by_index(ev->channel);
+            if (s) s->error = 1;
+        }
+        cap_logf("        %s", dart_event_str(ev, line, sizeof line));
         break; }
     default: break;
     }

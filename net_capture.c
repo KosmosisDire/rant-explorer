@@ -829,6 +829,21 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         }
     }
 
+    /* A node stopped and brought back gets a fresh UUID (hence a new local id), so its old
+       GONE record would linger beside the new live one under the same name. Drop any GONE
+       peer whose name a present-this-frame peer now carries: the node returned, replace the
+       stale twin. (Named nodes only: auto "node-XXXX" names differ every boot by design.) */
+    for (i = 0; i < CAP_MAX_PEERS; i++){
+        CapPeer *live = &cap_peers[i];
+        int j;
+        if (!live->used || !live->seen_frame || !live->name[0]) continue;
+        for (j = 0; j < CAP_MAX_PEERS; j++){
+            CapPeer *g = &cap_peers[j];
+            if (j == i || !g->used || g->state != CAP_GONE) continue;
+            if (!strcmp(g->name, live->name)) g->used = 0;   /* free the stale GONE twin */
+        }
+    }
+
     for (i = 0; i < CAP_MAX_PEERS && out->n_nodes < CAP_SNAP_NODES; i++){
         const CapPeer *p = &cap_peers[i];
         CapNode *n;

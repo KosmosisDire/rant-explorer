@@ -10,7 +10,7 @@
 
 #define UI_MAX_ENDPOINTS 16
 
-typedef enum { NODE_ALIVE, NODE_JOINING, NODE_GONE } NodeState;
+typedef enum { NODE_ALIVE, NODE_JOINING, NODE_DROPPED, NODE_GONE } NodeState;
 typedef enum { LVL_ERROR, LVL_WARN, LVL_INFO, LVL_DEBUG } LogLevel;
 typedef enum { QOS_BEST_EFFORT, QOS_RELIABLE } Reliability;
 typedef enum { DUR_VOLATILE, DUR_TRANSIENT_LOCAL } Durability;
@@ -147,7 +147,8 @@ typedef struct {
 
 /* ---- status to color, mirroring data.js ---- */
 static inline Clay_Color ui_state_color(const Palette *P, NodeState s){
-    return s == NODE_ALIVE ? P->green : s == NODE_JOINING ? P->amber : P->gray;
+    return s == NODE_ALIVE ? P->green : s == NODE_JOINING ? P->amber
+         : s == NODE_DROPPED ? P->amber : P->gray;   /* dropped: silent, may resume; gone: dead */
 }
 static inline Clay_Color ui_level_color(const Palette *P, LogLevel l){
     return l == LVL_ERROR ? P->red : l == LVL_WARN ? P->amber : l == LVL_INFO ? P->dim : P->faint;

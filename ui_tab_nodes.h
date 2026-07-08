@@ -45,6 +45,7 @@ static Clay_String nf_bytes(long b){          /* "1408 B" / "182 KB"; <0 -> dash
 static Clay_String nd_state_word(NodeState s){
     return s == NODE_ALIVE ? CLAY_STRING("ALIVE")
          : s == NODE_JOINING ? CLAY_STRING("JOINING")
+         : s == NODE_DROPPED ? CLAY_STRING("DROPPED")
          : CLAY_STRING("GONE");
 }
 
@@ -76,6 +77,9 @@ static void node_list_row(AppState *app, const Palette *P, const Node *nd, int i
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer */
         if (nd->state == NODE_JOINING)
             CLAY_TEXT(CLAY_STRING("joining"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL),
+                                                                .textColor = P->amber, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        else if (nd->state == NODE_DROPPED)
+            CLAY_TEXT(CLAY_STRING("dropped"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL),
                                                                 .textColor = P->amber, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         else if (gone)
             CLAY_TEXT(CLAY_STRING("gone"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL),

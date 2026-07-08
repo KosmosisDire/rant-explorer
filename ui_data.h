@@ -91,9 +91,12 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
 
         /* discovery state -> display state. An active peer whose announce blob hasn't arrived
            yet, or whose blob we hold is behind the version it now advertises (re-fetch pending),
-           reads as JOINING; dropped/gone fold to GONE (kept visible, de-emphasized). */
+           reads as JOINING. DROPPED = silent past peer_timeout but may still resume (kept
+           prominent); GONE = BYE / gone-timeout / evicted, state freed (de-emphasized). */
         if (cn->state == CAP_ST_ACTIVE)
             n->state = (!cn->have_meta || cn->meta_stale) ? NODE_JOINING : NODE_ALIVE;
+        else if (cn->state == CAP_ST_DROPPED)
+            n->state = NODE_DROPPED;
         else
             n->state = NODE_GONE;
 
@@ -165,7 +168,7 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
             int rel = t->pub_rel[j];
             any = 1;
             if (!rel) any_rel = 0;
-            if (g_nodes[t->pubs[j]].state != NODE_GONE){ live++; if (!rel) live_all_rel = 0; }
+            if (g_nodes[t->pubs[j]].state != NODE_GONE && g_nodes[t->pubs[j]].state != NODE_DROPPED){ live++; if (!rel) live_all_rel = 0; }   /* silent peers aren't live publishers */
         }
         /* the explorer publishing this topic counts as a live publisher too, so a topic we
            publish reliably to reads RELIABLE (not the peer-only best-effort default) */

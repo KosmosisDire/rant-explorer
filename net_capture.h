@@ -91,6 +91,9 @@ typedef struct {
     uint32_t n_drops;        /* messages the reliable layer reported skipped */
     double   rate_hz;        /* publish rate across the stored feed window; 0 = too few to measure */
     double   last_age_s;     /* seconds since the newest stored message; < 0 = none received */
+    double   jitter_p90_ms;  /* p90 of inter-arrival jitter (ms), smoothed by an online estimator
+                                 over the topic's WHOLE lifetime (not just the stored feed ring, which
+                                 overwrites); < 0 = not enough samples yet */
 } CapSubInfo;
 
 typedef struct {

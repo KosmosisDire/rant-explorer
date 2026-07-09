@@ -51,11 +51,12 @@ static Clay_String tt_rel_word(int reliable){
 
 /* the tree is a table: the name column (indented) plus fixed stat columns. These are the
    stat-column widths (unscaled px); the name column measures to fit its content. */
-#define TT_COL_DOT  14
-#define TT_COL_RATE 58
-#define TT_COL_LAST 66
-#define TT_COL_QOS  42
-#define TT_COL_GAP  6
+#define TT_COL_DOT    14
+#define TT_COL_RATE   58
+#define TT_COL_JITTER 64
+#define TT_COL_LAST   66
+#define TT_COL_QOS    42
+#define TT_COL_GAP    6
 
 /* mono-small text width in physical px, for fitting the name column to its content */
 static float tt_name_w(const char *s){
@@ -71,6 +72,13 @@ static Clay_String tt_rate(double hz){
     if (hz < 10.0)   return ui_fmt("%.1f Hz", hz);
     if (hz < 1000.0) return ui_fmt("%.0f Hz", hz);
     return ui_fmt("%.1fk Hz", hz / 1000.0);
+}
+/* p90 jitter for the tree's Jitter column; ms is < 0 for "not enough samples yet" */
+static Clay_String tt_jitter(double ms){
+    if (ms < 0.0)    return ui_str(ND_DASH);
+    if (ms < 10.0)   return ui_fmt("%.2f ms", ms);
+    if (ms < 1000.0) return ui_fmt("%.1f ms", ms);
+    return ui_fmt("%.2f s", ms / 1000.0);
 }
 static Clay_String tt_qos_short(int reliable){ return reliable ? CLAY_STRING("REL") : CLAY_STRING("BE"); }
 
@@ -94,9 +102,10 @@ static void tt_tree_header(const Palette *P){
                                           .textColor = P->faint, .letterSpacing = 1, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer */
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(TT_COL_DOT)) } } }) {}
-        tt_stat_cell(P, UISC(TT_COL_RATE), CLAY_STRING("RATE"), P->faint);
-        tt_stat_cell(P, UISC(TT_COL_LAST), CLAY_STRING("LAST"), P->faint);
-        tt_stat_cell(P, UISC(TT_COL_QOS),  CLAY_STRING("QOS"),  P->faint);
+        tt_stat_cell(P, UISC(TT_COL_RATE),   CLAY_STRING("RATE"),   P->faint);
+        tt_stat_cell(P, UISC(TT_COL_JITTER), CLAY_STRING("JITTER"), P->faint);
+        tt_stat_cell(P, UISC(TT_COL_LAST),   CLAY_STRING("LAST"),   P->faint);
+        tt_stat_cell(P, UISC(TT_COL_QOS),    CLAY_STRING("QOS"),    P->faint);
     }
 }
 
@@ -140,10 +149,12 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
                            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
             if (row->has_topic) tt_status_dot(P, row->topic->sub_state);
         }
-        /* Rate / Last: ride the data plane, so real only while subscribed (dash otherwise);
-           QoS rides discovery, so it shows whenever the topic has a publisher. */
+        /* Rate / Jitter / Last: ride the data plane, so real only while subscribed (dash
+           otherwise); QoS rides discovery, so it shows whenever the topic has a publisher. */
         tt_stat_cell(P, UISC(TT_COL_RATE), live ? tt_rate(row->topic->rate_hz) : ui_str(ND_DASH),
                      live && row->topic->rate_hz > 0.0 ? P->dim : P->faint);
+        tt_stat_cell(P, UISC(TT_COL_JITTER), live ? tt_jitter(row->topic->jitter_p90_ms) : ui_str(ND_DASH),
+                     live && row->topic->jitter_p90_ms >= 0.0 ? P->dim : P->faint);
         tt_stat_cell(P, UISC(TT_COL_LAST), live ? nf_age(row->topic->last_age_s) : ui_str(ND_DASH),
                      live && row->topic->last_age_s >= 0.0 ? P->dim : P->faint);
         tt_stat_cell(P, UISC(TT_COL_QOS),  qos ? tt_qos_short(row->topic->reliable) : ui_str(ND_DASH),
@@ -207,7 +218,8 @@ static void topics_tree(AppState *app, const Palette *P){
        fixed stat columns, clamped so one long name can't blow it out and the header
        controls stay usable */
     float gap        = UISC(TT_COL_GAP);
-    float data_block = UISC(TT_COL_DOT) + UISC(TT_COL_RATE) + UISC(TT_COL_LAST) + UISC(TT_COL_QOS) + gap * 4;
+    float data_block = UISC(TT_COL_DOT) + UISC(TT_COL_RATE) + UISC(TT_COL_JITTER) + UISC(TT_COL_LAST)
+                      + UISC(TT_COL_QOS) + gap * 5;
     float name_max   = UISC(70);
     float panel_w;
     for (i = 0; i < n; i++){

@@ -123,6 +123,10 @@ typedef struct {
     double       rate_hz;                /* publish rate (msgs/s), refreshed ~1 Hz (below) */
     double       rate_prev_hr;           /* high-res time of the last rate-window boundary */
     unsigned long long rate_prev_msgs;   /* n_msgs at that boundary (rate = dmsgs / dt) */
+    double       jitter_last_hr;         /* high-res time of the previous received message; <= 0 = none yet */
+    double       jitter_mean_ms;         /* EWMA of the inter-arrival interval (ms): the topic's "expected" spacing */
+    double       jitter_p90_ms;          /* online p90 estimate of the deviation from jitter_mean_ms (ms) */
+    int          jitter_n;               /* inter-arrival samples folded in (gates the estimate until warm) */
 } CapSub;
 
 static CapSub cap_subs[CAP_MAX_SUBS];
@@ -357,6 +361,34 @@ static double cap_now_hr(void){
 #endif
 }
 
+/* Track a topic's receive-time jitter across its WHOLE lifetime, not just the visible feed
+   ring (which overwrites after CAP_FEED_MAX messages). jitter_mean_ms is an EWMA of the
+   inter-arrival interval: the topic's "expected" spacing, adapting as its rate changes. Each
+   new interval's deviation from that mean is one jitter sample, folded into jitter_p90_ms via
+   an online quantile tracker (stochastic approximation on the pinball loss: nudge the estimate
+   up by step*0.90 when a sample meets or exceeds it, down by step*0.10 when it doesn't; this
+   converges to the true 90th percentile without keeping any sample history at all). The step
+   scales with jitter_mean_ms so it adapts to the topic's own timescale (a slow topic's jitter
+   is naturally larger in absolute ms than a fast one's). */
+static void cap_jitter_update(CapSub *s, double t_hr){
+    if (s->jitter_last_hr > 0.0){
+        double dt_ms = (t_hr - s->jitter_last_hr) * 1000.0;
+        if (s->jitter_n == 0){
+            s->jitter_mean_ms = dt_ms;                       /* seed the expected spacing */
+        } else {
+            double dev = dt_ms - s->jitter_mean_ms; if (dev < 0.0) dev = -dev;
+            double step;
+            s->jitter_mean_ms += 0.2 * (dt_ms - s->jitter_mean_ms);
+            step = s->jitter_mean_ms * 0.05;
+            if (dev >= s->jitter_p90_ms) s->jitter_p90_ms += step * 0.90;
+            else                         s->jitter_p90_ms -= step * 0.10;
+            if (s->jitter_p90_ms < 0.0)  s->jitter_p90_ms = 0.0;
+        }
+        s->jitter_n++;
+    }
+    s->jitter_last_hr = t_hr;
+}
+
 static void cap_logf(const char *fmt, ...){
     unsigned long long t = cap_now_ms() - cap_start_ms;
     char *line = cap_log[cap_log_head];
@@ -410,6 +442,7 @@ static CapPeer *cap_peer_get(uint32_t id){
 static void cap_on_message(const DartMsg *msg){
     CapSub *s = cap_sub_by_index(msg->channel_id);
     if (!s) return;
+    cap_jitter_update(s, cap_now_hr());
     cap_ring_push(s, msg->sender_name, msg->data.data, msg->data.len, 0, msg->schema);
     s->n_msgs++;
 }
@@ -813,6 +846,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
             }
         }
         si->rate_hz = s->rate_hz;
+        si->jitter_p90_ms = s->jitter_n >= 4 ? s->jitter_p90_ms : -1.0;   /* a few intervals to warm up */
     }
 
     /* pull the node's zero-copy peer view (it decodes the overlay for us) and refresh each

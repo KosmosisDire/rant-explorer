@@ -94,6 +94,9 @@ typedef struct {
     long   size_bytes;
     double last_age_s;
     long   count;
+    double jitter_p90_ms;        /* p90 inter-arrival jitter (ms), smoothed over the topic's whole
+                                     observed lifetime, not just the visible feed; < 0 = not enough
+                                     samples yet (rides the data plane, so real only while subscribed) */
 
     int    reliable;             /* qos.reliability == QOS_RELIABLE (any publisher offers reliable) */
     int    reliable_recommend;   /* the reliability to subscribe AS: reliable only if every

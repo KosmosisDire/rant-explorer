@@ -62,6 +62,7 @@ static int uid_topic_for(const char *path, int *n_top){
         t->qos.reliability = QOS_BEST_EFFORT;   /* raised to RELIABLE if any publisher offers it */
         t->rate_on_event = 1;                /* rate unknown */
         t->last_age_s = -1.0;                /* placeholder */
+        t->jitter_p90_ms = -1.0;              /* placeholder, until a live subscription warms it up */
         t->count = -1; t->size_bytes = -1;
         t->drops = -1;                       /* unknown / not tracked here */
         return (*n_top)++;
@@ -196,6 +197,7 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         g_topics[ti].self_sub_reliable = si->reliable;
         g_topics[ti].rate_hz    = si->rate_hz;     /* live: publish rate over the stored window */
         g_topics[ti].last_age_s = si->last_age_s;  /* live: age of the newest received message */
+        g_topics[ti].jitter_p90_ms = si->jitter_p90_ms;  /* live: p90 inter-arrival jitter, smoothed */
     }
 
     D->machines = g_machines; D->n_machines = n_mach;

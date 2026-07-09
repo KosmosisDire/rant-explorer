@@ -101,11 +101,21 @@ static void nodes_list(AppState *app, const Palette *P){
             if (!D || D->n_nodes == 0){
                 ui_placeholder(P, CLAY_STRING("no nodes discovered"));
             } else {
-                int mi, ni;
+                int mi, ni, i, n_sel, sel[CAP_SNAP_NODES];
                 for (mi = 0; mi < D->n_machines; mi++){
                     node_group_header(P, &D->machines[mi]);
+                    n_sel = 0;
                     for (ni = 0; ni < D->n_nodes; ni++)
-                        if (D->nodes[ni].machine == mi) node_list_row(app, P, &D->nodes[ni], ni);
+                        if (D->nodes[ni].machine == mi) sel[n_sel++] = ni;
+                    /* alphabetize this machine's rows by name (n_sel is tiny: insertion sort) */
+                    for (i = 1; i < n_sel; i++){
+                        int key = sel[i], j = i - 1;
+                        while (j >= 0 && strcmp(D->nodes[sel[j]].name, D->nodes[key].name) > 0){
+                            sel[j + 1] = sel[j]; j--;
+                        }
+                        sel[j + 1] = key;
+                    }
+                    for (i = 0; i < n_sel; i++) node_list_row(app, P, &D->nodes[sel[i]], sel[i]);
                 }
             }
         }

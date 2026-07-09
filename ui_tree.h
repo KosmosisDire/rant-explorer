@@ -22,23 +22,27 @@ static int     ut_n;
 static TreeRow ut_rows[UT_MAX_NODES];
 static int     ut_n_rows;
 
-/* find (or create) the child of `parent` named `seg`; children keep insertion order */
+/* find (or create) the child of `parent` named `seg`; children are kept sorted
+   alphabetically by name so the tree renders each namespace's entries in order */
 static int ut_child(int parent, const char *seg, const char *fullpath){
-    int c = ut_pool[parent].first_child, last = -1;
+    int c = ut_pool[parent].first_child, prev = -1;
     for (; c != -1; c = ut_pool[c].next_sibling){
-        if (!strcmp(ut_pool[c].name, seg)) return c;
-        last = c;
+        int cmp = strcmp(ut_pool[c].name, seg);
+        if (cmp == 0) return c;
+        if (cmp > 0) break;   /* insert before c, keeping siblings sorted */
+        prev = c;
     }
     if (ut_n >= UT_MAX_NODES) return parent;   /* pool full: fold into parent (degrade, don't crash) */
-    c = ut_n++;
-    memset(&ut_pool[c], 0, sizeof ut_pool[c]);
-    snprintf(ut_pool[c].name, sizeof ut_pool[c].name, "%s", seg);
-    snprintf(ut_pool[c].path, sizeof ut_pool[c].path, "%s", fullpath);
-    ut_pool[c].topic = -1; ut_pool[c].first_child = -1; ut_pool[c].next_sibling = -1;
-    if (last == -1) ut_pool[parent].first_child = c;
-    else            ut_pool[last].next_sibling  = c;
-    ut_pool[parent].n_children++;
-    return c;
+    { int nc = ut_n++;
+      memset(&ut_pool[nc], 0, sizeof ut_pool[nc]);
+      snprintf(ut_pool[nc].name, sizeof ut_pool[nc].name, "%s", seg);
+      snprintf(ut_pool[nc].path, sizeof ut_pool[nc].path, "%s", fullpath);
+      ut_pool[nc].topic = -1; ut_pool[nc].first_child = -1; ut_pool[nc].next_sibling = c;
+      if (prev == -1) ut_pool[parent].first_child = nc;
+      else            ut_pool[prev].next_sibling  = nc;
+      ut_pool[parent].n_children++;
+      return nc;
+    }
 }
 
 static void ut_build(const Dataset *D){

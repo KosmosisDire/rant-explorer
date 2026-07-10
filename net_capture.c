@@ -173,8 +173,9 @@ static int cap_val_append(char *dst, int cap, int at, const char *fmt, ...){
    (0 = as many as the buffer holds), then " .." if any were left out. Floats print
    %g normally, or fixed-width (see cap_fmt_float) when `fixed_float`. */
 static void cap_fmt_arr(char *dst, int cap, int *at, DartBytes a, uint8_t elem, uint16_t count,
-                        uint16_t max_items, int fixed_float){
-    uint32_t esz = dart_schema_scalar_size((DartSchemaTypeKind)elem);
+                        uint16_t str_cap, uint16_t max_items, int fixed_float){
+    uint32_t esz = (elem == DART_STR) ? 2u + str_cap
+                                      : dart_schema_scalar_size((DartSchemaTypeKind)elem);
     uint16_t limit = (max_items && max_items < count) ? max_items : count;
     uint16_t j;
     *at = cap_val_append(dst, cap, *at, "[");
@@ -195,6 +196,8 @@ static void cap_fmt_arr(char *dst, int cap, int *at, DartBytes a, uint8_t elem, 
             case DART_F64: { uint64_t b = i_dart_le_r64(p); double v; memcpy(&v,&b,8);
                              *at = cap_val_append(dst,cap,*at, fixed_float ? "%8.3f" : "%g",v); } break;
             case DART_BOOL: *at = cap_val_append(dst,cap,*at,"%s", p[0] ? "true" : "false"); break;
+            case DART_STR: { uint16_t l = i_dart_le_r16(p); if (l > str_cap) l = str_cap;
+                             *at = cap_val_append(dst,cap,*at,"\"%.*s\"", (int)l, (const char *)p + 2); } break;
             default: break;
         }
     }
@@ -212,7 +215,9 @@ static void cap_fmt_value(char *dst, int cap, const DartSchemaFieldInfo *fi, con
             snprintf(dst, (size_t)cap, "%lld", (long long)v->v.i); break;
         case DART_F32: case DART_F64:
             snprintf(dst, (size_t)cap, "%g", v->v.f); break;
-        case DART_ARR:    dst[0] = '\0'; cap_fmt_arr(dst, cap, &at, v->bytes, fi->elem, fi->count, 0, 0); break;
+        case DART_ARR:    dst[0] = '\0'; cap_fmt_arr(dst, cap, &at, v->bytes, fi->elem, fi->count, fi->str_cap, 0, 0); break;
+        case DART_STR:    snprintf(dst, (size_t)cap, "\"%.*s\"", (int)v->bytes.len,
+                                   v->bytes.data ? (const char *)v->bytes.data : ""); break;
         case DART_STRUCT: snprintf(dst, (size_t)cap, "{...}"); break;
         default:          snprintf(dst, (size_t)cap, "?"); break;
     }
@@ -273,7 +278,10 @@ static void cap_fmt_value_preview(char *dst, int cap, int *at, const DartSchema 
             *at = cap_val_append(dst, cap, *at, "{...}");
         }
     } else if (fi->kind == DART_ARR){
-        cap_fmt_arr(dst, cap, at, v->bytes, fi->elem, fi->count, CAP_PREVIEW_MAX_ITEMS, 1);
+        cap_fmt_arr(dst, cap, at, v->bytes, fi->elem, fi->count, fi->str_cap, CAP_PREVIEW_MAX_ITEMS, 1);
+    } else if (fi->kind == DART_STR){
+        *at = cap_val_append(dst, cap, *at, "\"%.*s\"", (int)v->bytes.len,
+                             v->bytes.data ? (const char *)v->bytes.data : "");
     } else if (fi->kind == DART_F32 || fi->kind == DART_F64){
         cap_fmt_float(dst, cap, at, v->v.f);
     } else {
@@ -687,11 +695,34 @@ static int cap_form_set(const DartSchema *sch, uint16_t i, const char *v, uint8_
             while (*end == ' ') end++;
             if (*end != '\0') return 0;
             break;
+        case DART_STR:                                    /* the form text IS the content */
+            val.bytes = dart_bytes(v, strlen(v));
+            break;
         case DART_ARR: {                                  /* comma/space-separated elements */
-            uint32_t esz = dart_schema_scalar_size((DartSchemaTypeKind)fi.elem);
+            uint32_t esz = (fi.elem == DART_STR) ? 2u + fi.str_cap
+                                                 : dart_schema_scalar_size((DartSchemaTypeKind)fi.elem);
             uint8_t *w = (uint8_t *)malloc(fi.size ? fi.size : 1);
             uint16_t n = 0; const char *p = v; int ok;
             if (!w || !esz){ free(w); return 0; }
+            if (fi.elem == DART_STR){                     /* comma-separated strings */
+                while (*p){
+                    const char *q; size_t l;
+                    while (*p == ' ' || *p == '\t') p++;
+                    q = p; while (*q && *q != ',') q++;
+                    l = (size_t)(q - p);
+                    while (l && (p[l-1] == ' ' || p[l-1] == '\t')) l--;
+                    if (n >= fi.count || l > fi.str_cap){ free(w); return 0; }
+                    i_dart_le_w16(w + (size_t)n * esz, (uint16_t)l);
+                    memcpy(w + (size_t)n * esz + 2, p, l);
+                    memset(w + (size_t)n * esz + 2 + l, 0, (size_t)fi.str_cap - l);
+                    n++;
+                    p = *q ? q + 1 : q;
+                }
+                val.bytes = dart_bytes(w, (size_t)n * esz);
+                ok = dart_set_value(buf, size, sch, i, &val);
+                free(w);
+                return ok;
+            }
             for (;;){
                 while (*p == ' ' || *p == ',' || *p == '\t') p++;
                 if (!*p || n >= fi.count) break;
@@ -966,6 +997,7 @@ static const char *cap_kind_str(uint8_t kind){
         case DART_I32: return "i32"; case DART_I64: return "i64";
         case DART_F32: return "f32"; case DART_F64: return "f64";
         case DART_BOOL: return "bool";
+        case DART_STR: return "string";
         case DART_STRUCT: return "struct";
         default: return "?";
     }
@@ -983,8 +1015,14 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
         CapSchemaField *f = &out->fields[out->n_fields];
         if (!dart_schema_field_at(sch, i, &fi)) break;
         snprintf(f->name, sizeof f->name, "%.*s", (int)fi.name.len, fi.name.data ? fi.name.data : "");
-        if (fi.kind == DART_ARR) snprintf(f->type, sizeof f->type, "%s[%u]", cap_kind_str(fi.elem), fi.count);
-        else                     snprintf(f->type, sizeof f->type, "%s", cap_kind_str(fi.kind));
+        if (fi.kind == DART_STR)
+            snprintf(f->type, sizeof f->type, "string<%u>", fi.str_cap);
+        else if (fi.kind == DART_ARR && fi.elem == DART_STR)
+            snprintf(f->type, sizeof f->type, "string<%u>[%u]", fi.str_cap, fi.count);
+        else if (fi.kind == DART_ARR)
+            snprintf(f->type, sizeof f->type, "%s[%u]", cap_kind_str(fi.elem), fi.count);
+        else
+            snprintf(f->type, sizeof f->type, "%s", cap_kind_str(fi.kind));
         f->depth  = (uint8_t)(fi.depth > 255 ? 255 : fi.depth);
         f->offset = fi.offset;
         f->size   = fi.size;

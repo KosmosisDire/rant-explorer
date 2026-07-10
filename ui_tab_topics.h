@@ -479,9 +479,10 @@ static void tt_do_send(AppState *app, const char *topic){
 
 /* the prefilled default for a form field, by its display type */
 static const char *tt_form_default(const CapSchemaField *f){
-    if (!strcmp(f->type, "bool"))   return "false";
-    if (!strcmp(f->type, "struct")) return "";       /* no setter yet: stays default */
-    if (strchr(f->type, '['))       return "";       /* array: empty = all zero */
+    if (!strcmp(f->type, "bool"))            return "false";
+    if (!strcmp(f->type, "struct"))          return "";  /* no setter yet: stays default */
+    if (!strncmp(f->type, "string", 6))      return "";  /* empty string(s) */
+    if (strchr(f->type, '['))                return "";  /* array: empty = all zero */
     return "0";
 }
 

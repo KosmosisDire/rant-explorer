@@ -1,11 +1,11 @@
 /* Nodes tab: a node list on the left (grouped by machine = advertised IP) and a
    scrolling detail pane. Both render from the live Dataset (fed by net_capture via
    ui_data). The detail pane groups a peer's info by where it comes from: DISCOVERY
-   (what the discovery protocol carries: locator, cadence, observer metrics), ANNOUNCE
-   METADATA (the transport overlay our node decoded: fragment size + pub/sub interest),
-   and NOT OBSERVABLE (a peer's own runtime internals -- CPU, memory, msg counts, real
-   uptime, its AckNack counters, the peer table it holds -- which never ride the wire,
-   drawn as a dim em dash placeholder). Requires ui_widgets.h, ui_model.h, ui_app.h. */
+   (what the discovery protocol carries: locator, observer metrics) and ANNOUNCE
+   METADATA (the transport overlay our node decoded: fragment size + pub/sub interest).
+   A peer's own runtime internals (CPU, memory, msg counts, uptime, its AckNack
+   counters, the peer table it holds) never ride the wire, so they are not shown at
+   all rather than as a placeholder. Requires ui_widgets.h, ui_model.h, ui_app.h. */
 #ifndef UI_TAB_NODES_H
 #define UI_TAB_NODES_H
 
@@ -124,24 +124,7 @@ static void nodes_list(AppState *app, const Palette *P){
 
 /* =================================================================== detail pane */
 
-static void node_stat(const Palette *P, Clay_String label, Clay_String value, int placeholder){
-    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(60)) },
-                       .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(UISC(11)),
-                       .childGap = UISCI(7) },
-           .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
-           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-        CLAY_TEXT(label, CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
-                                            .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-        CLAY_TEXT(value, CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_VALUE),
-                                            .textColor = placeholder ? P->faint : P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-    }
-}
-/* an empty cell so the last stat row keeps the same card width as a full row */
-static void node_stat_gap(void){
-    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
-}
-
-static void node_kv_cell(const Palette *P, Clay_String label, Clay_String value, int placeholder, int alert){
+static void node_kv_cell(const Palette *P, Clay_String label, Clay_String value){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                        .padding = { .left = UISCI(12), .right = UISCI(12) },
                        .childGap = UISCI(8), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
@@ -149,25 +132,23 @@ static void node_kv_cell(const Palette *P, Clay_String label, Clay_String value,
                                             .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer */
         CLAY_TEXT(value, CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
-                          .textColor = placeholder ? P->faint : (alert ? P->red : P->text), .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                                            .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
     }
 }
-static void node_kv_row(const Palette *P,
-                        Clay_String l1, Clay_String v1, int ph1, int al1,
-                        Clay_String l2, Clay_String v2, int ph2, int al2){
+static void node_kv_row(const Palette *P, Clay_String l1, Clay_String v1, Clay_String l2, Clay_String v2){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(34)) } },
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
-        node_kv_cell(P, l1, v1, ph1, al1);
+        node_kv_cell(P, l1, v1);
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(1)), .height = CLAY_SIZING_GROW(0) } },
                .backgroundColor = P->border }) {}
-        node_kv_cell(P, l2, v2, ph2, al2);
+        node_kv_cell(P, l2, v2);
     }
 }
 /* a single full-width kv row (no divider) for an odd trailing entry */
-static void node_kv_single(const Palette *P, Clay_String label, Clay_String value, int placeholder, int alert){
+static void node_kv_single(const Palette *P, Clay_String label, Clay_String value){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(34)) } },
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
-        node_kv_cell(P, label, value, placeholder, alert);
+        node_kv_cell(P, label, value);
     }
 }
 
@@ -243,13 +224,11 @@ static void nodes_detail(AppState *app, const Palette *P){
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
                    .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
                    .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-                node_kv_row(P, CLAY_STRING("Unicast locator"), ui_str(nd->disc.unicast),         0, 0,
-                               CLAY_STRING("Discovery group"), ui_str(nd->disc.discovery_group), 0, 0);
-                node_kv_row(P, CLAY_STRING("Announce"),      ui_fmt("every %.1f s", nd->disc.announce_period_s), 0, 0,
-                               CLAY_STRING("Last announce"), nf_age(nd->disc.last_announce_age_s), 0, 0);
-                node_kv_row(P, CLAY_STRING("Liveliness lease"), ui_fmt("%.1f s", nd->disc.lease_s), 0, 0,
-                               CLAY_STRING("Observed for"),     nf_dur(nd->observed_s),             0, 0);
-                node_kv_single(P, CLAY_STRING("Announce updates"), nf_grp((long)nd->updates), 0, 0);
+                node_kv_row(P, CLAY_STRING("Unicast locator"), ui_str(nd->disc.unicast),
+                               CLAY_STRING("Discovery group"), ui_str(nd->disc.discovery_group));
+                node_kv_row(P, CLAY_STRING("Last announce"), nf_age(nd->disc.last_announce_age_s),
+                               CLAY_STRING("Observed for"),  nf_dur(nd->observed_s));
+                node_kv_single(P, CLAY_STRING("Announce updates"), nf_grp((long)nd->updates));
             }
 
             /* ===== ANNOUNCE METADATA: the transport overlay, decoded by our node ===== */
@@ -257,47 +236,13 @@ static void nodes_detail(AppState *app, const Palette *P){
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
                    .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
                    .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-                node_kv_row(P, CLAY_STRING("Fragment size"), nf_bytes(nd->disc.frag_size_bytes), 0, 0,
-                               CLAY_STRING("Announce blob"), nf_bytes(nd->disc.blob_bytes),      0, 0);
-                node_kv_single(P, CLAY_STRING("Transport"), ui_str(nd->disc.transport), 0, 0);
+                node_kv_row(P, CLAY_STRING("Fragment size"), nf_bytes(nd->disc.frag_size_bytes),
+                               CLAY_STRING("Announce blob"), nf_bytes(nd->disc.blob_bytes));
             }
             ui_section_label(P, ui_fmt("PUBLISHES  %d", nd->n_pubs));
             node_endpoint_list(P, D, nd->pubs, nd->pub_rel, nd->n_pubs);
             ui_section_label(P, ui_fmt("SUBSCRIBES  %d", nd->n_subs));
             node_endpoint_list(P, D, nd->subs, nd->sub_rel, nd->n_subs);
-
-            /* ===== NOT OBSERVABLE: a peer's own runtime internals, never on the wire ===== */
-            ui_section_label(P, CLAY_STRING("NOT OBSERVABLE"));
-            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(12)) },
-                   .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
-                   .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-                CLAY_TEXT(CLAY_STRING("A peer's own runtime internals. Neither discovery nor the announce "
-                                      "metadata carries them, and they include the peer table the node "
-                                      "holds itself, so they show as a placeholder."),
-                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint }));
-            }
-            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(10) } }) {
-                node_stat(P, CLAY_STRING("Uptime"),    nf_dur(nd->uptime_s),        1);
-                node_stat(P, CLAY_STRING("Heartbeat"), nf_age(nd->heartbeat_age_s), 1);
-                node_stat(P, CLAY_STRING("CPU"),       nd->cpu_pct  < 0 ? ui_str(ND_DASH) : ui_fmt("%d%%", nd->cpu_pct), 1);
-                node_stat(P, CLAY_STRING("Memory"),    nf_bytes(nd->mem_bytes),     1);
-            }
-            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(10) } }) {
-                node_stat(P, CLAY_STRING("Msgs out"),  nf_grp(nd->msgs_sent), 1);
-                node_stat(P, CLAY_STRING("Msgs in"),   nf_grp(nd->msgs_recv), 1);
-                node_stat_gap();
-                node_stat_gap();
-            }
-            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
-                   .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
-                   .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-                node_kv_row(P, CLAY_STRING("Max message"),  ui_str(ND_DASH), 1, 0,
-                               CLAY_STRING("Announces sent"), nf_grp(nd->disc.announces_sent), 1, 0);
-                node_kv_row(P, CLAY_STRING("Fragments TX"), nf_grp(nd->disc.frags_tx), 1, 0,
-                               CLAY_STRING("AckNacks RX"),  nf_grp(nd->disc.acknacks_rx), 1, 0);
-                node_kv_row(P, CLAY_STRING("NACKs (retransmit)"), nf_grp(nd->disc.nacks_rx), 1, nd->disc.nacks_rx > 100,
-                               CLAY_STRING("Known peers"), ui_str(ND_DASH), 1, 0);
-            }
         }
       }
     }

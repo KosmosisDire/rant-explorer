@@ -5,7 +5,8 @@
    (cap_subscribe) and shows messages as they arrive, newest at the bottom, auto-scrolling
    while the user is parked there. A topic's status light is its subscription state: green
    subscribed, red dropping/erroring, hollow grey not subscribed. Durability/history/deadline
-   QoS ride the data plane out of band, so those stay placeholders; Publish is a read-only note.
+   QoS ride the data plane out of band and are never observable here, so the Inspect drawer
+   just doesn't show them; Publish is a read-only note.
    Requires ui_tree.h, ui_widgets.h, ui_model.h, ui_app.h, net_capture.h. */
 #ifndef UI_TAB_TOPICS_H
 #define UI_TAB_TOPICS_H
@@ -605,7 +606,7 @@ static void topics_drawer_header(AppState *app, const Palette *P){
     }
 }
 
-static void topic_qos_cell(const Palette *P, Clay_String label, Clay_String value, Clay_Color vcol, int placeholder){
+static void topic_qos_cell(const Palette *P, Clay_String label, Clay_String value, Clay_Color vcol){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(50)) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(UISC(9)),
                        .childGap = UISCI(6) },
@@ -614,7 +615,7 @@ static void topic_qos_cell(const Palette *P, Clay_String label, Clay_String valu
         CLAY_TEXT(label, CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
                                             .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         CLAY_TEXT(value, CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
-                                            .textColor = placeholder ? P->faint : vcol, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                                            .textColor = vcol, .wrapMode = CLAY_TEXT_WRAP_NONE }));
     }
 }
 
@@ -731,12 +732,7 @@ static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
 
         ui_section_label(P, CLAY_STRING("QUALITY OF SERVICE"));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8) } }) {
-            topic_qos_cell(P, CLAY_STRING("Reliability"), tt_rel_word(t->reliable), ui_qos_color(P, t->reliable), 0);
-            topic_qos_cell(P, CLAY_STRING("Durability"), ui_str(ND_DASH), P->text, 1);
-        }
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8) } }) {
-            topic_qos_cell(P, CLAY_STRING("History"), ui_str(ND_DASH), P->text, 1);
-            topic_qos_cell(P, CLAY_STRING("Deadline"), ui_str(ND_DASH), P->text, 1);
+            topic_qos_cell(P, CLAY_STRING("Reliability"), tt_rel_word(t->reliable), ui_qos_color(P, t->reliable));
         }
 
         topic_schema_section(app, P, t);
@@ -752,15 +748,6 @@ static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
             CLAY_TEXT(CLAY_STRING("none"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint }));
         if (t->self_sub) topic_self_chip(P, t->self_sub_reliable);
         for (i = 0; i < t->n_subs; i++) topic_node_chip(app, P, t->subs[i], "sub_chip", i);
-
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(11)) },
-               .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
-               .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-            CLAY_TEXT(CLAY_STRING("Durability, history and deadline are per-endpoint QoS carried on the "
-                                  "data plane, not advertised in discovery, so they are not observable here. "
-                                  "Reliability is (it gates matching)."),
-                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint }));
-        }
     }
 }
 

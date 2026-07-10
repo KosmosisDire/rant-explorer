@@ -5,9 +5,9 @@
    node). Discovery-level facts become real data: node name, state, advertised unicast
    locator, and how long we've observed each peer. Announce-metadata facts (the overlay
    the node decoded) are also real: UDP fragment size + the pub/sub interest list (with
-   per-endpoint reliability). What never rides the wire (CPU, memory, msg counts, real
-   uptime, a peer's transport AckNack counters, the peer table IT holds) is left as a
-   placeholder, marked < 0 / empty here and drawn as a dim em dash at the draw site.
+   per-endpoint reliability). A peer's own runtime internals (CPU, memory, msg counts,
+   uptime, its transport AckNack counters) never ride the wire, so this file does not
+   model them at all.
 
    Requires ui_model.h (display structs) and net_capture.h (CapSnapshot). */
 #ifndef UI_DATA_H
@@ -34,7 +34,8 @@ static void ui_data_add_user_topic(const char *name){
         snprintf(g_user_topics[g_n_user_topics++], CAP_TOPIC_CAP, "%s", name);
 }
 
-/* a "machine" is one advertised IP; the host name / OS aren't on discovery. */
+/* a "machine" is one advertised IP; the host name / OS aren't on discovery, so a
+   machine is identified by that IP alone. */
 static int uid_machine_for(const char *ip, int *n_mach){
     int i;
     for (i = 0; i < *n_mach; i++) if (!strcmp(g_machines[i].ip, ip)) return i;
@@ -43,15 +44,13 @@ static int uid_machine_for(const char *ip, int *n_mach){
         memset(m, 0, sizeof *m);
         snprintf(m->id,   sizeof m->id,   "%s", ip);
         snprintf(m->ip,   sizeof m->ip,   "%s", ip);
-        m->host[0] = '\0';   /* host name: not observable */
-        m->os[0]   = '\0';   /* OS: not observable */
         return (*n_mach)++;
     }
     return 0;
 }
 
-/* topics are the union of every node's pub/sub names; most fields are unknown to a
-   discovery observer (rate/size/count/preview ride the data plane, not announces). */
+/* topics are the union of every node's pub/sub names; rate/last-age/jitter ride the
+   data plane (real only once the explorer subscribes), not the discovery announce. */
 static int uid_topic_for(const char *path, int *n_top){
     int i;
     for (i = 0; i < *n_top; i++) if (!strcmp(g_topics[i].path, path)) return i;
@@ -60,11 +59,8 @@ static int uid_topic_for(const char *path, int *n_top){
         memset(t, 0, sizeof *t);
         snprintf(t->path, sizeof t->path, "%s", path);
         t->qos.reliability = QOS_BEST_EFFORT;   /* raised to RELIABLE if any publisher offers it */
-        t->rate_on_event = 1;                /* rate unknown */
-        t->last_age_s = -1.0;                /* placeholder */
-        t->jitter_p90_ms = -1.0;              /* placeholder, until a live subscription warms it up */
-        t->count = -1; t->size_bytes = -1;
-        t->drops = -1;                       /* unknown / not tracked here */
+        t->last_age_s = -1.0;                /* not yet observed */
+        t->jitter_p90_ms = -1.0;              /* not enough samples yet, until a live subscription warms it up */
         return (*n_top)++;
     }
     return -1;
@@ -88,7 +84,6 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         snprintf(n->name, sizeof n->name, "%s", nm);
         snprintf(n->ip,   sizeof n->ip,   "%s", cn->ip);
         n->machine = uid_machine_for(cn->ip, &n_mach);
-        n->pid = -1;                         /* placeholder */
 
         /* discovery state -> display state. An active peer whose announce blob hasn't arrived
            yet, or whose blob we hold is behind the version it now advertises (re-fetch pending),
@@ -101,28 +96,17 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         else
             n->state = NODE_GONE;
 
-        /* runtime stats: none are observable from discovery */
-        n->uptime_s = -1; n->heartbeat_age_s = -1; n->cpu_pct = -1;
-        n->mem_bytes = -1; n->msgs_sent = -1; n->msgs_recv = -1;
         n->observed_s = cn->observed_s;      /* real (observer view) */
         n->updates    = cn->updates;         /* real */
 
-        /* discovery-level: real where the announce header / protocol defaults carry it */
-        n->disc.announce_period_s   = 1.0;   /* protocol default (DART_DISCOVERY announce interval) */
+        /* discovery-level: real, from the announce header */
         n->disc.last_announce_age_s = cn->age_s;     /* last announce CHANGE we saw */
-        n->disc.lease_s             = 3.5;   /* protocol default (peer_timeout = 3.5x announce) */
         snprintf(n->disc.unicast,         sizeof n->disc.unicast,         "%s:%u", cn->ip, cn->port);
         snprintf(n->disc.discovery_group, sizeof n->disc.discovery_group, "%s:%u", snap->group, snap->disc_port);
 
         /* announce metadata: real, decoded by our node from the peer's overlay */
         n->disc.frag_size_bytes     = cn->frag;       /* real (advertised) */
         n->disc.blob_bytes          = cn->meta_len;   /* real: observed overlay size */
-        snprintf(n->disc.transport, sizeof n->disc.transport, "UDP");
-
-        /* node-internal: never on the wire */
-        n->disc.max_msg_bytes  = -1;
-        n->disc.announces_sent = -1; n->disc.frags_tx = -1;
-        n->disc.acknacks_rx    = -1; n->disc.nacks_rx = -1;
 
         for (k = 0; k < cn->n_pub && n->n_pubs < UI_MAX_ENDPOINTS; k++){
             int ti = uid_topic_for(cn->pub[k].name, &n_top);

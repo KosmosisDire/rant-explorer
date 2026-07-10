@@ -4,6 +4,7 @@
 #define UI_APP_H
 
 typedef enum { TAB_NODES, TAB_TOPICS, TAB_LOG } Tab;
+typedef enum { DRAWER_INSPECT, DRAWER_PUBLISH } DrawerTab;   /* the Topics right-sidebar tabs */
 
 #define UI_MAX_COLLAPSED 128   /* tracked collapsed tree branches (default = expanded) */
 #define UI_MAX_EXPANDED  64    /* tracked expanded feed messages (default = collapsed) */
@@ -18,7 +19,8 @@ typedef struct {
     int  sel_node;            /* index into data->nodes  */
     int  sel_topic;           /* index into data->topics */
 
-    int        drawer_open;   /* Topics inspector drawer */
+    int        drawer_open;   /* Topics right sidebar (Inspect / Publish) */
+    DrawerTab  drawer_tab;    /* which sidebar tab is showing */
 
     /* topic tree: a set of COLLAPSED branch-path hashes (absent = expanded, the default) */
     uint64_t collapsed[UI_MAX_COLLAPSED];
@@ -38,7 +40,6 @@ typedef struct {
     int      form_focus;      /* focused field, or -1 (the free-text composer owns input) */
     int      form_topic;      /* sel_topic the values belong to; re-defaulted on change */
     int      form_send;       /* Enter in a form field: publish (consumed by the composer) */
-    int      form_open;       /* the publish form starts collapsed to its header bar */
 
     /* feed messages EXPANDED by click (collapsed one-liners are the default): a small
        replaceable set of hash(topic path) ^ message uid keys */
@@ -69,6 +70,7 @@ static void app_init(AppState *a, const Dataset *data){
     a->sel_node    = 0;
     a->sel_topic   = 0;
     a->drawer_open = 1;
+    a->drawer_tab  = DRAWER_INSPECT;
     a->n_collapsed = 0;
     a->compose_len   = 0;
     a->compose_send  = 0;
@@ -78,7 +80,6 @@ static void app_init(AppState *a, const Dataset *data){
     a->form_focus = -1;
     a->form_topic = -1;
     a->form_send  = 0;
-    a->form_open  = 0;
     a->n_msg_expanded = 0;
     a->adding_topic     = 0;
     a->new_topic_len    = 0;

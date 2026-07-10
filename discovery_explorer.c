@@ -178,7 +178,10 @@ int main(int argc, char **argv){
                         if (!ev.key.repeat){ debug_enabled = !debug_enabled; Clay_SetDebugModeEnabled(debug_enabled); }
                         break;
                     }
-                    if (app.tab == TAB_TOPICS){               /* active field: new-topic > form > composer */
+                    /* active text field: the tree's new-topic input, or (only when the Publish
+                       sidebar tab is open) the composer form field > free-text composer */
+                    if (app.tab == TAB_TOPICS &&
+                        (app.adding_topic || (app.drawer_open && app.drawer_tab == DRAWER_PUBLISH))){
                         int   form = !app.adding_topic && app.form_focus >= 0 && app.form_focus < UI_FORM_MAX;
                         char *buf = app.adding_topic ? app.new_topic : form ? app.form_val[app.form_focus] : app.compose;
                         int  *len = app.adding_topic ? &app.new_topic_len : form ? &app.form_len[app.form_focus] : &app.compose_len;
@@ -212,7 +215,8 @@ int main(int argc, char **argv){
                     }
                     break;
                 case SDL_EVENT_TEXT_INPUT:                    /* typed characters -> active field */
-                    if (app.tab == TAB_TOPICS && ev.text.text){
+                    if (app.tab == TAB_TOPICS && ev.text.text &&
+                        (app.adding_topic || (app.drawer_open && app.drawer_tab == DRAWER_PUBLISH))){
                         int    form = !app.adding_topic && app.form_focus >= 0 && app.form_focus < UI_FORM_MAX;
                         char  *buf = app.adding_topic ? app.new_topic : form ? app.form_val[app.form_focus] : app.compose;
                         int   *len = app.adding_topic ? &app.new_topic_len : form ? &app.form_len[app.form_focus] : &app.compose_len;

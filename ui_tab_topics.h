@@ -1,12 +1,13 @@
-/* Topics tab: topic tree (264) + center feed (grow) + inline Inspect/Publish drawer
-   (332, only when open). Wired to live discovery: the tree, each topic's reliability,
-   and its publisher/subscriber node lists are real (from the announce interest blobs).
-   The center FEED is live too: the explorer subscribes to the selected topic on demand
-   (cap_subscribe) and shows messages as they arrive, newest at the bottom, auto-scrolling
+/* Topics tab: topic tree (264) + center feed (grow) + right sidebar (332, only when open)
+   that tabs between Inspect and Publish. Wired to live discovery: the tree, each topic's
+   reliability, and its publisher/subscriber node lists are real (from the announce interest
+   blobs). The center FEED is live too: the explorer subscribes to the selected topic on
+   demand (cap_subscribe) and shows messages as they arrive, newest at the bottom, auto-scrolling
    while the user is parked there. A topic's status light is its subscription state: green
-   subscribed, red dropping/erroring, hollow grey not subscribed. Durability/history/deadline
-   QoS ride the data plane out of band and are never observable here, so the Inspect drawer
-   just doesn't show them; Publish is a read-only note.
+   subscribed, red dropping/erroring, hollow grey not subscribed. The Publish tab hosts the
+   message composer (free-text, or a structured form on a typed topic). Durability/history/
+   deadline QoS ride the data plane out of band and are never observable here, so the Inspect
+   tab just doesn't show them.
    Requires ui_tree.h, ui_widgets.h, ui_model.h, ui_app.h, net_capture.h. */
 #ifndef UI_TAB_TOPICS_H
 #define UI_TAB_TOPICS_H
@@ -413,51 +414,46 @@ static void tt_form_field_row(AppState *app, const Palette *P, const CapSchemaFi
     }
 }
 
-/* the structured composer, COLLAPSED by default to its header bar; expanded it is one
-   input per schema field (nested members indented), prefilled with defaults; Enter or
-   Send publishes (empty fields keep the canonical default zero). */
+/* the structured composer: the message type name, one input per schema field (nested members
+   indented) prefilled with defaults, then a Send button under them. Enter or Send publishes
+   (empty fields keep the canonical default zero). */
 static void topics_form(AppState *app, const Palette *P, const Topic *t, const CapSchema *sc){
     int i, n = sc->n_fields < UI_FORM_MAX ? sc->n_fields : UI_FORM_MAX;
     int send = app->form_send;
     app->form_send = 0; app->compose_send = 0;   /* the form owns Enter on this topic */
-    if (app->form_topic != app->sel_topic){       /* switched topic: fresh defaults, folded */
+    if (app->form_topic != app->sel_topic){       /* switched topic: fresh defaults */
         app->form_topic = app->sel_topic;
-        app->form_open  = 0;
         tt_form_reset(app, sc, n);
     }
-    app->form_n = app->form_open ? n : 0;         /* input routes to the form only when open */
-    if (send && app->form_open) tt_form_send(app, t, n);
+    app->form_n = n;                              /* input routes to the form fields */
+    if (send) tt_form_send(app, t, n);
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM,
-                       .padding = CLAY_PADDING_ALL(UISC(10)), .childGap = UISCI(4) },
-           .backgroundColor = P->panel, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
-           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+                       .childGap = UISCI(6) } }) {
+        /* header: message type name + input hint */
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8),
                            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-            CLAY({ .id = CLAY_ID("form_fold"),        /* chevron + label: the fold toggle */
-                   .layout = { .childGap = UISCI(8), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-                if (Clay_Hovered() && g_pointer_pressed) app->form_open = !app->form_open;
-                ui_icon(app->form_open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12, P->dim);
-                ui_section_label(P, ui_fmt("PUBLISH  %s", sc->type_name));
-            }
+            CLAY_TEXT(ui_str(sc->type_name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_SEMI, FS_SMALL),
+                                                               .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
-            if (app->form_open)
-                CLAY_TEXT(CLAY_STRING("Tab: next field \xC2\xB7 Enter: send \xC2\xB7 empty = default"),
-                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint,
-                                             .wrapMode = CLAY_TEXT_WRAP_NONE }));
-            if (app->form_open &&
-                ui_pill(P, CLAY_STRING("Send"), FAM_SANS, WT_SEMI, FS_SMALL,
-                        P->accent, P->accent_bg, UI_NONE, UISC(26)))
+            CLAY_TEXT(CLAY_STRING("Tab: next \xC2\xB7 Enter: send"),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint,
+                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        }
+        for (i = 0; i < n; i++) tt_form_field_row(app, P, &sc->fields[i], i);
+        /* Send: its own row under the fields (right-aligned), not boxed in a card */
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = { .top = UISCI(4) } } }) {
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+            if (ui_pill(P, CLAY_STRING("Send"), FAM_SANS, WT_SEMI, FS_SMALL,
+                        P->accent, P->accent_bg, P->border2, UISC(34)))
                 tt_form_send(app, t, n);
         }
-        if (app->form_open)
-            for (i = 0; i < n; i++) tt_form_field_row(app, P, &sc->fields[i], i);
     }
 }
 
-/* The message composer pinned under the feed: an input box that grows in height with the
-   wrapped text (pushing the feed up) plus a Send button. Enter (app->compose_send, set in
-   the event loop) sends too. Text is captured into app->compose by the SDL text-input
-   handler whenever the Topics tab is active. Room for QoS/options beside Send comes later. */
+/* The message composer, hosted in the Publish sidebar tab: an input box that grows in height
+   with the wrapped text plus a Send button. Enter (app->compose_send, set in the event loop)
+   sends too. Text is captured into app->compose by the SDL text-input handler while the
+   Publish tab is open. Room for QoS/options beside Send comes later. */
 static void topics_composer(AppState *app, const Palette *P, const Topic *t){
     static CapSchema tt_form_schema;   /* the selected topic's advertised schema, per frame */
     int can, focused, send;
@@ -537,8 +533,9 @@ static void topics_feed(AppState *app, const Palette *P){
                 CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
                 if (!app->drawer_open &&
                     ui_pill(P, CLAY_STRING("Details"), FAM_SANS, WT_SEMI, FS_SMALL,
-                            P->dim, P->panel2, P->border2, UISC(28)))
-                    app->drawer_open = 1;
+                            P->dim, P->panel2, P->border2, UISC(28))){
+                    app->drawer_open = 1; app->drawer_tab = DRAWER_INSPECT;
+                }
             }
             /* meta row: reliability + endpoint counts (all real) */
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(16),
@@ -586,20 +583,34 @@ static void topics_feed(AppState *app, const Palette *P){
                                                     : CLAY_STRING("subscribe to see live messages"));
                 for (i = 0; i < tt_feed_n; i++) tt_feed_row(app, P, t->path, &tt_feed[i], i);
             }
-            topics_composer(app, P, t);
         }
     }
 }
 
 /* ================================================================ right: drawer */
 
+/* one right-sidebar tab: accent text on an accent-tinted pill when active, dim otherwise */
+static void topics_drawer_tab(AppState *app, const Palette *P, Clay_String label, DrawerTab tab){
+    int active = app->drawer_tab == tab;
+    CLAY({ .layout = { .sizing = { .height = CLAY_SIZING_FIXED(UISC(28)) },
+                       .padding = { .left = UISCI(11), .right = UISCI(11) },
+                       .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
+           .backgroundColor = active ? P->accent_bg : UI_NONE,
+           .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)) }) {
+        if (Clay_Hovered() && g_pointer_pressed) app->drawer_tab = tab;
+        CLAY_TEXT(label, CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_SMALL),
+                                            .textColor = active ? P->accent : P->dim,
+                                            .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+}
+
 static void topics_drawer_header(AppState *app, const Palette *P){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(40)) },
-                       .padding = { .left = UISCI(12), .right = UISCI(6) },
+                       .padding = { .left = UISCI(8), .right = UISCI(6) }, .childGap = UISCI(3),
                        .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
-        CLAY_TEXT(CLAY_STRING("Inspect"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_SMALL),
-                                                             .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        topics_drawer_tab(app, P, CLAY_STRING("Inspect"), DRAWER_INSPECT);
+        topics_drawer_tab(app, P, CLAY_STRING("Publish"), DRAWER_PUBLISH);
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
         if (ui_icon_button(P, ICON_X, 14, 26, P->dim, P->text))
             app->drawer_open = 0;
@@ -751,6 +762,20 @@ static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
     }
 }
 
+/* the Publish sidebar tab: the message composer (free-text, or the structured form for a
+   typed topic) that used to live pinned under the feed, now hosted in the drawer */
+static void topics_publish(AppState *app, const Palette *P, const Topic *t){
+    CLAY({ .id = CLAY_ID("topics_publish_scroll"),
+           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
+                       .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(UISC(14)),
+                       .childGap = UISCI(11) },
+           .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+        CLAY_TEXT(ui_str(t->path), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_BODY), .textColor = P->text }));
+        ui_section_label(P, CLAY_STRING("COMPOSE MESSAGE"));
+        topics_composer(app, P, t);
+    }
+}
+
 static void topics_drawer(AppState *app, const Palette *P){
     const Dataset *D = app->data;
     const Topic *t = (D && D->n_topics && app->sel_topic >= 0 && app->sel_topic < D->n_topics)
@@ -762,6 +787,7 @@ static void topics_drawer(AppState *app, const Palette *P){
            .border = { .width = { UISCI(1), 0, 0, 0, 0 }, .color = P->border } }) {
         topics_drawer_header(app, P);
         if (!t) ui_placeholder(P, CLAY_STRING("no topic selected"));
+        else if (app->drawer_tab == DRAWER_PUBLISH) topics_publish(app, P, t);
         else    topics_inspect(app, P, t);
     }
 }

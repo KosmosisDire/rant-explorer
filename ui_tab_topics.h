@@ -4,12 +4,13 @@
    blobs). The center FEED is live too: the explorer subscribes to the selected topic on
    demand (cap_subscribe) and shows messages as they arrive, newest at the bottom, auto-scrolling
    while the user is parked there. A topic's status light is its subscription state: green
-   subscribed, red dropping/erroring, hollow grey not subscribed. Feed rows are single lines
-   (no inline expansion): clicking one copies the message into the Inspect tab, which shows
-   its full decoded field hierarchy from a durable copy that survives the feed ring recycling.
-   The Publish tab hosts the message composer (free-text, or a structured form on a typed
-   topic). Durability/history/deadline QoS ride the data plane out of band and are never
-   observable here, so the Inspect tab just doesn't show them.
+   subscribed, red dropping/erroring, hollow grey not subscribed. The feed is a TABLE: columns
+   are the message's (flattened) fields, rows are samples, with a sticky header; clicking a row
+   copies that sample into the Inspect tab, which shows its full decoded field hierarchy from a
+   durable copy that survives the feed ring recycling. The Publish tab hosts the message
+   composer (free-text, or a structured form on a typed topic). Durability/history/deadline QoS
+   ride the data plane out of band and are never observable here, so the Inspect tab just
+   doesn't show them.
    Requires ui_tree.h, ui_widgets.h, ui_model.h, ui_app.h, net_capture.h. */
 #ifndef UI_TAB_TOPICS_H
 #define UI_TAB_TOPICS_H
@@ -272,48 +273,123 @@ static void topics_tree(AppState *app, const Palette *P){
     }
 }
 
-/* ================================================================= center: feed */
+/* ============================================================ center: feed (table)
 
-/* one received message: a single clickable line (time, sender, type, one-line summary,
-   size). No inline expansion; clicking copies the message into the inspector (a durable
-   copy), which renders the full decode. Decoded messages summarise via preview[]; a raw
-   sender shows a sanitized payload head. The current inspected message is highlighted. */
-static void tt_feed_row(AppState *app, const Palette *P, const char *topic,
-                        const CapFeedItem *m, int idx){
+   The feed is a TABLE: columns are the message's fields (flattened, so a nested member reads
+   pos.x), rows are samples (newest at the bottom). The header is sticky: it is a sibling
+   ABOVE the scroll body sharing the same fixed column widths, so the columns line up while
+   the body scrolls. Only the first TT_TABLE_COLS fields show by default. A schema-less topic
+   falls back to a single "payload" column. Clicking a row copies that sample into the
+   inspector (the full decode). Cells are fixed-width and their text is truncated to fit: a
+   per-cell clip would overflow Clay's 10-slot scroll-container array, and the full value is
+   always one click away in the inspector. Any header overrun on a narrow window is hidden by
+   the (later-drawn, opaque) drawer or clipped at the window edge. */
+
+#define TT_TABLE_COLS 6    /* fields shown by default (column selection comes later) */
+#define TT_TIME_W    60    /* time column width, unscaled px */
+#define TT_FIELD_W   94    /* field column width, unscaled px */
+#define TT_CELL_PADL  8    /* cell left padding, unscaled px */
+
+typedef struct { char name[80]; int fidx; } TblCol;   /* a flattened column -> its fields[] index */
+static TblCol tt_cols[CAP_MSG_FIELDS];
+
+/* build the flattened column list from a template decoded message: each non-struct field
+   becomes a column named by its dotted path (pos.x), keyed to its fields[] index (stable
+   across samples of one schema, since every message enumerates the schema in the same
+   depth-first order). A struct field contributes only its name as a path prefix. */
+static int tt_build_columns(const CapFeedItem *m, TblCol *cols, int maxcols){
+    static char stack[CAP_MSG_FIELDS][CAP_TOPIC_CAP];   /* ancestor field names, by depth */
+    int i, n = 0;
+    for (i = 0; i < m->n_fields; i++){
+        const CapMsgField *f = &m->fields[i];
+        int d = f->depth < CAP_MSG_FIELDS ? f->depth : CAP_MSG_FIELDS - 1;
+        snprintf(stack[d], sizeof stack[d], "%s", f->name);
+        if (!strcmp(f->value, "{...}")) continue;       /* struct: a path prefix, not a column */
+        if (n < maxcols){
+            char *dst = cols[n].name; int cap = (int)sizeof cols[n].name, at = 0, k;
+            for (k = 0; k <= d; k++){
+                int w = snprintf(dst + at, (size_t)(cap - at), k ? ".%s" : "%s", stack[k]);
+                if (w < 0 || at + w >= cap){ at = cap - 1; break; }
+                at += w;
+            }
+            cols[n].fidx = i;
+            n++;
+        }
+    }
+    return n;
+}
+
+/* a string truncated to `budget` characters, always copied into the frame pool (so callers
+   may pass a local buffer). Keeps a fixed-width cell's text from overrunning into its neighbour. */
+static Clay_String tt_fit(const char *s, int budget){
+    int len = (int)strlen(s);
+    if (budget < 1) budget = 1;
+    if (len > budget) len = budget;
+    return ui_fmt("%.*s", len, s);
+}
+
+/* one fixed-width table cell (mono small, left aligned, truncated to fit) */
+static void tt_cell(const Palette *P, float w, const char *text, int budget, Clay_Color col){
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(w), .height = CLAY_SIZING_GROW(0) },
+                       .padding = { .left = UISCI(TT_CELL_PADL), .right = UISCI(2) },
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+        CLAY_TEXT(tt_fit(text, budget), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                          .textColor = col, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+}
+
+/* the schema-less fallback's single grow-width payload cell (overrun is clipped by the feed
+   scissor / hidden by the drawer, so it needs no per-cell clip) */
+static void tt_cell_grow(const Palette *P, const char *text, Clay_Color col){
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
+                       .padding = { .left = UISCI(TT_CELL_PADL), .right = UISCI(2) },
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+        CLAY_TEXT(ui_fmt("%s", text), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                        .textColor = col, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+}
+
+/* the sticky header row: a fixed time column then a header cell per shown field (or the
+   payload fallback). Same widths/budgets as the rows below it, so columns line up. */
+static void tt_table_header(const Palette *P, const TblCol *cols, int n_show,
+                            int field_budget, int time_budget){
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(26)) } },
+           .backgroundColor = P->panel2,
+           .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border2 } }) {
+        int c;
+        tt_cell(P, UISC(TT_TIME_W), "t (s)", time_budget, P->faint);
+        if (n_show == 0) tt_cell_grow(P, "payload", P->faint);
+        else for (c = 0; c < n_show; c++) tt_cell(P, UISC(TT_FIELD_W), cols[c].name, field_budget, P->faint);
+    }
+}
+
+/* one sample row: the time column then a cell per shown field (its decoded value, or "-"
+   when a message lacks it). Clicking copies the sample into the inspector; the current
+   inspected sample is highlighted. */
+static void tt_table_row(AppState *app, const Palette *P, const char *topic, const CapFeedItem *m,
+                         int idx, const TblCol *cols, int n_show, int field_budget, int time_budget){
     int  selected = app->has_inspect_msg && m->uid == app->inspect_msg.uid
                     && !strcmp(topic, app->inspect_msg_topic);
-    char rawbuf[CAP_MSG_PREVIEW + 1];
-    if (!m->decoded) tt_sanitize(rawbuf, (int)sizeof rawbuf, m->preview, m->preview_len);
+    char tbuf[16];
+    int  c;
+    snprintf(tbuf, sizeof tbuf, "%.2f", m->t_s);
     CLAY({ .id = CLAY_IDI("feed_row", (uint32_t)idx),
-           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(27)) },
-                       .padding = { .left = UISCI(6), .right = UISCI(6) }, .childGap = UISCI(8),
-                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(24)) } },
            .backgroundColor = selected ? P->accent_bg : (Clay_Hovered() ? P->panel : UI_NONE),
-           .cornerRadius = CLAY_CORNER_RADIUS(UISC(4)),
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
         if (Clay_Hovered() && g_pointer_pressed) app_inspect_msg(app, topic, m);
-        CLAY_TEXT(ui_fmt("%8.2fs", m->t_s),
-                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION), .textColor = P->faint,
-                                     .wrapMode = CLAY_TEXT_WRAP_NONE }));
-        CLAY_TEXT(m->mine ? ui_fmt("%s (you)", m->sender) : ui_str(m->sender),
-                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_CAPTION),
-                                     .textColor = m->mine ? P->accent : P->dim,
-                                     .wrapMode = CLAY_TEXT_WRAP_NONE }));
-        if (m->decoded && m->type_name[0])
-            CLAY_TEXT(ui_str(m->type_name),
-                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
-                                         .textColor = P->accent, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-        /* one-line summary in a grow box; the feed scroll container scissors any overrun at
-           its right edge (a per-row clip would blow Clay's 10-slot scroll-container array) */
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
-                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-            CLAY_TEXT(m->decoded ? ui_fmt("%s", m->preview) : ui_fmt("%s", rawbuf),
-                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
-                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        tt_cell(P, UISC(TT_TIME_W), tbuf, time_budget, P->faint);
+        if (n_show == 0){
+            char rawbuf[CAP_MSG_PREVIEW + 1];
+            const char *pv = m->preview;
+            if (!m->decoded){ tt_sanitize(rawbuf, (int)sizeof rawbuf, m->preview, m->preview_len); pv = rawbuf; }
+            tt_cell_grow(P, pv, P->text);
+        } else {
+            for (c = 0; c < n_show; c++){
+                const char *v = (m->decoded && cols[c].fidx < m->n_fields) ? m->fields[cols[c].fidx].value : "-";
+                tt_cell(P, UISC(TT_FIELD_W), v, field_budget, P->text);
+            }
         }
-        CLAY_TEXT(ui_fmt("%u B", m->len),
-                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION), .textColor = P->faint,
-                                     .wrapMode = CLAY_TEXT_WRAP_NONE }));
     }
 }
 
@@ -544,16 +620,38 @@ static void topics_feed(AppState *app, const Palette *P){
                               CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->red,
                                                  .wrapMode = CLAY_TEXT_WRAP_NONE }));
             }
-            ui_section_label(P, CLAY_STRING("MESSAGE FEED"));
-            /* scrolling stream, newest at the bottom; topics_feed_autoscroll keeps it pinned */
-            CLAY({ .id = CLAY_ID("topics_feed_scroll"),
-                   .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
-                               .layoutDirection = CLAY_TOP_TO_BOTTOM },
-                   .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
-                if (tt_feed_n == 0)
-                    ui_placeholder(P, tt_subscribed ? CLAY_STRING("waiting for messages...")
-                                                    : CLAY_STRING("subscribe to see live messages"));
-                for (i = 0; i < tt_feed_n; i++) tt_feed_row(app, P, t->path, &tt_feed[i], i);
+            if (tt_feed_n == 0){
+                ui_placeholder(P, tt_subscribed ? CLAY_STRING("waiting for messages...")
+                                                : CLAY_STRING("subscribe to see live messages"));
+            } else {
+                /* columns come from the newest decoded sample (its fields[] index maps 1:1 to
+                   every sample of this schema); a schema-less feed shows one payload column */
+                int   n_cols = 0, tmpl = -1, j, n_show;
+                int   field_budget, time_budget;
+                float mono_adv = tt_name_w("00000000") / 8.0f;
+                if (mono_adv <= 0.5f) mono_adv = UISC(7);
+                field_budget = (int)((UISC(TT_FIELD_W) - UISC(TT_CELL_PADL + 2)) / mono_adv);
+                time_budget  = (int)((UISC(TT_TIME_W)  - UISC(TT_CELL_PADL + 2)) / mono_adv);
+                if (field_budget < 1) field_budget = 1;
+                if (time_budget  < 1) time_budget  = 1;
+                for (j = tt_feed_n - 1; j >= 0; j--) if (tt_feed[j].decoded){ tmpl = j; break; }
+                if (tmpl >= 0) n_cols = tt_build_columns(&tt_feed[tmpl], tt_cols, CAP_MSG_FIELDS);
+                n_show = n_cols < TT_TABLE_COLS ? n_cols : TT_TABLE_COLS;
+
+                CLAY({ .id = CLAY_ID("topics_table"),
+                       .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
+                                   .layoutDirection = CLAY_TOP_TO_BOTTOM },
+                       .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+                    tt_table_header(P, tt_cols, n_show, field_budget, time_budget);
+                    /* scrolling body, newest at the bottom; topics_feed_autoscroll keeps it pinned */
+                    CLAY({ .id = CLAY_ID("topics_feed_scroll"),
+                           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
+                                       .layoutDirection = CLAY_TOP_TO_BOTTOM },
+                           .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+                        for (i = 0; i < tt_feed_n; i++)
+                            tt_table_row(app, P, t->path, &tt_feed[i], i, tt_cols, n_show, field_budget, time_budget);
+                    }
+                }
             }
         }
     }

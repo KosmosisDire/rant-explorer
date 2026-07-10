@@ -277,19 +277,22 @@ static void topics_tree(AppState *app, const Palette *P){
 
    The feed is a TABLE: columns are the message's fields (flattened, so a nested member reads
    pos.x), rows are samples (newest at the bottom). The header is sticky: it is a sibling
-   ABOVE the scroll body sharing the same fixed column widths, so the columns line up while
-   the body scrolls. The first TT_TABLE_COLS fields show by default; right-click the header to
-   pick which fields are shown. A schema-less topic falls back to a single "payload" column.
-   Clicking a row copies that sample into the
-   inspector (the full decode). Cells are fixed-width and their text is truncated to fit: a
+   ABOVE the scroll body sharing the same column widths, so the columns line up while the body
+   scrolls. The first TT_TABLE_COLS fields show by default; right-click the header to pick which
+   fields are shown (with none selected only the time column shows). A schema-less topic falls
+   back to a single "payload" column. The shown field columns stretch to fill the table width
+   (measured from the previous frame's laid-out body). Clicking a row copies that sample into
+   the inspector (the full decode). Cell text is truncated to its (now dynamic) column width: a
    per-cell clip would overflow Clay's 10-slot scroll-container array, and the full value is
    always one click away in the inspector. Any header overrun on a narrow window is hidden by
    the (later-drawn, opaque) drawer or clipped at the window edge. */
 
 #define TT_TABLE_COLS 6    /* fields shown by default (right-click the header to change) */
 #define TT_TIME_W    60    /* time column width, unscaled px */
-#define TT_FIELD_W   94    /* field column width, unscaled px */
+#define TT_FIELD_W   94    /* field column width, unscaled px (fallback before layout is known) */
 #define TT_CELL_PADL  8    /* cell left padding, unscaled px */
+#define TT_DRAWER_W 332    /* right sidebar width, unscaled px (must match topics_drawer) */
+#define TT_FEED_PAD  16    /* topics_feed content padding, unscaled px */
 
 typedef struct { char name[80]; int fidx; } TblCol;   /* a flattened column -> its fields[] index */
 static TblCol tt_cols[CAP_MSG_FIELDS];   /* every column (drives the right-click menu) */
@@ -351,11 +354,12 @@ static void tt_cell_grow(const Palette *P, const char *text, Clay_Color col){
     }
 }
 
-/* the sticky header row: a fixed time column then a header cell per shown field (or the
-   payload fallback). Same widths/budgets as the rows below it, so columns line up.
-   Right-clicking the row opens the column-selection menu at the cursor. */
+/* the sticky header row: a fixed time column then a header cell per shown field. `field_w`
+   is the stretched column width so the fields fill the table. `raw` (a schema-less topic)
+   shows a single payload column instead; with a schema but no fields selected only the time
+   column shows. Right-clicking the row opens the column-selection menu at the cursor. */
 static void tt_table_header(AppState *app, const Palette *P, const TblCol *cols, int n_show,
-                            int field_budget, int time_budget){
+                            float field_w, int field_budget, int time_budget, int raw){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(26)) } },
            .backgroundColor = P->panel2,
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border2 } }) {
@@ -365,16 +369,17 @@ static void tt_table_header(AppState *app, const Palette *P, const TblCol *cols,
             app->col_menu_x = g_pointer_x; app->col_menu_y = g_pointer_y;
         }
         tt_cell(P, UISC(TT_TIME_W), "t (s)", time_budget, P->faint);
-        if (n_show == 0) tt_cell_grow(P, "payload", P->faint);
-        else for (c = 0; c < n_show; c++) tt_cell(P, UISC(TT_FIELD_W), cols[c].name, field_budget, P->faint);
+        if (raw) tt_cell_grow(P, "payload", P->faint);
+        else for (c = 0; c < n_show; c++) tt_cell(P, field_w, cols[c].name, field_budget, P->faint);
     }
 }
 
 /* one sample row: the time column then a cell per shown field (its decoded value, or "-"
-   when a message lacks it). Clicking copies the sample into the inspector; the current
-   inspected sample is highlighted. */
+   when a message lacks it), field cells stretched to `field_w`. `raw` shows the payload
+   instead. Clicking copies the sample into the inspector; the inspected sample is highlighted. */
 static void tt_table_row(AppState *app, const Palette *P, const char *topic, const CapFeedItem *m,
-                         int idx, const TblCol *cols, int n_show, int field_budget, int time_budget){
+                         int idx, const TblCol *cols, int n_show, float field_w,
+                         int field_budget, int time_budget, int raw){
     int  selected = app->has_inspect_msg && m->uid == app->inspect_msg.uid
                     && !strcmp(topic, app->inspect_msg_topic);
     char tbuf[16];
@@ -386,7 +391,7 @@ static void tt_table_row(AppState *app, const Palette *P, const char *topic, con
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
         if (Clay_Hovered() && g_pointer_pressed) app_inspect_msg(app, topic, m);
         tt_cell(P, UISC(TT_TIME_W), tbuf, time_budget, P->faint);
-        if (n_show == 0){
+        if (raw){
             char rawbuf[CAP_MSG_PREVIEW + 1];
             const char *pv = m->preview;
             if (!m->decoded){ tt_sanitize(rawbuf, (int)sizeof rawbuf, m->preview, m->preview_len); pv = rawbuf; }
@@ -394,7 +399,7 @@ static void tt_table_row(AppState *app, const Palette *P, const char *topic, con
         } else {
             for (c = 0; c < n_show; c++){
                 const char *v = (m->decoded && cols[c].fidx < m->n_fields) ? m->fields[cols[c].fidx].value : "-";
-                tt_cell(P, UISC(TT_FIELD_W), v, field_budget, P->text);
+                tt_cell(P, field_w, v, field_budget, P->text);
             }
         }
     }
@@ -695,14 +700,13 @@ static void topics_feed(AppState *app, const Palette *P){
             } else {
                 /* columns come from the newest decoded sample (its fields[] index maps 1:1 to
                    every sample of this schema); a schema-less feed shows one payload column */
-                int   n_cols = 0, tmpl = -1, j, c, n_vis = 0;
+                int   n_cols = 0, tmpl = -1, j, c, n_vis = 0, raw;
                 int   field_budget, time_budget;
                 float mono_adv = tt_name_w("00000000") / 8.0f;
+                float table_w = 0.0f, field_w;
                 if (mono_adv <= 0.5f) mono_adv = UISC(7);
-                field_budget = (int)((UISC(TT_FIELD_W) - UISC(TT_CELL_PADL + 2)) / mono_adv);
-                time_budget  = (int)((UISC(TT_TIME_W)  - UISC(TT_CELL_PADL + 2)) / mono_adv);
-                if (field_budget < 1) field_budget = 1;
-                if (time_budget  < 1) time_budget  = 1;
+                time_budget = (int)((UISC(TT_TIME_W) - UISC(TT_CELL_PADL + 2)) / mono_adv);
+                if (time_budget < 1) time_budget = 1;
                 for (j = tt_feed_n - 1; j >= 0; j--) if (tt_feed[j].decoded){ tmpl = j; break; }
                 if (tmpl >= 0) n_cols = tt_build_columns(&tt_feed[tmpl], tt_cols, CAP_MSG_FIELDS);
 
@@ -716,19 +720,38 @@ static void topics_feed(AppState *app, const Palette *P){
                 }
                 for (c = 0; c < n_cols; c++)
                     if (app_col_visible(app, tt_cols[c].name)) tt_vis[n_vis++] = tt_cols[c];
+                raw = (n_cols == 0);   /* schema-less: one payload column. all fields off: just time */
+
+                /* stretch the field columns to fill the AVAILABLE table width, derived from
+                   STABLE references (window - tree - drawer - feed padding) rather than the
+                   feed's own laid-out width. Fixed-width cells set the feed's minimum width, so
+                   measuring the feed would pin it wide and it could never shrink on a resize
+                   (pushing the fixed drawer off-screen) -- a feedback loop this sidesteps. The
+                   tree is a fixed-width panel, so its measured width is unaffected by overflow. */
+                {   Clay_ElementData td = Clay_GetElementData(Clay_GetElementId(CLAY_STRING("topics_tree")));
+                    float drawer_w = app->drawer_open ? UISC(TT_DRAWER_W) : 0.0f;
+                    if (td.found)
+                        table_w = g_view_w - td.boundingBox.width - drawer_w - UISC(TT_FEED_PAD) * 2.0f - UISC(2);
+                }
+                field_w = (n_vis > 0 && table_w > UISC(TT_TIME_W))
+                          ? floorf((table_w - UISC(TT_TIME_W)) / (float)n_vis) : UISC(TT_FIELD_W);
+                if (field_w < 1.0f) field_w = 1.0f;
+                field_budget = (int)((field_w - UISC(TT_CELL_PADL + 2)) / mono_adv);
+                if (field_budget < 1) field_budget = 1;
 
                 CLAY({ .id = CLAY_ID("topics_table"),
                        .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                                    .layoutDirection = CLAY_TOP_TO_BOTTOM },
                        .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-                    tt_table_header(app, P, tt_vis, n_vis, field_budget, time_budget);
+                    tt_table_header(app, P, tt_vis, n_vis, field_w, field_budget, time_budget, raw);
                     /* scrolling body, newest at the bottom; topics_feed_autoscroll keeps it pinned */
                     CLAY({ .id = CLAY_ID("topics_feed_scroll"),
                            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                                        .layoutDirection = CLAY_TOP_TO_BOTTOM },
                            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
                         for (i = 0; i < tt_feed_n; i++)
-                            tt_table_row(app, P, t->path, &tt_feed[i], i, tt_vis, n_vis, field_budget, time_budget);
+                            tt_table_row(app, P, t->path, &tt_feed[i], i, tt_vis, n_vis, field_w,
+                                         field_budget, time_budget, raw);
                     }
                 }
                 tt_col_menu(app, P, tt_cols, n_cols);   /* the header's right-click column picker */
@@ -1042,7 +1065,7 @@ static void topics_drawer(AppState *app, const Palette *P){
     if (app->has_inspect_msg && (!t || strcmp(app->inspect_msg_topic, t->path) != 0))
         app->has_inspect_msg = 0;
     CLAY({ .id = CLAY_ID("topics_drawer"),
-           .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(332)), .height = CLAY_SIZING_GROW(0) },
+           .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(TT_DRAWER_W)), .height = CLAY_SIZING_GROW(0) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM },
            .backgroundColor = P->panel,
            .border = { .width = { UISCI(1), 0, 0, 0, 0 }, .color = P->border } }) {

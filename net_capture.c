@@ -539,12 +539,13 @@ int cap_start(Capture *cap, const Config *cfg){
        sizes discovery's per-peer overlay buffer, so a peer advertising many topics is held in full. */
     mem  = dart_allocator_dynamic(i_dart_plat_realloc, 0);
     node = dart_node_open(&mem, cfg->name, cap_on_message, cap_on_event, &(DartNodeOpts){
-        .domain       = cfg->domain,
-        .max_channels = CAP_OBSERVER_CHANNELS,
-        .net          = { .discovery_group     = cfg->group,
-                          .discovery_port      = cfg->port,
-                          .multicast_interface = cfg->ifc },
-        .discovery    = { .max_peers = CAP_MAX_PEERS },
+        .domain        = cfg->domain,
+        .max_channels  = CAP_OBSERVER_CHANNELS,
+        .fetch_details = 1,   /* observer: fetch every peer topic's name + schema */
+        .net           = { .discovery_group     = cfg->group,
+                           .discovery_port      = cfg->port,
+                           .multicast_interface = cfg->ifc },
+        .discovery     = { .max_peers = CAP_MAX_PEERS },
     });
     if (!node){
         fprintf(stderr, "cap_start: dart_node_open failed (port %u in use? interface?)\n", cfg->port);
@@ -760,7 +761,7 @@ int cap_publish_form(Capture *cap, const char *topic, const char *const *values,
    discovery-level name/addr + liveness, then the announce overlay decoded via the node's
    helpers (so we never touch dart_meta_*). The interest list is walked in full; we keep up
    to CAP_MAX_TOPICS of each (the observer's own storage bound, not an API limit). */
-static void cap_peer_refresh(CapPeer *p, const DartDiscoveryPeer *dp){
+static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer *dp){
     DartInterestIter it; DartTopic t;
     uint16_t frag = dart_node_peer_frag(dp);
     p->seen_frame = 1;
@@ -778,11 +779,13 @@ static void cap_peer_refresh(CapPeer *p, const DartDiscoveryPeer *dp){
     memset(&it, 0, sizeof it);
     while (dart_node_peer_interest_next(dp, &it, &t)){
         CapTopic *e; int *cnt;
+        DartString nm = dart_node_peer_topic_name(node, dp->id, t.alias);
         if (t.is_pub){ if (p->n_pub >= CAP_MAX_TOPICS) continue; e = &p->pub[p->n_pub]; cnt = &p->n_pub; }
         else         { if (p->n_sub >= CAP_MAX_TOPICS) continue; e = &p->sub[p->n_sub]; cnt = &p->n_sub; }
-        /* v10 announces carry no topic names: show the 32-bit hash until the explorer
-           requests names via the detail exchange (the greedy-requester conversion) */
-        snprintf(e->name, sizeof e->name, "0x%08x", (unsigned)t.hash);
+        /* the fetched name (the announce carries only hashes; fetch_details fills the
+           cache within an RTT), the hash as a placeholder until it lands */
+        if (nm.data) snprintf(e->name, sizeof e->name, "%.*s", (int)nm.len, nm.data);
+        else         snprintf(e->name, sizeof e->name, "0x%08x", (unsigned)t.hash);
         e->alias = t.alias; e->reliable = t.reliable;
         (*cnt)++;
     }
@@ -855,7 +858,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
     for (i = 0; i < CAP_MAX_PEERS; i++) cap_peers[i].seen_frame = 0;
     peers = dart_node_peers(node, &n_peers);
     for (slot = 0; slot < n_peers; slot++)
-        cap_peer_refresh(cap_peer_get(peers[slot].id), &peers[slot]);
+        cap_peer_refresh(node, cap_peer_get(peers[slot].id), &peers[slot]);
     for (i = 0; i < CAP_MAX_PEERS; i++){
         CapPeer *p = &cap_peers[i];
         if (p->used && !p->seen_frame && p->state != CAP_GONE){   /* evicted from the node table */
@@ -955,16 +958,97 @@ static void *cap_schema_alloc(void *user, void *ptr, size_t size){
     return realloc(ptr, size);
 }
 
-/* the topic's advertised schema. v10 announces carry no schemas (they moved to the
-   pairwise detail exchange), so this yields nothing until the explorer becomes a
-   greedy detail requester; callers already handle the no-schema case. */
+static const char *cap_kind_str(uint8_t kind){
+    switch ((DartSchemaTypeKind)kind){
+        case DART_U8:  return "u8";  case DART_U16: return "u16";
+        case DART_U32: return "u32"; case DART_U64: return "u64";
+        case DART_I8:  return "i8";  case DART_I16: return "i16";
+        case DART_I32: return "i32"; case DART_I64: return "i64";
+        case DART_F32: return "f32"; case DART_F64: return "f64";
+        case DART_BOOL: return "bool";
+        case DART_STRUCT: return "struct";
+        default: return "?";
+    }
+}
+
+/* fill out->fields from a parsed schema (top-level fields, capped to the UI's bound) */
+static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
+    DartSchemaFieldInfo fi; uint16_t i, nf = dart_schema_field_count(sch);
+    DartString tn = dart_schema_name(sch);
+    out->inlined      = 1;
+    out->msg_size     = dart_schema_size(sch);
+    out->total_fields = nf;
+    snprintf(out->type_name, sizeof out->type_name, "%.*s", (int)tn.len, tn.data ? tn.data : "");
+    for (i = 0; i < nf && out->n_fields < CAP_SCHEMA_FIELDS; i++){
+        CapSchemaField *f = &out->fields[out->n_fields];
+        if (!dart_schema_field_at(sch, i, &fi)) break;
+        snprintf(f->name, sizeof f->name, "%.*s", (int)fi.name.len, fi.name.data ? fi.name.data : "");
+        if (fi.kind == DART_ARR) snprintf(f->type, sizeof f->type, "%s[%u]", cap_kind_str(fi.elem), fi.count);
+        else                     snprintf(f->type, sizeof f->type, "%s", cap_kind_str(fi.kind));
+        f->depth  = (uint8_t)(fi.depth > 255 ? 255 : fi.depth);
+        f->offset = fi.offset;
+        f->size   = fi.size;
+        out->n_fields++;
+    }
+}
+
+/* the topic's advertised schema, from the node's greedy detail cache (fetch_details):
+   walk peers x interest for an entry whose fetched name equals the topic and read the
+   cached parsed schema. The caller frees the returned copy via cap_schema_alloc (the
+   cached one is node-owned, so hand back a reparse of its canonical wire). NULL when
+   nobody advertises one (or details are still in flight). */
 static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic){
-    (void)node; (void)topic;
+    const DartDiscoveryPeer *peers; uint16_t n_peers = 0, s;
+    size_t tlen = topic ? strlen(topic) : 0;
+    if (!node || tlen == 0) return NULL;
+    peers = dart_node_peers(node, &n_peers);
+    for (s = 0; s < n_peers; s++){
+        DartInterestIter it; DartTopic t;
+        memset(&it, 0, sizeof it);
+        while (dart_node_peer_interest_next(&peers[s], &it, &t)){
+            DartString nm = dart_node_peer_topic_name(node, peers[s].id, t.alias);
+            const DartSchema *sch;
+            if (nm.len != tlen || memcmp(nm.data, topic, tlen) != 0) continue;
+            sch = dart_node_peer_topic_schema(node, peers[s].id, t.alias, NULL);
+            if (!sch) continue;
+            {   DartBytes wire = dart_schema_wire(sch);
+                return dart_schema_parse(wire.data, wire.len, cap_schema_alloc, NULL);
+            }
+        }
+    }
     return NULL;
 }
 
 int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
-    (void)cap; (void)topic;
+    DartNode *node = cap ? (DartNode *)cap->rt : NULL;
+    const DartDiscoveryPeer *peers; uint16_t n_peers = 0, s;
+    size_t tlen = topic ? strlen(topic) : 0;
+    int found = 0;
     memset(out, 0, sizeof *out);
-    return 0;
+    if (!node || tlen == 0) return 0;
+    peers = dart_node_peers(node, &n_peers);
+    for (s = 0; s < n_peers; s++){
+        const DartDiscoveryPeer *dp = &peers[s];
+        DartInterestIter it; DartTopic t;
+        memset(&it, 0, sizeof it);
+        while (dart_node_peer_interest_next(dp, &it, &t)){
+            DartString nm; uint64_t hash = 0; const DartSchema *sch;
+            if (!t.is_pub) continue;
+            nm = dart_node_peer_topic_name(node, dp->id, t.alias);
+            if (nm.len != tlen || memcmp(nm.data, topic, tlen) != 0) continue;
+            sch = dart_node_peer_topic_schema(node, dp->id, t.alias, &hash);
+            if (!hash) continue;                        /* untyped publisher */
+            if (found){   /* another publisher: agreement check only */
+                if (hash == out->hash) out->n_pubs_hash++;
+                else out->hash_conflict = 1;
+                continue;
+            }
+            found = 1;
+            out->hash = hash;
+            out->n_pubs_hash = 1;
+            snprintf(out->from, sizeof out->from, "%.*s", (int)dp->name.len, dp->name.data ? dp->name.data : "");
+            if (sch) cap_schema_fields(out, sch);       /* cached parsed schema: field list */
+        }
+    }
+    return found;
 }

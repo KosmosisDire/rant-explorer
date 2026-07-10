@@ -7,7 +7,6 @@ typedef enum { TAB_NODES, TAB_TOPICS, TAB_LOG } Tab;
 typedef enum { DRAWER_INSPECT, DRAWER_PUBLISH } DrawerTab;   /* the Topics right-sidebar tabs */
 
 #define UI_MAX_COLLAPSED 128   /* tracked collapsed tree branches (default = expanded) */
-#define UI_MAX_EXPANDED  64    /* tracked expanded feed messages (default = collapsed) */
 #define UI_COMPOSE_MAX   1024  /* bytes the message composer accepts (fits one fragment) */
 #define UI_FORM_MAX      24    /* fields the structured publish form edits (all depths) */
 #define UI_FORM_VAL      40    /* value text per form field */
@@ -41,10 +40,12 @@ typedef struct {
     int      form_topic;      /* sel_topic the values belong to; re-defaulted on change */
     int      form_send;       /* Enter in a form field: publish (consumed by the composer) */
 
-    /* feed messages EXPANDED by click (collapsed one-liners are the default): a small
-       replaceable set of hash(topic path) ^ message uid keys */
-    uint64_t msg_expanded[UI_MAX_EXPANDED];
-    int      n_msg_expanded;
+    /* a message pulled out of the feed to inspect: a durable COPY (survives the feed ring
+       overwriting the original), shown in the Inspect sidebar tab in place of the topic
+       overview. Cleared when the selected topic changes or the user backs out. */
+    CapFeedItem inspect_msg;
+    int         has_inspect_msg;
+    char        inspect_msg_topic[CAP_TOPIC_CAP];   /* topic the copied message came from */
 
     /* "add a topic" input (the + by the filter): type a name to publish to a new topic */
     int      adding_topic;    /* 1 = the new-topic name field has focus (text routes here) */
@@ -80,7 +81,8 @@ static void app_init(AppState *a, const Dataset *data){
     a->form_focus = -1;
     a->form_topic = -1;
     a->form_send  = 0;
-    a->n_msg_expanded = 0;
+    a->has_inspect_msg   = 0;
+    a->inspect_msg_topic[0] = '\0';
     a->adding_topic     = 0;
     a->new_topic_len    = 0;
     a->new_topic[0]     = '\0';
@@ -112,24 +114,14 @@ static void app_toggle_collapsed(AppState *a, const char *path){
     if (a->n_collapsed < UI_MAX_COLLAPSED) a->collapsed[a->n_collapsed++] = h;
 }
 
-/* per-message feed expansion (default collapsed); key = topic path + message uid */
-static uint64_t app_msg_key(const char *topic, uint32_t uid){
-    return ui_path_hash(topic) ^ ((uint64_t)uid * 0x9E3779B97F4A7C15ull);
-}
-static int app_msg_is_expanded(const AppState *a, uint64_t key){
-    int i;
-    for (i = 0; i < a->n_msg_expanded; i++) if (a->msg_expanded[i] == key) return 1;
-    return 0;
-}
-static void app_msg_toggle(AppState *a, uint64_t key){
-    int i;
-    for (i = 0; i < a->n_msg_expanded; i++)
-        if (a->msg_expanded[i] == key){ a->msg_expanded[i] = a->msg_expanded[--a->n_msg_expanded]; return; }
-    if (a->n_msg_expanded == UI_MAX_EXPANDED){          /* full: drop the oldest entry */
-        memmove(a->msg_expanded, a->msg_expanded + 1, (UI_MAX_EXPANDED - 1) * sizeof a->msg_expanded[0]);
-        a->n_msg_expanded--;
-    }
-    a->msg_expanded[a->n_msg_expanded++] = key;
+/* copy a feed message into the durable inspect slot and route the sidebar to show it. The
+   copy is by value so it outlives the feed ring overwriting the original. */
+static void app_inspect_msg(AppState *a, const char *topic, const CapFeedItem *m){
+    a->inspect_msg = *m;
+    a->has_inspect_msg = 1;
+    snprintf(a->inspect_msg_topic, sizeof a->inspect_msg_topic, "%s", topic ? topic : "");
+    a->drawer_open = 1;
+    a->drawer_tab  = DRAWER_INSPECT;
 }
 
 #endif /* UI_APP_H */

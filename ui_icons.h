@@ -24,6 +24,7 @@ typedef enum {
     ICON_MOON,       /* theme: currently dark */
     ICON_CHEVRON_DOWN,   /* tree caret: expanded */
     ICON_CHEVRON_RIGHT,  /* tree caret: collapsed */
+    ICON_CHEVRON_LEFT,   /* back (inspector: message -> topic) */
     ICON_PLUS,           /* add a new topic */
     ICON_COUNT
 } IconId;
@@ -72,6 +73,7 @@ static const char *const UI_ICON_SVG[ICON_COUNT] = {
     /* MOON   */ UI_ICON("<path d=\"M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401\"/>"),
     /* CHEV_DN */ UI_ICON("<path d=\"m6 9 6 6 6-6\"/>"),
     /* CHEV_RT */ UI_ICON("<path d=\"m9 18 6-6-6-6\"/>"),
+    /* CHEV_LF */ UI_ICON("<path d=\"m15 18-6-6 6-6\"/>"),
     /* PLUS   */ UI_ICON("<path d=\"M5 12h14\"/><path d=\"M12 5v14\"/>"),
 };
 

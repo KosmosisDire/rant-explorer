@@ -4,10 +4,12 @@
    blobs). The center FEED is live too: the explorer subscribes to the selected topic on
    demand (cap_subscribe) and shows messages as they arrive, newest at the bottom, auto-scrolling
    while the user is parked there. A topic's status light is its subscription state: green
-   subscribed, red dropping/erroring, hollow grey not subscribed. The Publish tab hosts the
-   message composer (free-text, or a structured form on a typed topic). Durability/history/
-   deadline QoS ride the data plane out of band and are never observable here, so the Inspect
-   tab just doesn't show them.
+   subscribed, red dropping/erroring, hollow grey not subscribed. Feed rows are single lines
+   (no inline expansion): clicking one copies the message into the Inspect tab, which shows
+   its full decoded field hierarchy from a durable copy that survives the feed ring recycling.
+   The Publish tab hosts the message composer (free-text, or a structured form on a typed
+   topic). Durability/history/deadline QoS ride the data plane out of band and are never
+   observable here, so the Inspect tab just doesn't show them.
    Requires ui_tree.h, ui_widgets.h, ui_model.h, ui_app.h, net_capture.h. */
 #ifndef UI_TAB_TOPICS_H
 #define UI_TAB_TOPICS_H
@@ -167,6 +169,7 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
             if (row->has_topic){
                 app->sel_topic = (int)(row->topic - D->topics);
                 app->drawer_open = 1;
+                app->has_inspect_msg = 0;  /* clicking a topic returns to inspecting the topic */
                 app->adding_topic = 0;     /* selecting a topic exits the new-topic field */
             } else if (row->is_branch){
                 app_toggle_collapsed(app, row->path);
@@ -271,77 +274,46 @@ static void topics_tree(AppState *app, const Palette *P){
 
 /* ================================================================= center: feed */
 
-/* one decoded field of a message: a table row, fixed name column then the value
-   (left-aligned so values line up down the column); nested members indent by depth */
-static void tt_feed_field_row(const Palette *P, const CapMsgField *f){
-    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(18)) },
-                       .padding = { .left = UISCI(14 + f->depth * 14) }, .childGap = UISCI(9),
-                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(130 - f->depth * 14)), .height = CLAY_SIZING_GROW(0) },
-                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-            CLAY_TEXT(ui_str(f->name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
-                                                          .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-        }
-        CLAY_TEXT(ui_str(f->value), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
-                                                       .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
-    }
-}
-
-/* one received message. COLLAPSED (the default): a single line, meta + the one-line
-   summary whose arrays/structs fold to [...]/{...}. Clicking toggles the EXPANDED view:
-   the full reflected field table, nested members indented. */
+/* one received message: a single clickable line (time, sender, type, one-line summary,
+   size). No inline expansion; clicking copies the message into the inspector (a durable
+   copy), which renders the full decode. Decoded messages summarise via preview[]; a raw
+   sender shows a sanitized payload head. The current inspected message is highlighted. */
 static void tt_feed_row(AppState *app, const Palette *P, const char *topic,
                         const CapFeedItem *m, int idx){
-    uint64_t key = app_msg_key(topic, m->uid);
-    int open = m->decoded && app_msg_is_expanded(app, key);
+    int  selected = app->has_inspect_msg && m->uid == app->inspect_msg.uid
+                    && !strcmp(topic, app->inspect_msg_topic);
+    char rawbuf[CAP_MSG_PREVIEW + 1];
+    if (!m->decoded) tt_sanitize(rawbuf, (int)sizeof rawbuf, m->preview, m->preview_len);
     CLAY({ .id = CLAY_IDI("feed_row", (uint32_t)idx),
-           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM,
-                       .padding = { .left = UISCI(2), .right = UISCI(2), .top = UISCI(5), .bottom = UISCI(6) },
-                       .childGap = UISCI(3) },
+           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(27)) },
+                       .padding = { .left = UISCI(6), .right = UISCI(6) }, .childGap = UISCI(8),
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+           .backgroundColor = selected ? P->accent_bg : (Clay_Hovered() ? P->panel : UI_NONE),
+           .cornerRadius = CLAY_CORNER_RADIUS(UISC(4)),
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
-        if (m->decoded && Clay_Hovered() && g_pointer_pressed) app_msg_toggle(app, key);
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8),
+        if (Clay_Hovered() && g_pointer_pressed) app_inspect_msg(app, topic, m);
+        CLAY_TEXT(ui_fmt("%8.2fs", m->t_s),
+                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION), .textColor = P->faint,
+                                     .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        CLAY_TEXT(m->mine ? ui_fmt("%s (you)", m->sender) : ui_str(m->sender),
+                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_CAPTION),
+                                     .textColor = m->mine ? P->accent : P->dim,
+                                     .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        if (m->decoded && m->type_name[0])
+            CLAY_TEXT(ui_str(m->type_name),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                         .textColor = P->accent, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        /* one-line summary in a grow box; the feed scroll container scissors any overrun at
+           its right edge (a per-row clip would blow Clay's 10-slot scroll-container array) */
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-            if (m->decoded) ui_icon(open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 11, P->faint);
-            CLAY_TEXT(ui_fmt("%8.2fs", m->t_s),
-                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION), .textColor = P->faint,
-                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
-            CLAY_TEXT(m->mine ? ui_fmt("%s (you)", m->sender) : ui_str(m->sender),
-                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_CAPTION),
-                                         .textColor = m->mine ? P->accent : P->dim,
-                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
-            if (m->decoded && m->type_name[0])
-                CLAY_TEXT(ui_str(m->type_name),
-                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
-                                             .textColor = P->accent, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-            if (m->decoded && !open){                       /* collapsed: the one-line summary */
-                CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
-                                   .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-                    CLAY_TEXT(ui_fmt("%s", m->preview),
-                              CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
-                                                 .wrapMode = CLAY_TEXT_WRAP_NONE }));
-                }
-            } else {
-                CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
-            }
-            CLAY_TEXT(ui_fmt("%u B", m->len),
-                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION), .textColor = P->faint,
-                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
-        }
-        if (open){
-            int f;
-            for (f = 0; f < m->n_fields; f++) tt_feed_field_row(P, &m->fields[f]);
-            if (m->total_fields > m->n_fields)
-                CLAY_TEXT(ui_fmt("  +%d more fields", m->total_fields - m->n_fields),
-                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint }));
-        } else if (!m->decoded){
-            char buf[CAP_MSG_PREVIEW + 1];
-            tt_sanitize(buf, (int)sizeof buf, m->preview, m->preview_len);
-            CLAY_TEXT(ui_fmt("%s", buf),
+            CLAY_TEXT(m->decoded ? ui_fmt("%s", m->preview) : ui_fmt("%s", rawbuf),
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
-                                         .wrapMode = CLAY_TEXT_WRAP_WORDS }));
+                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
         }
+        CLAY_TEXT(ui_fmt("%u B", m->len),
+                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION), .textColor = P->faint,
+                                     .wrapMode = CLAY_TEXT_WRAP_NONE }));
     }
 }
 
@@ -597,7 +569,8 @@ static void topics_drawer_tab(AppState *app, const Palette *P, Clay_String label
                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
            .backgroundColor = active ? P->accent_bg : UI_NONE,
            .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)) }) {
-        if (Clay_Hovered() && g_pointer_pressed) app->drawer_tab = tab;
+        if (Clay_Hovered() && g_pointer_pressed) app->drawer_tab = tab;   /* the message view keeps
+            its selection across tab switches; the "Topic" back control clears it */
         CLAY_TEXT(label, CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_SMALL),
                                             .textColor = active ? P->accent : P->dim,
                                             .wrapMode = CLAY_TEXT_WRAP_NONE }));
@@ -776,17 +749,128 @@ static void topics_publish(AppState *app, const Palette *P, const Topic *t){
     }
 }
 
+/* ====================================================== right: inspect a message */
+
+/* one field of a decoded message: name (indented by depth) then its value. A struct field
+   is a group header (its members follow, indented); scalars/arrays show their value, which
+   wraps so a long array is shown in full rather than clipped. */
+static void tt_msg_field_row(const Palette *P, const CapMsgField *f, int idx){
+    int is_struct = !strcmp(f->value, "{...}");   /* the decoder folds a struct's own value */
+    CLAY({ .id = CLAY_IDI("msg_field", (uint32_t)idx),
+           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) },
+                       .padding = { .left = UISCI(10 + f->depth * 12), .right = UISCI(10),
+                                    .top = UISCI(5), .bottom = UISCI(5) }, .childGap = UISCI(10) },
+           .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(96 - f->depth * 12)) } } }) {
+            CLAY_TEXT(ui_str(f->name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                          .textColor = is_struct ? P->dim : P->faint,
+                                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        }
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {
+            if (!is_struct)
+                CLAY_TEXT(ui_str(f->value), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                              .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_WORDS }));
+        }
+    }
+}
+
+/* one labelled meta line (fixed label column then value) for the message header card */
+static void tt_msg_meta_row(const Palette *P, Clay_String label, Clay_String value, Clay_Color vcol){
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(22)) },
+                       .childGap = UISCI(8), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(52)) } } }) {
+            CLAY_TEXT(label, CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
+                                                .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        }
+        CLAY_TEXT(value, CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                            .textColor = vcol, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+}
+
+/* the Inspect sidebar tab showing a message picked from the feed: a back control, the source
+   topic, a meta card (from / time / size / type), then the full decoded field hierarchy (or
+   the raw payload for a schema-less sender). Reads the durable copy in app->inspect_msg. */
+static void topics_msg_inspect(AppState *app, const Palette *P){
+    const CapFeedItem *m = &app->inspect_msg;
+    int f;
+    CLAY({ .id = CLAY_ID("topics_msg_scroll"),
+           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
+                       .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(UISC(14)),
+                       .childGap = UISCI(11) },
+           .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+        /* back to the topic overview */
+        CLAY({ .id = CLAY_ID("msg_back"),
+               .layout = { .padding = { .right = UISCI(6) }, .childGap = UISCI(4),
+                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+            if (Clay_Hovered() && g_pointer_pressed) app->has_inspect_msg = 0;
+            ui_icon(ICON_CHEVRON_LEFT, 14, Clay_Hovered() ? P->text : P->dim);
+            CLAY_TEXT(CLAY_STRING("Topic"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_SMALL),
+                                                              .textColor = Clay_Hovered() ? P->text : P->dim,
+                                                              .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        }
+        CLAY_TEXT(ui_str(app->inspect_msg_topic), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_BODY),
+                                                                    .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+
+        /* meta card */
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                           .padding = CLAY_PADDING_ALL(UISC(10)), .childGap = UISCI(2) },
+               .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
+               .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+            tt_msg_meta_row(P, CLAY_STRING("From"),
+                            m->mine ? ui_fmt("%s (you)", m->sender) : ui_str(m->sender),
+                            m->mine ? P->accent : P->text);
+            tt_msg_meta_row(P, CLAY_STRING("Time"), ui_fmt("%.2f s", m->t_s), P->dim);
+            tt_msg_meta_row(P, CLAY_STRING("Size"), ui_fmt("%u B", m->len), P->dim);
+            tt_msg_meta_row(P, CLAY_STRING("Type"),
+                            m->decoded && m->type_name[0] ? ui_str(m->type_name) : CLAY_STRING("raw bytes"),
+                            m->decoded && m->type_name[0] ? P->accent : P->dim);
+        }
+
+        if (m->decoded){
+            ui_section_label(P, ui_fmt("FIELDS  %d", m->total_fields));
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
+                   .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
+                   .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+                for (f = 0; f < m->n_fields; f++) tt_msg_field_row(P, &m->fields[f], f);
+                if (m->total_fields > m->n_fields)
+                    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(9)) } }) {
+                        CLAY_TEXT(ui_fmt("+%d more fields", m->total_fields - m->n_fields),
+                                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint }));
+                    }
+            }
+        } else {
+            char buf[CAP_MSG_PREVIEW + 1];
+            tt_sanitize(buf, (int)sizeof buf, m->preview, m->preview_len);
+            ui_section_label(P, CLAY_STRING("PAYLOAD"));
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(10)) },
+                   .backgroundColor = P->code_bg, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
+                   .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+                CLAY_TEXT(ui_fmt("%s", buf), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                               .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_WORDS }));
+            }
+            if (m->len > m->preview_len)
+                CLAY_TEXT(ui_fmt("+%u more bytes", m->len - m->preview_len),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint }));
+        }
+    }
+}
+
 static void topics_drawer(AppState *app, const Palette *P){
     const Dataset *D = app->data;
     const Topic *t = (D && D->n_topics && app->sel_topic >= 0 && app->sel_topic < D->n_topics)
                      ? &D->topics[app->sel_topic] : NULL;
+    /* an inspected message belongs to one topic; drop it if the selection moved elsewhere so
+       the durable copy never shows against the wrong (or no) topic */
+    if (app->has_inspect_msg && (!t || strcmp(app->inspect_msg_topic, t->path) != 0))
+        app->has_inspect_msg = 0;
     CLAY({ .id = CLAY_ID("topics_drawer"),
            .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(332)), .height = CLAY_SIZING_GROW(0) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM },
            .backgroundColor = P->panel,
            .border = { .width = { UISCI(1), 0, 0, 0, 0 }, .color = P->border } }) {
         topics_drawer_header(app, P);
-        if (!t) ui_placeholder(P, CLAY_STRING("no topic selected"));
+        if (app->drawer_tab == DRAWER_INSPECT && app->has_inspect_msg) topics_msg_inspect(app, P);
+        else if (!t) ui_placeholder(P, CLAY_STRING("no topic selected"));
         else if (app->drawer_tab == DRAWER_PUBLISH) topics_publish(app, P, t);
         else    topics_inspect(app, P, t);
     }

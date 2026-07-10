@@ -26,6 +26,7 @@ typedef enum {
     ICON_CHEVRON_RIGHT,  /* tree caret: collapsed */
     ICON_CHEVRON_LEFT,   /* back (inspector: message -> topic) */
     ICON_PLUS,           /* add a new topic */
+    ICON_CHECK,          /* column menu: a shown field */
     ICON_COUNT
 } IconId;
 
@@ -75,6 +76,7 @@ static const char *const UI_ICON_SVG[ICON_COUNT] = {
     /* CHEV_RT */ UI_ICON("<path d=\"m9 18 6-6-6-6\"/>"),
     /* CHEV_LF */ UI_ICON("<path d=\"m15 18-6-6 6-6\"/>"),
     /* PLUS   */ UI_ICON("<path d=\"M5 12h14\"/><path d=\"M12 5v14\"/>"),
+    /* CHECK  */ UI_ICON("<path d=\"M20 6 9 17l-5-5\"/>"),
 };
 
 /* Icons rasterize at a supersample of their on-screen size, then SDL linear-shrinks

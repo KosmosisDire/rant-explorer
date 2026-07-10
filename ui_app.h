@@ -60,6 +60,14 @@ typedef struct {
     int      feed_sel_topic;    /* selected topic the pin state belongs to (reset on change) */
     float    feed_prev_scroll_y;/* the scroll offset we left set last frame (detects user scroll) */
 
+    /* message-feed table columns: a set of VISIBLE field-name hashes. Right-click the header
+       to toggle a field; seeded to the first few fields when the selected topic changes. */
+    uint64_t col_vis[CAP_MSG_FIELDS];
+    int      n_col_vis;
+    int      col_vis_topic;     /* sel_topic the set was seeded for (-1 = unseeded) */
+    int      col_menu_open;     /* the header right-click column menu is showing */
+    float    col_menu_x, col_menu_y;   /* menu anchor (physical px, cursor at open) */
+
     Capture          *cap;    /* live observer (subscribe / read the feed); NULL if not started */
     const Dataset     *data;  /* rebuilt each frame from the live snapshot */
     const CapSnapshot *snap;  /* the raw snapshot (Log tab reads its event lines) */
@@ -91,6 +99,9 @@ static void app_init(AppState *a, const Dataset *data){
     a->feed_pinned    = 1;
     a->feed_sel_topic = -1;
     a->feed_prev_scroll_y = 0.0f;
+    a->n_col_vis      = 0;
+    a->col_vis_topic  = -1;
+    a->col_menu_open  = 0;
     a->cap         = NULL;
     a->data        = data;
     a->snap        = NULL;
@@ -112,6 +123,19 @@ static void app_toggle_collapsed(AppState *a, const char *path){
     for (i = 0; i < a->n_collapsed; i++)
         if (a->collapsed[i] == h){ a->collapsed[i] = a->collapsed[--a->n_collapsed]; return; }
     if (a->n_collapsed < UI_MAX_COLLAPSED) a->collapsed[a->n_collapsed++] = h;
+}
+
+/* message-table column visibility, keyed by a field's flattened name (pos.x) */
+static int app_col_visible(const AppState *a, const char *name){
+    uint64_t h = ui_path_hash(name); int i;
+    for (i = 0; i < a->n_col_vis; i++) if (a->col_vis[i] == h) return 1;
+    return 0;
+}
+static void app_col_toggle(AppState *a, const char *name){
+    uint64_t h = ui_path_hash(name); int i;
+    for (i = 0; i < a->n_col_vis; i++)
+        if (a->col_vis[i] == h){ a->col_vis[i] = a->col_vis[--a->n_col_vis]; return; }
+    if (a->n_col_vis < (int)(sizeof a->col_vis / sizeof a->col_vis[0])) a->col_vis[a->n_col_vis++] = h;
 }
 
 /* copy a feed message into the durable inspect slot and route the sidebar to show it. The

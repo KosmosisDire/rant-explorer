@@ -161,11 +161,13 @@ int main(int argc, char **argv){
         Clay_Color bg;
 
         g_pointer_pressed = false;   /* edge-triggered: set only on a press this frame */
+        g_right_pressed   = false;
         while (SDL_PollEvent(&ev)){
             switch (ev.type){
                 case SDL_EVENT_QUIT: quit = true; break;
                 case SDL_EVENT_MOUSE_BUTTON_DOWN:
                     if (ev.button.button == SDL_BUTTON_LEFT){ mouse_held = true; g_pointer_pressed = true; }
+                    else if (ev.button.button == SDL_BUTTON_RIGHT) g_right_pressed = true;
                     break;
                 case SDL_EVENT_MOUSE_BUTTON_UP:
                     if (ev.button.button == SDL_BUTTON_LEFT) mouse_held = false;
@@ -244,6 +246,8 @@ int main(int argc, char **argv){
         SDL_GetMouseState(&mx, &my);     /* logical (point) coords; layout is physical */
         mx *= ui_dpi; my *= ui_dpi;
         SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
+        g_pointer_x = mx; g_pointer_y = my;              /* for cursor-anchored context menus */
+        g_view_w = (float)ow; g_view_h = (float)oh;      /* for clamping menus to the window */
 
         now = SDL_GetTicks();
         dt = (float)(now - last_ticks) / 1000.0f;

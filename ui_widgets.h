@@ -13,7 +13,10 @@
 #define UISCI(px) ((uint16_t)UISC(px))
 
 static bool g_pointer_pressed = false;   /* left mouse pressed this frame; main sets it */
+static bool g_right_pressed = false;     /* right mouse pressed this frame (context menus) */
 static bool g_caret_on = true;           /* text-cursor blink phase; main sets it from the clock */
+static float g_pointer_x = 0.0f, g_pointer_y = 0.0f;   /* pointer position, physical px; main sets it */
+static float g_view_w = 0.0f, g_view_h = 0.0f;         /* render output size, physical px; main sets it */
 
 /* a filled or hollow status dot (a circle = a rect with full corner radius) */
 static void ui_dot(float d, Clay_Color fill, Clay_Color border){

@@ -278,20 +278,22 @@ static void topics_tree(AppState *app, const Palette *P){
    The feed is a TABLE: columns are the message's fields (flattened, so a nested member reads
    pos.x), rows are samples (newest at the bottom). The header is sticky: it is a sibling
    ABOVE the scroll body sharing the same fixed column widths, so the columns line up while
-   the body scrolls. Only the first TT_TABLE_COLS fields show by default. A schema-less topic
-   falls back to a single "payload" column. Clicking a row copies that sample into the
+   the body scrolls. The first TT_TABLE_COLS fields show by default; right-click the header to
+   pick which fields are shown. A schema-less topic falls back to a single "payload" column.
+   Clicking a row copies that sample into the
    inspector (the full decode). Cells are fixed-width and their text is truncated to fit: a
    per-cell clip would overflow Clay's 10-slot scroll-container array, and the full value is
    always one click away in the inspector. Any header overrun on a narrow window is hidden by
    the (later-drawn, opaque) drawer or clipped at the window edge. */
 
-#define TT_TABLE_COLS 6    /* fields shown by default (column selection comes later) */
+#define TT_TABLE_COLS 6    /* fields shown by default (right-click the header to change) */
 #define TT_TIME_W    60    /* time column width, unscaled px */
 #define TT_FIELD_W   94    /* field column width, unscaled px */
 #define TT_CELL_PADL  8    /* cell left padding, unscaled px */
 
 typedef struct { char name[80]; int fidx; } TblCol;   /* a flattened column -> its fields[] index */
-static TblCol tt_cols[CAP_MSG_FIELDS];
+static TblCol tt_cols[CAP_MSG_FIELDS];   /* every column (drives the right-click menu) */
+static TblCol tt_vis[CAP_MSG_FIELDS];    /* the visible subset, in column order (drives the table) */
 
 /* build the flattened column list from a template decoded message: each non-struct field
    becomes a column named by its dotted path (pos.x), keyed to its fields[] index (stable
@@ -350,13 +352,18 @@ static void tt_cell_grow(const Palette *P, const char *text, Clay_Color col){
 }
 
 /* the sticky header row: a fixed time column then a header cell per shown field (or the
-   payload fallback). Same widths/budgets as the rows below it, so columns line up. */
-static void tt_table_header(const Palette *P, const TblCol *cols, int n_show,
+   payload fallback). Same widths/budgets as the rows below it, so columns line up.
+   Right-clicking the row opens the column-selection menu at the cursor. */
+static void tt_table_header(AppState *app, const Palette *P, const TblCol *cols, int n_show,
                             int field_budget, int time_budget){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(26)) } },
            .backgroundColor = P->panel2,
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border2 } }) {
         int c;
+        if (Clay_Hovered() && g_right_pressed){
+            app->col_menu_open = 1;
+            app->col_menu_x = g_pointer_x; app->col_menu_y = g_pointer_y;
+        }
         tt_cell(P, UISC(TT_TIME_W), "t (s)", time_budget, P->faint);
         if (n_show == 0) tt_cell_grow(P, "payload", P->faint);
         else for (c = 0; c < n_show; c++) tt_cell(P, UISC(TT_FIELD_W), cols[c].name, field_budget, P->faint);
@@ -390,6 +397,68 @@ static void tt_table_row(AppState *app, const Palette *P, const char *topic, con
                 tt_cell(P, UISC(TT_FIELD_W), v, field_budget, P->text);
             }
         }
+    }
+}
+
+/* one column-menu row: a checkbox + the field's flattened name; click toggles its visibility */
+static void tt_col_menu_item(AppState *app, const Palette *P, const TblCol *col, int idx){
+    int on = app_col_visible(app, col->name);
+    CLAY({ .id = CLAY_IDI("col_menu_item", (uint32_t)idx),
+           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(26)) },
+                       .padding = { .left = UISCI(7), .right = UISCI(9) }, .childGap = UISCI(8),
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+           .backgroundColor = Clay_Hovered() ? P->panel2 : UI_NONE,
+           .cornerRadius = CLAY_CORNER_RADIUS(UISC(4)) }) {
+        if (Clay_Hovered() && g_pointer_pressed) app_col_toggle(app, col->name);
+        /* checkbox: accent box + check when shown, empty bordered box when hidden */
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(15)), .height = CLAY_SIZING_FIXED(UISC(15)) },
+                           .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
+               .backgroundColor = on ? P->accent_bg : UI_NONE,
+               .cornerRadius = CLAY_CORNER_RADIUS(UISC(3)),
+               .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = on ? P->accent : P->border2 } }) {
+            if (on) ui_icon(ICON_CHECK, 11, P->accent);
+        }
+        CLAY_TEXT(ui_str(col->name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                        .textColor = on ? P->text : P->dim,
+                                                        .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+}
+
+/* the header's right-click column menu: a floating checklist of every field over a full-screen
+   backdrop that dismisses it on an outside click. Anchored at the cursor, clamped to the window. */
+static void tt_col_menu(AppState *app, const Palette *P, const TblCol *cols, int n_cols){
+    float menu_w = UISC(210);
+    float menu_h = UISC(30) + UISC(26) * (float)(n_cols > 0 ? n_cols : 1) + UISC(10);
+    float x, y;
+    int c;
+    if (!app->col_menu_open) return;
+    /* backdrop under the menu: an outside click (either button) closes it */
+    CLAY({ .id = CLAY_ID("col_menu_backdrop"),
+           .floating = { .attachTo = CLAY_ATTACH_TO_ROOT, .zIndex = 200 },
+           .layout = { .sizing = { .width = CLAY_SIZING_FIXED(g_view_w), .height = CLAY_SIZING_FIXED(g_view_h) } } }) {
+        if (Clay_Hovered() && (g_pointer_pressed || g_right_pressed)) app->col_menu_open = 0;
+    }
+    x = app->col_menu_x; y = app->col_menu_y;
+    if (x + menu_w > g_view_w) x = g_view_w - menu_w;
+    if (y + menu_h > g_view_h) y = g_view_h - menu_h;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    CLAY({ .id = CLAY_ID("col_menu"),
+           .floating = { .attachTo = CLAY_ATTACH_TO_ROOT, .offset = { x, y }, .zIndex = 201 },
+           .layout = { .sizing = { .width = CLAY_SIZING_FIXED(menu_w) }, .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                       .padding = CLAY_PADDING_ALL(UISC(5)), .childGap = UISCI(1) },
+           .backgroundColor = P->panel3, .cornerRadius = CLAY_CORNER_RADIUS(UISC(7)),
+           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border2 } }) {
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) },
+                           .padding = { .left = UISCI(7), .top = UISCI(4), .bottom = UISCI(5) } } }) {
+            ui_section_label(P, CLAY_STRING("COLUMNS"));
+        }
+        if (n_cols == 0)
+            CLAY({ .layout = { .padding = { .left = UISCI(7), .bottom = UISCI(4) } } }) {
+                CLAY_TEXT(CLAY_STRING("no fields"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
+                                                                      .textColor = P->faint }));
+            }
+        for (c = 0; c < n_cols; c++) tt_col_menu_item(app, P, &cols[c], c);
     }
 }
 
@@ -626,7 +695,7 @@ static void topics_feed(AppState *app, const Palette *P){
             } else {
                 /* columns come from the newest decoded sample (its fields[] index maps 1:1 to
                    every sample of this schema); a schema-less feed shows one payload column */
-                int   n_cols = 0, tmpl = -1, j, n_show;
+                int   n_cols = 0, tmpl = -1, j, c, n_vis = 0;
                 int   field_budget, time_budget;
                 float mono_adv = tt_name_w("00000000") / 8.0f;
                 if (mono_adv <= 0.5f) mono_adv = UISC(7);
@@ -636,22 +705,33 @@ static void topics_feed(AppState *app, const Palette *P){
                 if (time_budget  < 1) time_budget  = 1;
                 for (j = tt_feed_n - 1; j >= 0; j--) if (tt_feed[j].decoded){ tmpl = j; break; }
                 if (tmpl >= 0) n_cols = tt_build_columns(&tt_feed[tmpl], tt_cols, CAP_MSG_FIELDS);
-                n_show = n_cols < TT_TABLE_COLS ? n_cols : TT_TABLE_COLS;
+
+                /* seed the visible set to the first TT_TABLE_COLS fields when the topic changes;
+                   thereafter the right-click menu owns it */
+                if (app->col_vis_topic != app->sel_topic){
+                    app->col_vis_topic = app->sel_topic;
+                    app->col_menu_open = 0;
+                    app->n_col_vis = 0;
+                    for (c = 0; c < n_cols && c < TT_TABLE_COLS; c++) app_col_toggle(app, tt_cols[c].name);
+                }
+                for (c = 0; c < n_cols; c++)
+                    if (app_col_visible(app, tt_cols[c].name)) tt_vis[n_vis++] = tt_cols[c];
 
                 CLAY({ .id = CLAY_ID("topics_table"),
                        .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                                    .layoutDirection = CLAY_TOP_TO_BOTTOM },
                        .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-                    tt_table_header(P, tt_cols, n_show, field_budget, time_budget);
+                    tt_table_header(app, P, tt_vis, n_vis, field_budget, time_budget);
                     /* scrolling body, newest at the bottom; topics_feed_autoscroll keeps it pinned */
                     CLAY({ .id = CLAY_ID("topics_feed_scroll"),
                            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                                        .layoutDirection = CLAY_TOP_TO_BOTTOM },
                            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
                         for (i = 0; i < tt_feed_n; i++)
-                            tt_table_row(app, P, t->path, &tt_feed[i], i, tt_cols, n_show, field_budget, time_budget);
+                            tt_table_row(app, P, t->path, &tt_feed[i], i, tt_vis, n_vis, field_budget, time_budget);
                     }
                 }
+                tt_col_menu(app, P, tt_cols, n_cols);   /* the header's right-click column picker */
             }
         }
     }

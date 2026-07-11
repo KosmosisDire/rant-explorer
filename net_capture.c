@@ -1061,7 +1061,8 @@ int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
     DartNode *node = cap ? (DartNode *)cap->rt : NULL;
     const DartDiscoveryPeer *peers; uint16_t n_peers = 0, s;
     size_t tlen = topic ? strlen(topic) : 0;
-    int found = 0;
+    const DartSchema *best = NULL;   /* parsed wire schema of the shown hash (NULL = hash-only) */
+    int best_is_pub = 0, found = 0;
     memset(out, 0, sizeof *out);
     if (!node || tlen == 0) return 0;
     peers = dart_node_peers(node, &n_peers);
@@ -1072,6 +1073,7 @@ int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
         memset(&it, 0, sizeof it);
         while (dart_node_peer_interest_next(dp, &it, &t)){
             DartString nm; uint64_t hash = 0; const DartSchema *sch;
+            int take = 0;
             if (t.alias == last_alias) continue;        /* second direction of a PUBSUB entry */
             last_alias = t.alias;
             /* any endpoint (publisher OR subscriber) is authoritative about its schema:
@@ -1080,17 +1082,38 @@ int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
             if (nm.len != tlen || memcmp(nm.data, topic, tlen) != 0) continue;
             sch = dart_node_peer_topic_schema(node, dp->id, t.alias, &hash);
             if (!hash) continue;                        /* untyped endpoint */
-            if (found){   /* another endpoint: agreement check only */
-                if (hash == out->hash) out->n_advertisers++;
-                else out->hash_conflict = 1;
+            if (!found){                                /* first advertiser: adopt it */
+                found = 1; out->n_advertisers = 1; take = 1;
+            } else if (hash == out->hash){              /* identical schema: agree */
+                out->n_advertisers++;
+                /* upgrade the shown source to a publisher (owns the wire) or, if we only
+                   had the hash before, to the parsed form so the field list can render */
+                take = (t.is_pub && !best_is_pub) || (sch && !best);
+            } else if (best && sch){
+                /* DIFFERENT hash but structurally compatible is NOT a conflict: subset
+                   binding lets a narrower reader consume a wider writer (dart_schema_subset,
+                   the same gate the C matcher runs). Show the WIDER schema, preferring a
+                   publisher since it owns the actual wire bytes. */
+                int best_narrower = dart_schema_subset(best, sch);   /* best subset of sch: sch is wider */
+                int new_narrower  = dart_schema_subset(sch, best);   /* sch subset of best: best is wider */
+                if (!best_narrower && !new_narrower){   /* neither reads the other: real conflict */
+                    out->hash_conflict = 1;
+                    continue;
+                }
+                out->n_advertisers++;
+                take = (t.is_pub && !best_is_pub)                    /* publisher wins the wire */
+                    || (t.is_pub == best_is_pub && best_narrower);   /* same role: the wider wins */
+            } else {                                    /* one side hash-only: cannot prove subset */
+                out->hash_conflict = 1;
                 continue;
             }
-            found = 1;
-            out->hash = hash;
-            out->n_advertisers = 1;
-            snprintf(out->from, sizeof out->from, "%.*s", (int)dp->name.len, dp->name.data ? dp->name.data : "");
-            if (sch) cap_schema_fields(out, sch);       /* cached parsed schema: field list */
+            if (take){
+                best = sch; best_is_pub = t.is_pub; out->hash = hash;
+                snprintf(out->from, sizeof out->from, "%.*s", (int)dp->name.len,
+                         dp->name.data ? dp->name.data : "");
+            }
         }
     }
+    if (best) cap_schema_fields(out, best);             /* cached parsed schema: field list */
     return found;
 }

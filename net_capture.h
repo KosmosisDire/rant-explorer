@@ -182,8 +182,10 @@ int  cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int
    A topic's advertised message schema, decoded to plain types for the UI. Any endpoint
    is authoritative about its own schema: publishers advertise the shape they send, and a
    subscriber-in-charge topic advertises the shape it expects a generic publisher to fill.
-   cap_topic_schema scans every peer that publishes OR subscribes to `topic`, decodes the
-   first advertised schema, and reports whether every advertising endpoint agrees on it. */
+   cap_topic_schema scans every peer that publishes OR subscribes to `topic` and shows the
+   widest compatible schema (preferring a publisher, which owns the wire). Endpoints whose
+   schemas are subset-compatible (dart_schema_subset, the C matcher's rule) agree; only a
+   structurally incompatible schema sets hash_conflict. */
 #define CAP_SCHEMA_FIELDS 24    /* top-level fields captured per schema */
 
 typedef struct {
@@ -202,8 +204,9 @@ typedef struct {
     int      inlined;              /* 1 = the wire bytes arrived and parsed; 0 = hash only */
     int      n_fields;             /* fields filled below (capped to CAP_SCHEMA_FIELDS) */
     int      total_fields;         /* fields the schema actually has */
-    int      n_advertisers;        /* endpoints (pub or sub) advertising this same hash */
-    int      hash_conflict;        /* 1 = endpoints advertise DIFFERENT schemas for this topic */
+    int      n_advertisers;        /* endpoints (pub or sub) advertising a compatible schema */
+    int      hash_conflict;        /* 1 = endpoints advertise structurally INCOMPATIBLE schemas
+                                      (a subset/superset is compatible, not a conflict) */
     CapSchemaField fields[CAP_SCHEMA_FIELDS];
 } CapSchema;
 

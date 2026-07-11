@@ -179,10 +179,11 @@ int  cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int
                     int *subscribed, int *error, int *reliable, uint32_t *n_msgs, uint32_t *n_drops);
 
 /* --------------------------------------------------------------- topic schema
-   A publisher's advertised message schema for a topic, decoded to plain types for the
-   UI. Publishers advertise a schema hash (and usually the schema itself) in their
-   announce metadata; cap_topic_schema scans the peers publishing `topic`, decodes the
-   first advertised schema, and reports whether every publisher agrees on it. */
+   A topic's advertised message schema, decoded to plain types for the UI. Any endpoint
+   is authoritative about its own schema: publishers advertise the shape they send, and a
+   subscriber-in-charge topic advertises the shape it expects a generic publisher to fill.
+   cap_topic_schema scans every peer that publishes OR subscribes to `topic`, decodes the
+   first advertised schema, and reports whether every advertising endpoint agrees on it. */
 #define CAP_SCHEMA_FIELDS 24    /* top-level fields captured per schema */
 
 typedef struct {
@@ -196,17 +197,17 @@ typedef struct {
 typedef struct {
     uint64_t hash;                 /* the schema's 64-bit identity */
     char     type_name[CAP_TOPIC_CAP];  /* root type name (when inlined) */
-    char     from[CAP_NAME_CAP];   /* the publisher we read it from */
+    char     from[CAP_NAME_CAP];   /* the endpoint we read it from */
     uint32_t msg_size;             /* exact message size in bytes (when inlined) */
     int      inlined;              /* 1 = the wire bytes arrived and parsed; 0 = hash only */
     int      n_fields;             /* fields filled below (capped to CAP_SCHEMA_FIELDS) */
     int      total_fields;         /* fields the schema actually has */
-    int      n_pubs_hash;          /* publishers advertising this same hash */
-    int      hash_conflict;        /* 1 = publishers advertise DIFFERENT schemas for this topic */
+    int      n_advertisers;        /* endpoints (pub or sub) advertising this same hash */
+    int      hash_conflict;        /* 1 = endpoints advertise DIFFERENT schemas for this topic */
     CapSchemaField fields[CAP_SCHEMA_FIELDS];
 } CapSchema;
 
-/* Fill *out with `topic`'s advertised schema; 1 if any publisher advertises one, else 0
+/* Fill *out with `topic`'s advertised schema; 1 if any endpoint advertises one, else 0
    (out zeroed). Rebuilt from the live peer view on each call. */
 int  cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out);
 

@@ -1068,22 +1068,26 @@ int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
     for (s = 0; s < n_peers; s++){
         const DartDiscoveryPeer *dp = &peers[s];
         DartInterestIter it; DartTopic t;
+        uint16_t last_alias = 0xFFFF;   /* PUBSUB yields both directions: one schema per alias */
         memset(&it, 0, sizeof it);
         while (dart_node_peer_interest_next(dp, &it, &t)){
             DartString nm; uint64_t hash = 0; const DartSchema *sch;
-            if (!t.is_pub) continue;
+            if (t.alias == last_alias) continue;        /* second direction of a PUBSUB entry */
+            last_alias = t.alias;
+            /* any endpoint (publisher OR subscriber) is authoritative about its schema:
+               a subscriber-in-charge topic advertises the shape its generic publisher fills */
             nm = dart_node_peer_topic_name(node, dp->id, t.alias);
             if (nm.len != tlen || memcmp(nm.data, topic, tlen) != 0) continue;
             sch = dart_node_peer_topic_schema(node, dp->id, t.alias, &hash);
-            if (!hash) continue;                        /* untyped publisher */
-            if (found){   /* another publisher: agreement check only */
-                if (hash == out->hash) out->n_pubs_hash++;
+            if (!hash) continue;                        /* untyped endpoint */
+            if (found){   /* another endpoint: agreement check only */
+                if (hash == out->hash) out->n_advertisers++;
                 else out->hash_conflict = 1;
                 continue;
             }
             found = 1;
             out->hash = hash;
-            out->n_pubs_hash = 1;
+            out->n_advertisers = 1;
             snprintf(out->from, sizeof out->from, "%.*s", (int)dp->name.len, dp->name.data ? dp->name.data : "");
             if (sch) cap_schema_fields(out, sch);       /* cached parsed schema: field list */
         }

@@ -858,7 +858,7 @@ static void topic_schema_field_row(const Palette *P, const CapSchemaField *f, in
     }
 }
 
-/* the selected topic's advertised message schema (from the publishers' announce blobs) */
+/* the selected topic's advertised message schema (from any endpoint: pub or sub) */
 static CapSchema tt_schema;
 static void topic_schema_section(AppState *app, const Palette *P, const Topic *t){
     int have = app->cap ? cap_topic_schema(app->cap, t->path, &tt_schema) : 0;
@@ -902,7 +902,7 @@ static void topic_schema_section(AppState *app, const Palette *P, const Topic *t
                 }
         }
         if (tt_schema.hash_conflict)
-            CLAY_TEXT(CLAY_STRING("publishers disagree on this topic's schema"),
+            CLAY_TEXT(CLAY_STRING("endpoints disagree on this topic's schema"),
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_CAPTION), .textColor = P->red }));
     }
 }

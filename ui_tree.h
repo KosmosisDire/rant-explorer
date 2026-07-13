@@ -9,50 +9,79 @@
 #define UI_TREE_H
 
 #define UT_MAX_NODES (UID_MAX_TOPICS * 4)   /* segments can outnumber topics (namespaces) */
+#define UT_HASH      131072                  /* power of two, >= 2*UT_MAX_NODES (128000): (parent,seg)->node map */
 
 typedef struct {
     char name[CAP_TOPIC_CAP];   /* one path segment */
     char path[96];              /* accumulated path to this segment */
     int  topic;                 /* index into Dataset.topics, or -1 for a pure namespace */
-    int  first_child, next_sibling, n_children;
+    int  parent;                /* owning node, or -1 for the root */
+    int  depth;                 /* 0 = top level (matches ut_flatten's row depth); root is -1 */
+    int  first_child, last_child, next_sibling, n_children;
 } UtNode;
 
 static UtNode  ut_pool[UT_MAX_NODES];
 static int     ut_n;
 static TreeRow ut_rows[UT_MAX_NODES];
 static int     ut_n_rows;
+static int     ut_slot[UT_HASH];          /* (parent,seg) hash -> node index, -1 empty; reset per build */
+static int     ut_order[UT_MAX_NODES];    /* topic indices sorted by path (drives sibling order) */
 
-/* find (or create) the child of `parent` named `seg`; children are kept sorted
-   alphabetically by name so the tree renders each namespace's entries in order */
+static uint32_t ut_child_key(int parent, const char *seg){
+    uint32_t h = 2166136261u ^ (uint32_t)parent;
+    h *= 16777619u;
+    for (; *seg; seg++){ h ^= (unsigned char)*seg; h *= 16777619u; }
+    return h;
+}
+
+/* find (or create) the child of `parent` named `seg`. Lookup is O(1) via ut_slot; on a miss the
+   child is appended at the tail. Siblings therefore render in the order topics are fed in, which
+   ut_build makes alphabetical by walking topics path-sorted (so same-prefix topics arrive adjacent
+   and their new segments append in order) -- no per-insert sibling scan, which was O(n^2). */
 static int ut_child(int parent, const char *seg, const char *fullpath){
-    int c = ut_pool[parent].first_child, prev = -1;
-    for (; c != -1; c = ut_pool[c].next_sibling){
-        int cmp = strcmp(ut_pool[c].name, seg);
-        if (cmp == 0) return c;
-        if (cmp > 0) break;   /* insert before c, keeping siblings sorted */
-        prev = c;
+    uint32_t h = ut_child_key(parent, seg) & (UT_HASH - 1);
+    int c;
+    while ((c = ut_slot[h]) >= 0){
+        if (ut_pool[c].parent == parent && !strcmp(ut_pool[c].name, seg)) return c;
+        h = (h + 1) & (UT_HASH - 1);
     }
     if (ut_n >= UT_MAX_NODES) return parent;   /* pool full: fold into parent (degrade, don't crash) */
     { int nc = ut_n++;
       memset(&ut_pool[nc], 0, sizeof ut_pool[nc]);
       snprintf(ut_pool[nc].name, sizeof ut_pool[nc].name, "%s", seg);
       snprintf(ut_pool[nc].path, sizeof ut_pool[nc].path, "%s", fullpath);
-      ut_pool[nc].topic = -1; ut_pool[nc].first_child = -1; ut_pool[nc].next_sibling = c;
-      if (prev == -1) ut_pool[parent].first_child = nc;
-      else            ut_pool[prev].next_sibling  = nc;
+      ut_pool[nc].topic = -1; ut_pool[nc].parent = parent;
+      ut_pool[nc].depth = (parent == 0) ? 0 : ut_pool[parent].depth + 1;
+      ut_pool[nc].first_child = ut_pool[nc].last_child = ut_pool[nc].next_sibling = -1;
+      if (ut_pool[parent].first_child == -1) ut_pool[parent].first_child = nc;
+      else ut_pool[ut_pool[parent].last_child].next_sibling = nc;
+      ut_pool[parent].last_child = nc;
       ut_pool[parent].n_children++;
+      ut_slot[h] = nc;
       return nc;
     }
 }
 
-static void ut_build(const Dataset *D){
-    int t;
-    ut_n = 1;                                  /* node 0 = implicit root */
-    memset(&ut_pool[0], 0, sizeof ut_pool[0]);
-    ut_pool[0].topic = -1; ut_pool[0].first_child = -1; ut_pool[0].next_sibling = -1;
+static const Dataset *ut_sort_D;   /* qsort comparator context (UI is single-threaded) */
+static int ut_path_cmp(const void *a, const void *b){
+    return strcmp(ut_sort_D->topics[*(const int *)a].path, ut_sort_D->topics[*(const int *)b].path);
+}
 
-    for (t = 0; t < D->n_topics; t++){
-        const char *p = D->topics[t].path;
+static void ut_build(const Dataset *D){
+    int t, no = 0;
+    ut_n = 1;                                  /* node 0 = implicit root */
+    memset(ut_slot, 0xFF, sizeof ut_slot);     /* 0xFF bytes = -1 ints: empty the (parent,seg) map */
+    memset(&ut_pool[0], 0, sizeof ut_pool[0]);
+    ut_pool[0].topic = -1; ut_pool[0].parent = -1; ut_pool[0].depth = -1;
+    ut_pool[0].first_child = ut_pool[0].last_child = ut_pool[0].next_sibling = -1;
+
+    for (t = 0; t < D->n_topics && no < UT_MAX_NODES; t++) ut_order[no++] = t;
+    ut_sort_D = D;
+    qsort(ut_order, (size_t)no, sizeof ut_order[0], ut_path_cmp);
+
+    for (t = 0; t < no; t++){
+        int ti = ut_order[t];
+        const char *p = D->topics[ti].path;
         char acc[96]; int acc_len = 0, node = 0;
         acc[0] = '\0';
         while (*p){
@@ -65,7 +94,7 @@ static void ut_build(const Dataset *D){
             acc[acc_len] = '\0';
             node = ut_child(node, seg, acc);
         }
-        if (node != 0) ut_pool[node].topic = t;
+        if (node != 0) ut_pool[node].topic = ti;
     }
 }
 

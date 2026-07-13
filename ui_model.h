@@ -7,7 +7,12 @@
 #ifndef UI_MODEL_H
 #define UI_MODEL_H
 
-#define UI_MAX_ENDPOINTS 16
+/* Two distinct axes, sized apart so the big one doesn't bloat the other:
+   NODE_TOPICS = topics ONE node may publish or subscribe (its endpoint list; the
+   thing you scale to observe a many-topic node). ENDPOINTS = nodes on ONE topic
+   (its pub/sub list), bounded by the node count (CAP_SNAP_NODES), never by topics. */
+#define UI_MAX_NODE_TOPICS 16000
+#define UI_MAX_ENDPOINTS      64
 
 typedef enum { NODE_ALIVE, NODE_JOINING, NODE_DROPPED, NODE_GONE } NodeState;
 typedef enum { LVL_ERROR, LVL_WARN, LVL_INFO, LVL_DEBUG } LogLevel;
@@ -42,13 +47,13 @@ typedef struct {
     double observed_s;
     unsigned updates;
 
-    int pubs[UI_MAX_ENDPOINTS]; int n_pubs;   /* indices into topics[] */
-    int subs[UI_MAX_ENDPOINTS]; int n_subs;
+    int pubs[UI_MAX_NODE_TOPICS]; int n_pubs;   /* indices into topics[] */
+    int subs[UI_MAX_NODE_TOPICS]; int n_subs;
     /* this node's own offered/requested reliability per endpoint, parallel to
        pubs[]/subs[] (the Topic carries one topic-level value; a dot in the node's
        pub/sub list wants the node's own QoS). 1 = reliable, 0 = best-effort. */
-    unsigned char pub_rel[UI_MAX_ENDPOINTS];
-    unsigned char sub_rel[UI_MAX_ENDPOINTS];
+    unsigned char pub_rel[UI_MAX_NODE_TOPICS];
+    unsigned char sub_rel[UI_MAX_NODE_TOPICS];
 
     DiscInfo disc;
 } Node;

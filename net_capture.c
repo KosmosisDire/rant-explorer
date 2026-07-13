@@ -28,9 +28,15 @@
 #include "net_capture.h"
 
 #define CAP_MAX_PEERS         64
-#define CAP_MAX_TOPICS        32
-#define CAP_OBSERVER_CHANNELS 64   /* node channel reserve: sizes the incoming overlay buffer and covers
-                                      our own subscriptions (up to 2 channels per topic, see CAP_MAX_SUBS) */
+#define CAP_MAX_TOPICS        16000  /* pub or sub interest entries captured per peer (>= wire ceiling) */
+#define CAP_OBSERVER_CHANNELS 64     /* node channel reserve: our OWN subscriptions only (<=2 channels per
+                                        topic, see CAP_MAX_SUBS = 32). Deliberately NOT sized to a big
+                                        peer's topic count: max_channels also reserves per-channel history
+                                        buffers, so a large value costs hundreds of MB. A many-topic peer
+                                        whose announce blob exceeds our initial accept bound is handled by
+                                        the node's self-heal instead (it reads the blob's true length, grows
+                                        the bound + RX buffers up to the 65000-byte cap, and re-solicits),
+                                        so the peer's full interest lands within an announce interval. */
 #define CAP_LOG_LINES         400
 /* CAP_LOG_LINE comes from net_capture.h (shared with the snapshot) */
 
@@ -64,6 +70,8 @@ typedef struct {
     int      n_pub, n_sub;
     CapTopic pub[CAP_MAX_TOPICS];
     CapTopic sub[CAP_MAX_TOPICS];
+    uint32_t topics_ver;     /* dp->meta_version the pub/sub lists were last built from */
+    int      names_pending;  /* 1 = a topic name was still an unfetched placeholder last build */
 
     /* observer-derived */
     unsigned           updates;
@@ -894,7 +902,15 @@ static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer
     p->port   = dp->addr.port;
     snprintf(p->name, sizeof p->name, "%.*s", (int)dp->name.len, dp->name.data ? dp->name.data : "");
 
+    /* Rebuilding the interest list re-fetches every topic name from the node's detail cache,
+       which is O(topics) per peer PER FRAME -- crippling at many-thousand-topic scale. The list
+       only changes when the peer re-advertises (meta_version bumps) or while its names are still
+       paging in from the detail exchange (names_pending), so skip the walk otherwise and keep the
+       cached lists. cap_snapshot still copies them out each frame; only this fetch is throttled. */
+    if (dp->meta_version == p->topics_ver && !p->names_pending) return;
+
     p->n_pub = p->n_sub = 0;
+    p->names_pending = 0;
     memset(&it, 0, sizeof it);
     while (dart_node_peer_interest_next(dp, &it, &t)){
         CapTopic *e; int *cnt;
@@ -904,10 +920,11 @@ static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer
         /* the fetched name (the announce carries only hashes; fetch_details fills the
            cache within an RTT), the hash as a placeholder until it lands */
         if (nm.data) snprintf(e->name, sizeof e->name, "%.*s", (int)nm.len, nm.data);
-        else         snprintf(e->name, sizeof e->name, "0x%08x", (unsigned)t.hash);
+        else       { snprintf(e->name, sizeof e->name, "0x%08x", (unsigned)t.hash); p->names_pending = 1; }
         e->alias = t.alias; e->reliable = t.reliable;
         (*cnt)++;
     }
+    p->topics_ver = dp->meta_version;   /* cache is now in sync with this announce version */
 }
 
 void cap_snapshot(const Capture *cap, CapSnapshot *out){
@@ -917,7 +934,13 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
     uint16_t slot, n_peers = 0;
     int i, k;
 
-    memset(out, 0, sizeof *out);
+    /* Do NOT memset the whole snapshot: at CAP_MAX_EP it is ~150 MB, and zeroing it every
+       frame is the dominant per-frame cost. It is fully count-delimited instead: n_nodes /
+       n_log / n_subs below bound the reader, and every used node/sub/log slot is completely
+       overwritten as it is filled, so the untouched tail never needs clearing. */
+    out->n_nodes   = 0;
+    out->n_log     = 0;
+    out->n_subs    = 0;
     out->domain    = cap_cfg.domain;
     out->disc_port = cap_cfg.port;
     snprintf(out->group, sizeof out->group, "%s", cap_cfg.group ? cap_cfg.group : "");
@@ -1024,14 +1047,16 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         snprintf(n->name, sizeof n->name, "%s", p->name);
         cap_fmt_ip(n->ip, sizeof n->ip, p->ip, p->ip_len);
 
-        for (k = 0; k < p->n_pub && k < CAP_MAX_EP; k++){
-            snprintf(n->pub[k].name, sizeof n->pub[k].name, "%s", p->pub[k].name);
+        for (k = 0; k < p->n_pub && k < CAP_MAX_EP; k++){   /* memcpy, not snprintf: the name is
+                                                               already a NUL-terminated 65-byte field,
+                                                               and per-entry snprintf x thousands is slow */
+            memcpy(n->pub[k].name, p->pub[k].name, sizeof n->pub[k].name);
             n->pub[k].alias    = p->pub[k].alias;
             n->pub[k].reliable = p->pub[k].reliable;
         }
         n->n_pub = k;
         for (k = 0; k < p->n_sub && k < CAP_MAX_EP; k++){
-            snprintf(n->sub[k].name, sizeof n->sub[k].name, "%s", p->sub[k].name);
+            memcpy(n->sub[k].name, p->sub[k].name, sizeof n->sub[k].name);
             n->sub[k].alias    = p->sub[k].alias;
             n->sub[k].reliable = p->sub[k].reliable;
         }
@@ -1145,17 +1170,21 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
 static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic){
     const DartDiscoveryPeer *peers; uint16_t n_peers = 0, s;
     size_t tlen = topic ? strlen(topic) : 0;
+    uint32_t want_hash;
     DartSchema *found = NULL;
     if (!node || tlen == 0) return NULL;
+    want_hash = (uint32_t)dart_topic_id(topic);
     dart_node_lock(node);   /* the zero-copy peer view vs the service thread */
     peers = dart_node_peers(node, &n_peers);
     for (s = 0; s < n_peers && !found; s++){
         DartInterestIter it; DartTopic t;
         memset(&it, 0, sizeof it);
         while (dart_node_peer_interest_next(&peers[s], &it, &t)){
-            DartString nm = dart_node_peer_topic_name(node, peers[s].id, t.alias);
+            DartString nm;
             const DartSchema *sch;
-            if (nm.len != tlen || memcmp(nm.data, topic, tlen) != 0) continue;
+            if (t.hash != want_hash) continue;   /* cheap prefilter: the name lookup below is O(topics) */
+            nm = dart_node_peer_topic_name(node, peers[s].id, t.alias);
+            if (nm.len != tlen || memcmp(nm.data, topic, tlen) != 0) continue;   /* confirm vs a hash collision */
             sch = dart_node_peer_topic_schema(node, peers[s].id, t.alias, NULL);
             if (!sch) continue;
             {   DartBytes wire = dart_schema_wire(sch);
@@ -1172,10 +1201,12 @@ int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
     DartNode *node = cap ? (DartNode *)cap->rt : NULL;
     const DartDiscoveryPeer *peers; uint16_t n_peers = 0, s;
     size_t tlen = topic ? strlen(topic) : 0;
+    uint32_t want_hash;
     const DartSchema *best = NULL;   /* parsed wire schema of the shown hash (NULL = hash-only) */
     int best_is_pub = 0, found = 0;
     memset(out, 0, sizeof *out);
     if (!node || tlen == 0) return 0;
+    want_hash = (uint32_t)dart_topic_id(topic);
     dart_node_lock(node);   /* the zero-copy peer view vs the service thread */
     peers = dart_node_peers(node, &n_peers);
     for (s = 0; s < n_peers; s++){
@@ -1186,6 +1217,7 @@ int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
         while (dart_node_peer_interest_next(dp, &it, &t)){
             DartString nm; uint64_t hash = 0; const DartSchema *sch;
             int take = 0;
+            if (t.hash != want_hash) continue;          /* cheap prefilter before the O(topics) name lookup */
             if (t.alias == last_alias) continue;        /* second direction of a PUBSUB entry */
             last_alias = t.alias;
             /* any endpoint (publisher OR subscriber) is authoritative about its schema:

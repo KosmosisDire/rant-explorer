@@ -49,7 +49,7 @@ void cap_stop(Capture *cap);
 
 #define CAP_NAME_CAP   33    /* DART_NODE_NAME_MAX (32) + NUL  */
 #define CAP_TOPIC_CAP  65    /* DART_TOPIC_NAME_MAX (64) + NUL */
-#define CAP_MAX_EP     32    /* pub or sub entries captured per node */
+#define CAP_MAX_EP     16000 /* pub or sub entries captured per node (>= the ~12995 announce ceiling) */
 #define CAP_SNAP_NODES 64    /* mirrors CAP_MAX_PEERS */
 #define CAP_LOG_LINE   160   /* bytes per observer log line */
 #define CAP_SNAP_LOG   256   /* most-recent observer log lines exposed, newest first */

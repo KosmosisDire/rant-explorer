@@ -217,24 +217,57 @@ static void tt_new_topic_input(AppState *app, const Palette *P){
     }
 }
 
+/* how many of the longest labels to actually TTF-measure when sizing the name column */
+#define TT_NAME_CAND 24
+
 static void topics_tree(AppState *app, const Palette *P){
     const Dataset *D = app->data;
     int n = ui_tree_build(app), i;
-    /* fit the panel to its content: widest name column (indent + measured text) plus the
-       fixed stat columns, clamped so one long name can't blow it out and the header
-       controls stay usable */
+    /* virtualization window: only rows in (or a few rows around) the viewport become Clay
+       elements. Scroll data reflects the previous frame's layout (scrollPosition->y <= 0,
+       0 = top); on the very first frame it is absent, so fall back to a generous top slice. */
+    Clay_ScrollContainerData sd =
+        Clay_GetScrollContainerData(Clay_GetElementId(CLAY_STRING("topics_tree_scroll")));
+    float row_h  = UISC(29);
+    int   margin = 4, first = 0, vis = 200, last;
+    if (sd.found && sd.scrollPosition){
+        float scrolled = -sd.scrollPosition->y;
+        if (scrolled < 0.0f) scrolled = 0.0f;
+        first = (int)(scrolled / row_h) - margin;
+        vis   = (int)(sd.scrollContainerDimensions.height / row_h) + 1 + 2 * margin;
+    }
+    if (first < 0) first = 0;
+    if (first > n) first = n;
+    last = first + vis;
+    if (last > n) last = n;
+    /* fit the panel to its content: widest name column (indent + measured text) plus the fixed
+       stat columns, clamped so one long name can't blow it out. Measure across the WHOLE tree,
+       every segment in ut_pool (rows off-screen and rows inside collapsed branches included), so
+       the panel width stays put as you scroll or expand/collapse. tt_name_w (TTF, uncached) is far
+       too slow to call for all thousands of nodes, so rank cheaply by label length + indent and
+       measure only the few longest candidates (the width clamps at 300 px, so an exact winner is
+       not needed). */
     float gap        = UISC(TT_COL_GAP);
     float data_block = UISC(TT_COL_DOT) + UISC(TT_COL_RATE) + UISC(TT_COL_JITTER) + UISC(TT_COL_LAST)
                       + UISC(TT_COL_QOS) + gap * 5;
     float name_max   = UISC(70);
     float panel_w;
-    for (i = 0; i < n; i++){
-        const TreeRow *r = &ut_rows[i];
-        char  lbl[CAP_TOPIC_CAP + 2];
-        float w;
-        snprintf(lbl, sizeof lbl, "%s%s", r->name, r->is_branch ? "/" : "");
-        w = UISC(10 + r->depth * 15 + 24) + gap + tt_name_w(lbl);
-        if (w > name_max) name_max = w;
+    {
+        int cand[TT_NAME_CAND], key[TT_NAME_CAND], nc = 0, j, mi;
+        for (i = 1; i < ut_n; i++){                       /* skip node 0, the implicit root */
+            int k = (int)strlen(ut_pool[i].name) + ut_pool[i].depth * 2;   /* proxy: chars + indent */
+            if (nc < TT_NAME_CAND){ cand[nc] = i; key[nc] = k; nc++; continue; }
+            for (mi = 0, j = 1; j < nc; j++) if (key[j] < key[mi]) mi = j; /* evict the smallest */
+            if (k > key[mi]){ cand[mi] = i; key[mi] = k; }
+        }
+        for (j = 0; j < nc; j++){
+            const UtNode *u = &ut_pool[cand[j]];
+            char  lbl[CAP_TOPIC_CAP + 2];
+            float w;
+            snprintf(lbl, sizeof lbl, "%s%s", u->name, u->n_children > 0 ? "/" : "");
+            w = UISC(10 + u->depth * 15 + 24) + gap + tt_name_w(lbl);
+            if (w > name_max) name_max = w;
+        }
     }
     if (name_max > UISC(300)) name_max = UISC(300);
     panel_w = name_max + gap + data_block + UISC(10) + UISC(16);   /* right pad + breathing room */
@@ -264,7 +297,20 @@ static void topics_tree(AppState *app, const Palette *P){
                .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
             if (n == 0)
                 ui_placeholder(P, CLAY_STRING("no topics discovered"));
-            for (i = 0; i < n; i++) topic_tree_row(app, P, &ut_rows[i], i);
+            else {
+                /* virtualized: emit only rows [first,last); fixed-height spacers stand in
+                   for the rest, so the total content height and the scrollbar are unchanged.
+                   Row ids stay keyed to the global index i, so they are stable across frames. */
+                if (first > 0)
+                    CLAY({ .id = CLAY_ID("topics_tree_vtop"),
+                           .layout = { .sizing = { .width  = CLAY_SIZING_GROW(0),
+                                                   .height = CLAY_SIZING_FIXED((float)first * row_h) } } }) {}
+                for (i = first; i < last; i++) topic_tree_row(app, P, &ut_rows[i], i);
+                if (last < n)
+                    CLAY({ .id = CLAY_ID("topics_tree_vbot"),
+                           .layout = { .sizing = { .width  = CLAY_SIZING_GROW(0),
+                                                   .height = CLAY_SIZING_FIXED((float)(n - last) * row_h) } } }) {}
+            }
         }
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(12)) },
                .border = { .width = { 0, 0, UISCI(1), 0, 0 }, .color = P->border } }) {
@@ -949,11 +995,13 @@ static void topic_schema_field_row(const Palette *P, const CapSchemaField *f, in
     }
 }
 
-/* the selected topic's advertised message schema (from any endpoint: pub or sub) */
+/* the selected topic's advertised message schema (from any endpoint: pub or sub). The query
+   prefilters each peer's interest by topic hash, so it is cheap even at many-thousand-topic
+   scale and runs live every frame (no cache, no staleness). */
 static CapSchema tt_schema;
 static void topic_schema_section(AppState *app, const Palette *P, const Topic *t){
-    int have = app->cap ? cap_topic_schema(app->cap, t->path, &tt_schema) : 0;
-    int i;
+    int have, i;
+    have = app->cap ? cap_topic_schema(app->cap, t->path, &tt_schema) : 0;
     ui_section_label(P, CLAY_STRING("SCHEMA"));
     if (!have){
         CLAY_TEXT(CLAY_STRING("none advertised (raw bytes)"),

@@ -14,15 +14,27 @@
 #define UI_DATA_H
 
 #define UID_MAX_NODES   CAP_SNAP_NODES
-#define UID_MAX_TOPICS  256
+#define UID_MAX_TOPICS  16000  /* distinct topics across the whole observed graph (tree size) */
 #define UID_MAX_MACH    CAP_SNAP_NODES
 #define UID_MAX_USER    16    /* user-added topics (via the + button), kept across frames */
+#define UID_TOPIC_HASH  32768  /* power of two, >= 2*UID_MAX_TOPICS: keeps the path->index map < 0.5 load */
 
 static Machine g_machines[UID_MAX_MACH];
 static Node    g_nodes[UID_MAX_NODES];
 static Topic   g_topics[UID_MAX_TOPICS];
 static char    g_user_topics[UID_MAX_USER][CAP_TOPIC_CAP];
 static int     g_n_user_topics;
+
+/* path -> g_topics index, so uid_topic_for dedups in O(1) instead of scanning every existing
+   topic (which was O(n^2) across a frame and froze the UI at many-thousand-topic scale). Slots
+   hold an index or -1 (empty); reset to empty at the start of each ui_data_build. */
+static int g_topic_slot[UID_TOPIC_HASH];
+
+static uint32_t uid_str_hash(const char *s){
+    uint32_t h = 2166136261u;
+    for (; *s; s++){ h ^= (unsigned char)*s; h *= 16777619u; }
+    return h;
+}
 
 /* register a topic the user typed in, so it appears in the tree even before any peer
    advertises it (so we can publish to a brand-new topic). Deduped; capped. */
@@ -52,23 +64,30 @@ static int uid_machine_for(const char *ip, int *n_mach){
 /* topics are the union of every node's pub/sub names; rate/last-age/jitter ride the
    data plane (real only once the explorer subscribes), not the discovery announce. */
 static int uid_topic_for(const char *path, int *n_top){
-    int i;
-    for (i = 0; i < *n_top; i++) if (!strcmp(g_topics[i].path, path)) return i;
-    if (*n_top < UID_MAX_TOPICS){
-        Topic *t = &g_topics[*n_top];
+    uint32_t h = uid_str_hash(path) & (UID_TOPIC_HASH - 1);
+    int idx;
+    while ((idx = g_topic_slot[h]) >= 0){               /* linear probe to an existing entry or a hole */
+        if (!strcmp(g_topics[idx].path, path)) return idx;
+        h = (h + 1) & (UID_TOPIC_HASH - 1);
+    }
+    if (*n_top >= UID_MAX_TOPICS) return -1;
+    idx = (*n_top)++;
+    {   Topic *t = &g_topics[idx];
         memset(t, 0, sizeof *t);
         snprintf(t->path, sizeof t->path, "%s", path);
         t->qos.reliability = QOS_BEST_EFFORT;   /* raised to RELIABLE if any publisher offers it */
         t->last_age_s = -1.0;                /* not yet observed */
         t->jitter_p90_ms = -1.0;              /* not enough samples yet, until a live subscription warms it up */
-        return (*n_top)++;
     }
-    return -1;
+    g_topic_slot[h] = idx;                              /* the probe stopped on this empty slot */
+    return idx;
 }
 
 static void ui_data_build(Dataset *D, const CapSnapshot *snap){
     int n_mach = 0, n_top = 0, ni, k;
     int nn = snap->n_nodes < UID_MAX_NODES ? snap->n_nodes : UID_MAX_NODES;
+
+    memset(g_topic_slot, 0xFF, sizeof g_topic_slot);   /* 0xFF bytes = -1 ints: empty the path->index map */
 
     /* seed user-added topics first so they exist (and merge with any peer that advertises
        the same name later via uid_topic_for's dedup) even with no publishers/subscribers */
@@ -78,7 +97,10 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         const CapNode *cn = &snap->nodes[ni];
         Node *n = &g_nodes[ni];
         const char *nm = cn->name[0] ? cn->name : "(unnamed)";
-        memset(n, 0, sizeof *n);
+        n->n_pubs = 0; n->n_subs = 0;   /* not memset: every other field is overwritten below, and the
+                                           pubs[]/subs[] tails past n_pubs/n_subs are never read (see the
+                                           count-bounded fills). Zeroing the 16000-wide arrays each frame
+                                           would be the same per-frame tax the snapshot memset was. */
 
         snprintf(n->id,   sizeof n->id,   "%s", nm);
         snprintf(n->name, sizeof n->name, "%s", nm);
@@ -108,14 +130,14 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         n->disc.frag_size_bytes     = cn->frag;       /* real (advertised) */
         n->disc.blob_bytes          = cn->meta_len;   /* real: observed overlay size */
 
-        for (k = 0; k < cn->n_pub && n->n_pubs < UI_MAX_ENDPOINTS; k++){
+        for (k = 0; k < cn->n_pub && n->n_pubs < UI_MAX_NODE_TOPICS; k++){
             int ti = uid_topic_for(cn->pub[k].name, &n_top);
             if (ti < 0) break;
             n->pubs[n->n_pubs]    = ti;
             n->pub_rel[n->n_pubs] = (unsigned char)cn->pub[k].reliable;
             n->n_pubs++;
         }
-        for (k = 0; k < cn->n_sub && n->n_subs < UI_MAX_ENDPOINTS; k++){
+        for (k = 0; k < cn->n_sub && n->n_subs < UI_MAX_NODE_TOPICS; k++){
             int ti = uid_topic_for(cn->sub[k].name, &n_top);
             if (ti < 0) break;
             n->subs[n->n_subs]    = ti;

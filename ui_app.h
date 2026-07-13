@@ -49,6 +49,12 @@ typedef struct {
     int         has_inspect_msg;
     char        inspect_msg_topic[CAP_TOPIC_CAP];   /* topic the copied message came from */
 
+    /* topic-tree filter (the search box above the tree): rows whose topic path or any
+       endpoint node name doesn't contain this substring (case-insensitive) are hidden */
+    int      topic_filter_focus;  /* 1 = the filter box has focus (text routes here) */
+    char     topic_filter[CAP_TOPIC_CAP];
+    int      topic_filter_len;
+
     /* "add a topic" input (the + by the filter): type a name to publish to a new topic */
     int      adding_topic;    /* 1 = the new-topic name field has focus (text routes here) */
     char     new_topic[CAP_TOPIC_CAP];
@@ -95,6 +101,9 @@ static void app_init(AppState *a, const Dataset *data){
     for (fk = 0; fk < UI_FORM_MAX; fk++) a->form_kind[fk] = 0;   /* CAP_K_U8 = a plain text field */
     a->has_inspect_msg   = 0;
     a->inspect_msg_topic[0] = '\0';
+    a->topic_filter_focus = 0;
+    a->topic_filter_len   = 0;
+    a->topic_filter[0]    = '\0';
     a->adding_topic     = 0;
     a->new_topic_len    = 0;
     a->new_topic[0]     = '\0';

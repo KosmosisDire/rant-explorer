@@ -36,15 +36,43 @@ static void tt_sanitize(char *dst, int cap, const char *src, int n){
     dst[j] = '\0';
 }
 
-static void ui_filter_box(const Palette *P, Clay_String hint){
+/* the topic filter box: click to focus (the event loop then routes text into
+   app->topic_filter), a click anywhere else or Enter/Escape unfocuses, the X clears.
+   The tree hides rows whose topic doesn't match (path or endpoint node name). */
+static void ui_filter_box(AppState *app, const Palette *P, Clay_String hint){
+    int focused = app->topic_filter_focus;
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(30)) },
                        .padding = { .left = UISCI(9), .right = UISCI(9) }, .childGap = UISCI(7),
                        .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
            .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)),
-           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = focused ? P->accent : P->border } }) {
         ui_icon(ICON_SEARCH, 14, P->faint);
-        CLAY_TEXT(hint, CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint,
-                                           .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        if (app->topic_filter_len || focused)
+            /* typed text; focused gets a blinking caret (mono "|"/" ", stable width) */
+            CLAY_TEXT(ui_fmt("%s%s", app->topic_filter, focused ? (g_caret_on ? "|" : " ") : ""),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
+                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        else
+            CLAY_TEXT(hint, CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint,
+                                               .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        if (app->topic_filter_len){
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* right-anchor the clear X */
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(16)), .height = CLAY_SIZING_GROW(0) },
+                               .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
+                if (Clay_Hovered() && g_pointer_pressed){
+                    app->topic_filter_len = 0; app->topic_filter[0] = '\0';
+                    g_pointer_pressed = false;   /* consumed: don't also focus the box */
+                }
+                ui_icon(ICON_X, 12, Clay_Hovered() ? P->text : P->faint);
+            }
+        }
+        if (Clay_Hovered() && g_pointer_pressed){
+            app->topic_filter_focus = 1;
+            app->adding_topic = 0;               /* the two inputs never hold focus together */
+            g_pointer_pressed = false;
+        } else if (g_pointer_pressed && !Clay_Hovered()){
+            app->topic_filter_focus = 0;         /* click anywhere else unfocuses */
+        }
     }
 }
 
@@ -282,7 +310,7 @@ static void topics_tree(AppState *app, const Palette *P){
             /* filter + add-topic button */
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8),
                                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-                ui_filter_box(P, CLAY_STRING("Filter topics..."));
+                ui_filter_box(app, P, CLAY_STRING("Filter topics..."));
                 if (ui_icon_button(P, ICON_PLUS, 16, 30, app->adding_topic ? P->accent : P->dim, P->text)){
                     app->adding_topic = !app->adding_topic;
                     app->new_topic_len = 0; app->new_topic[0] = '\0';
@@ -296,7 +324,8 @@ static void topics_tree(AppState *app, const Palette *P){
                            .layoutDirection = CLAY_TOP_TO_BOTTOM },
                .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
             if (n == 0)
-                ui_placeholder(P, CLAY_STRING("no topics discovered"));
+                ui_placeholder(P, app->topic_filter_len ? CLAY_STRING("no topics match")
+                                                        : CLAY_STRING("no topics discovered"));
             else {
                 /* virtualized: emit only rows [first,last); fixed-height spacers stand in
                    for the rest, so the total content height and the scrollbar are unchanged.
@@ -314,7 +343,9 @@ static void topics_tree(AppState *app, const Palette *P){
         }
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(12)) },
                .border = { .width = { 0, 0, UISCI(1), 0, 0 }, .color = P->border } }) {
-            ui_section_label(P, ui_fmt("%d TOPICS", D ? D->n_topics : 0));
+            ui_section_label(P, app->topic_filter_len
+                ? ui_fmt("%d / %d TOPICS", ut_n_matched, D ? D->n_topics : 0)
+                : ui_fmt("%d TOPICS", D ? D->n_topics : 0));
         }
     }
 }

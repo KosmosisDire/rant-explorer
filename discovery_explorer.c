@@ -180,6 +180,22 @@ int main(int argc, char **argv){
                         if (!ev.key.repeat){ debug_enabled = !debug_enabled; Clay_SetDebugModeEnabled(debug_enabled); }
                         break;
                     }
+                    /* topic-filter box focused: keystrokes edit the filter (takes precedence) */
+                    if (app.tab == TAB_TOPICS && app.topic_filter_focus){
+                        if (ev.key.key == SDLK_BACKSPACE){    /* (repeat allowed: hold to delete) */
+                            if (app.topic_filter_len > 0){
+                                int n = app.topic_filter_len - 1;
+                                while (n > 0 && (app.topic_filter[n] & 0xC0) == 0x80) n--;  /* whole UTF-8 char */
+                                app.topic_filter_len = n; app.topic_filter[n] = '\0';
+                            }
+                        } else if (ev.key.key == SDLK_ESCAPE && !ev.key.repeat){
+                            app.topic_filter_len = 0; app.topic_filter[0] = '\0';
+                            app.topic_filter_focus = 0;
+                        } else if ((ev.key.key == SDLK_RETURN || ev.key.key == SDLK_KP_ENTER) && !ev.key.repeat){
+                            app.topic_filter_focus = 0;
+                        }
+                        break;
+                    }
                     /* active text field: the tree's new-topic input, or (only when the Publish
                        sidebar tab is open) the composer form field > free-text composer */
                     if (app.tab == TAB_TOPICS &&
@@ -221,6 +237,15 @@ int main(int argc, char **argv){
                     }
                     break;
                 case SDL_EVENT_TEXT_INPUT:                    /* typed characters -> active field */
+                    if (app.tab == TAB_TOPICS && app.topic_filter_focus && ev.text.text){
+                        size_t add = strlen(ev.text.text);
+                        if (add && app.topic_filter_len + (int)add < (int)sizeof app.topic_filter - 1){
+                            memcpy(app.topic_filter + app.topic_filter_len, ev.text.text, add);
+                            app.topic_filter_len += (int)add;
+                            app.topic_filter[app.topic_filter_len] = '\0';
+                        }
+                        break;
+                    }
                     if (app.tab == TAB_TOPICS && ev.text.text &&
                         (app.adding_topic || (app.drawer_open && app.drawer_tab == DRAWER_PUBLISH))){
                         int    form = !app.adding_topic && app.form_focus >= 0 && app.form_focus < UI_FORM_MAX;

@@ -67,7 +67,37 @@ static int ut_path_cmp(const void *a, const void *b){
     return strcmp(ut_sort_D->topics[*(const int *)a].path, ut_sort_D->topics[*(const int *)b].path);
 }
 
-static void ut_build(const Dataset *D){
+/* case-insensitive substring test for the topic filter (ASCII, like the names on the wire) */
+static int ut_strcasestr(const char *hay, const char *needle){
+    size_t nl = strlen(needle);
+    if (!nl) return 1;
+    for (; *hay; hay++){
+        size_t i;
+        for (i = 0; i < nl; i++){
+            char a = hay[i], b = needle[i];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) break;
+        }
+        if (i == nl) return 1;
+    }
+    return 0;
+}
+
+/* a topic passes the filter if its path OR any endpoint node's name contains the text */
+static int ut_topic_match(const Dataset *D, const Topic *tp, const char *filter){
+    int i;
+    if (ut_strcasestr(tp->path, filter)) return 1;
+    for (i = 0; i < tp->n_pubs; i++)
+        if (ut_strcasestr(D->nodes[tp->pubs[i]].name, filter)) return 1;
+    for (i = 0; i < tp->n_subs; i++)
+        if (ut_strcasestr(D->nodes[tp->subs[i]].name, filter)) return 1;
+    return 0;
+}
+
+static int ut_n_matched;   /* topics that passed the filter this build */
+
+static void ut_build(const Dataset *D, const char *filter){
     int t, no = 0;
     ut_n = 1;                                  /* node 0 = implicit root */
     memset(ut_slot, 0xFF, sizeof ut_slot);     /* 0xFF bytes = -1 ints: empty the (parent,seg) map */
@@ -75,7 +105,9 @@ static void ut_build(const Dataset *D){
     ut_pool[0].topic = -1; ut_pool[0].parent = -1; ut_pool[0].depth = -1;
     ut_pool[0].first_child = ut_pool[0].last_child = ut_pool[0].next_sibling = -1;
 
-    for (t = 0; t < D->n_topics && no < UT_MAX_NODES; t++) ut_order[no++] = t;
+    for (t = 0; t < D->n_topics && no < UT_MAX_NODES; t++)
+        if (!filter || ut_topic_match(D, &D->topics[t], filter)) ut_order[no++] = t;
+    ut_n_matched = no;
     ut_sort_D = D;
     qsort(ut_order, (size_t)no, sizeof ut_order[0], ut_path_cmp);
 
@@ -98,12 +130,13 @@ static void ut_build(const Dataset *D){
     }
 }
 
-/* DFS into ut_rows[], skipping the children of a collapsed branch */
+/* DFS into ut_rows[], skipping the children of a collapsed branch. While a filter is
+   active every branch renders open, so the matches are always visible. */
 static void ut_flatten(const AppState *app, const Dataset *D, int node, int depth){
     int c;
     for (c = ut_pool[node].first_child; c != -1; c = ut_pool[c].next_sibling){
         int is_branch = ut_pool[c].n_children > 0;
-        int collapsed = is_branch && app_is_collapsed(app, ut_pool[c].path);
+        int collapsed = is_branch && app->topic_filter_len == 0 && app_is_collapsed(app, ut_pool[c].path);
         TreeRow *r;
         if (ut_n_rows >= UT_MAX_NODES) return;
         r = &ut_rows[ut_n_rows++];
@@ -122,8 +155,9 @@ static void ut_flatten(const AppState *app, const Dataset *D, int node, int dept
 static int ui_tree_build(const AppState *app){
     const Dataset *D = app->data;
     ut_n_rows = 0;
+    ut_n_matched = 0;
     if (!D || D->n_topics == 0) return 0;
-    ut_build(D);
+    ut_build(D, app->topic_filter_len ? app->topic_filter : NULL);
     ut_flatten(app, D, 0, 0);
     return ut_n_rows;
 }

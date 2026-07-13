@@ -26,8 +26,11 @@ typedef struct {
 
 void cap_defaults(Config *c);
 int  cap_parse_args(int argc, char **argv, Config *c);   /* 1 = run, 0 = exit clean, -1 = bad args */
-int  cap_start(Capture *cap, const Config *cfg);          /* 1 = ok, 0 = failed (non-fatal) */
-int  cap_poll(Capture *cap);                              /* drain datagrams + pump timers */
+int  cap_start(Capture *cap, const Config *cfg);          /* 1 = ok, 0 = failed (non-fatal); starts the
+                                                             node's service thread (network at its own
+                                                             cadence, independent of the frame rate) */
+int  cap_poll(Capture *cap);                              /* once per UI frame: drain the subscribed
+                                                             topics' consumer queues on THIS thread */
 void cap_stop(Capture *cap);
 
 /* ------------------------------------------------------------------ snapshot

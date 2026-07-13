@@ -78,6 +78,19 @@ static int     cap_log_head, cap_log_count;
 static unsigned long long cap_start_ms;
 static Config  cap_cfg;          /* echoed into the snapshot for display */
 
+/* THREADING. The node's SERVICE THREAD (dart_node_start) owns discovery/RX/timers, so
+   the poll cadence is independent of the UI frame rate. Message content never runs
+   there: every explorer channel is QUEUED (consumer queues), and cap_poll drains the
+   queues on the UI thread each frame (dart_node_dispatch -> cap_on_message), so the
+   feed rings and their metrics stay UI-thread-owned with no locking. Only cap_on_event
+   still fires on the service thread (peer/log/error bookkeeping); it always runs WITH
+   the node lock held, so the shared bits (the log ring, cap_peers, the cap_subs
+   channel bookkeeping) are serialized by bracketing the UI side's access with
+   dart_node_lock/dart_node_unlock (cap_node below is that handle). The bracket is not
+   nestable (an inner unlock releases the outer hold), so bracketed code never calls
+   another bracketing helper and never logs. */
+static DartNode *cap_node;
+
 static unsigned long long cap_now_ms(void);   /* defined below; used by cap_ring_push */
 static void *cap_schema_alloc(void *user, void *ptr, size_t size);          /* defined below */
 static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic);/* defined below */
@@ -140,11 +153,17 @@ static CapSub *cap_sub_find(const char *name){
 static CapSub *cap_sub_get(const char *name){          /* find or claim a slot */
     CapSub *s = cap_sub_find(name); int i;
     if (s) return s;
+    /* claiming runs on the UI thread while the service thread's event callback may walk
+       the table (cap_sub_by_index): publish the slot atomically under the node lock */
+    if (cap_node) dart_node_lock(cap_node);
     for (i = 0; i < CAP_MAX_SUBS; i++) if (!cap_subs[i].used){
-        s = &cap_subs[i]; memset(s, 0, sizeof *s); s->used = 1;
-        snprintf(s->name, sizeof s->name, "%s", name); return s;
+        s = &cap_subs[i]; memset(s, 0, sizeof *s);
+        snprintf(s->name, sizeof s->name, "%s", name);
+        s->used = 1;
+        break;
     }
-    return NULL;
+    if (cap_node) dart_node_unlock(cap_node);
+    return s;
 }
 static CapSub *cap_sub_by_index(uint16_t index){
     int i;
@@ -397,17 +416,23 @@ static void cap_jitter_update(CapSub *s, double t_hr){
     s->jitter_last_hr = t_hr;
 }
 
+/* Log-ring append, callable from BOTH threads: UI paths acquire the node lock; the
+   event callback (service thread) already holds it, so the bracket no-ops there. */
 static void cap_logf(const char *fmt, ...){
     unsigned long long t = cap_now_ms() - cap_start_ms;
-    char *line = cap_log[cap_log_head];
-    int n = snprintf(line, CAP_LOG_LINE, "[%6.2fs] ", (double)t / 1000.0);
+    char *line;
+    int n;
     va_list ap;
+    if (cap_node) dart_node_lock(cap_node);
+    line = cap_log[cap_log_head];
+    n = snprintf(line, CAP_LOG_LINE, "[%6.2fs] ", (double)t / 1000.0);
     va_start(ap, fmt);
     vsnprintf(line + n, (size_t)(CAP_LOG_LINE - n), fmt, ap);
     va_end(ap);
     cap_log_head = (cap_log_head + 1) % CAP_LOG_LINES;
     if (cap_log_count < CAP_LOG_LINES) cap_log_count++;
     fputs(line, stdout); fputc('\n', stdout);
+    if (cap_node) dart_node_unlock(cap_node);
 }
 
 static void cap_fmt_ip(char *buf, size_t n, const uint8_t *ip, uint8_t ip_len){
@@ -445,18 +470,23 @@ static CapPeer *cap_peer_get(uint32_t id){
     return p;
 }
 
-/* the node's message sink: append a delivered message to its topic ring. Single threaded
-   with cap_poll, so no locking. We keep only a short preview of the payload. */
+/* the node's message sink: append a delivered message to its topic ring. Every explorer
+   channel is queued, so this only ever runs on the UI thread (cap_poll's dispatch) --
+   the rings and their metrics need no locking. We keep only a short payload preview. */
 static void cap_on_message(const DartMsg *msg){
     CapSub *s = cap_sub_by_index(msg->channel_id);
     if (!s) return;
-    cap_jitter_update(s, cap_now_hr());
+    /* jitter from the POLL-side arrival stamp, not from when this frame got around to
+       dispatching: a frame-paced consumer must never quantize inter-arrival times */
+    cap_jitter_update(s, (double)msg->recv_us / 1e6);
     cap_ring_push(s, msg->sender_name, msg->data.data, msg->data.len, 0, msg->schema);
     s->n_msgs++;
 }
 
 /* the node's app event sink: maintain the observer metrics + log. We never call back into
-   dart_* here (the snapshot reads the facts); the cap_peers table is file-static. */
+   dart_* here (the snapshot reads the facts); the cap_peers table is file-static. Runs on
+   the SERVICE thread (with the node lock held), so everything it touches is read by the
+   UI only under a dart_node_lock bracket (cap_snapshot, cap_topic_feed). */
 static void cap_on_event(const DartEvent *ev){
     switch (ev->kind){
     case DART_PEER_UP: {
@@ -561,17 +591,31 @@ int cap_start(Capture *cap, const Config *cfg){
     }
     cap->rt  = node;
     cap->mem = NULL;         /* the node owns its memory now; close frees it */
+    cap_node = node;         /* the log/table serializer handle (see the THREADING note) */
+    /* the service thread owns discovery/RX/timers from here: the poll cadence no longer
+       rides the UI frame rate. DART_ERR_NOSYS (threads compiled out) falls back to the
+       old single-threaded drive inside cap_poll. */
+    if (dart_node_start(node) != DART_OK)
+        cap_logf("service thread unavailable: polling on the UI thread");
     cap_logf("observer node \"%s\" started on domain %u (%s:%u)", cfg->name, cfg->domain, cfg->group, cfg->port);
     return 1;
 }
 
+/* One UI-frame tick: drain every subscribed topic's consumer queue on THIS thread
+   (dart_node_dispatch runs cap_on_message here), so message handling and the UI never
+   race while the service thread polls at its own cadence. Without a service thread
+   (DART_NO_THREADS) it also drives the loop, exactly the old behavior. */
 int cap_poll(Capture *cap){
-    if (!cap->rt) return 0;
-    return dart_node_poll((DartNode *)cap->rt, 0);   /* one tick: drains RX, pumps discovery + timers */
+    DartNode *node = (DartNode *)cap->rt;
+    if (!node) return 0;
+    if (!dart_node_is_started(node))
+        dart_node_poll(node, 0);
+    return dart_node_dispatch(node, 0, 0);
 }
 
 void cap_stop(Capture *cap){
-    if (cap->rt) dart_node_close((DartNode *)cap->rt, 1);   /* sends a BYE, frees the node's memory */
+    cap_node = NULL;
+    if (cap->rt) dart_node_close((DartNode *)cap->rt, 1);   /* stops the service thread, sends a BYE, frees */
     cap->rt = NULL; cap->mem = NULL;
 }
 
@@ -602,7 +646,18 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
                                               .catch_up = 1 } });
         if (sch) dart_schema_free(sch, cap_schema_alloc, NULL);   /* the node keeps its own copy */
         if (!ch) return 0;
-        s->ch[want] = ch; s->index[want] = dart_channel_index(ch);
+        /* switch it to QUEUED delivery now (lazy ring, grows to DART_QUEUE_CAP): its
+           messages then arrive via cap_poll's dispatch on the UI thread, never on the
+           service thread. An observer never stalls a publisher: at the cap a best-effort
+           queue drops oldest, and a parked reliable one only throttles publishers that
+           opted into backpressure_wait_us. */
+        dart_channel_dispatch(ch, 0, 0);
+        /* publish the (index, handle) pair under the node lock: the service thread's
+           event callback maps events back to topics through it (cap_sub_by_index) */
+        dart_node_lock(node);
+        s->index[want] = dart_channel_index(ch);
+        s->ch[want] = ch;
+        dart_node_unlock(node);
     } else {
         dart_channel_set_role(s->ch[want], role);
     }
@@ -646,6 +701,7 @@ static int cap_topic_sub_reliable(DartNode *node, const char *topic, int *any_su
     if (any_sub) *any_sub = 0;
     if (!node || !topic || !*topic) return 0;
     want_hash = (uint32_t)dart_topic_id(topic);
+    dart_node_lock(node);   /* the zero-copy peer view vs the service thread */
     peers = dart_node_peers(node, &n_peers);
     for (s = 0; s < n_peers; s++){
         DartInterestIter it; DartTopic t;
@@ -656,6 +712,7 @@ static int cap_topic_sub_reliable(DartNode *node, const char *topic, int *any_su
             if (t.reliable) reliable = 1;
         }
     }
+    dart_node_unlock(node);
     if (any_sub) *any_sub = seen;
     return reliable;
 }
@@ -865,6 +922,12 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
     out->disc_port = cap_cfg.port;
     snprintf(out->group, sizeof out->group, "%s", cap_cfg.group ? cap_cfg.group : "");
 
+    /* one bracket for the whole copy-out (NULL-safe when the capture never started): it
+       pins the zero-copy peer view AND excludes the service thread's event callback,
+       which writes the log ring, cap_peers, and the sub error counters this reads. Do
+       not log inside (the bracket is not nestable). */
+    dart_node_lock(node);
+
     {   /* copy the observer event ring, newest first, capped to CAP_SNAP_LOG */
         int want = cap_log_count < CAP_SNAP_LOG ? cap_log_count : CAP_SNAP_LOG;
         for (k = 0; k < want; k++){
@@ -974,18 +1037,26 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         }
         n->n_sub = k;
     }
+
+    dart_node_unlock(node);
 }
 
 int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int max,
                    int *subscribed, int *error, int *reliable, uint32_t *n_msgs, uint32_t *n_drops){
     CapSub *s = (cap && cap->rt && topic) ? cap_sub_find(topic) : NULL;
     int i, n = 0, start;
+    /* the ring itself is UI-thread-owned (queued delivery), but error/n_drops are
+       written by the service thread's event callback: bracket the read */
+    if (cap && cap->rt) dart_node_lock((DartNode *)cap->rt);
     if (subscribed) *subscribed = s ? s->subscribed : 0;
     if (error)      *error      = s ? ((s->error || s->n_drops > 0) ? 1 : 0) : 0;
     if (reliable)   *reliable   = s ? s->reliable : 0;
     if (n_msgs)     *n_msgs     = s ? (uint32_t)s->n_msgs : 0;
     if (n_drops)    *n_drops    = s ? (uint32_t)s->n_drops : 0;
-    if (!s || !out || max <= 0) return 0;
+    if (!s || !out || max <= 0){
+        if (cap && cap->rt) dart_node_unlock((DartNode *)cap->rt);
+        return 0;
+    }
 
     /* walk the ring oldest first; with a full ring the oldest is at head */
     n     = s->count < max ? s->count : max;
@@ -1008,6 +1079,7 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
         if (m->preview_len) memcpy(o->preview, m->preview, m->preview_len);
         if (m->preview_len < CAP_MSG_PREVIEW) o->preview[m->preview_len] = '\0';  /* terminate: %s reads it, slot is reused */
     }
+    if (cap && cap->rt) dart_node_unlock((DartNode *)cap->rt);
     return n;
 }
 
@@ -1073,9 +1145,11 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
 static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic){
     const DartDiscoveryPeer *peers; uint16_t n_peers = 0, s;
     size_t tlen = topic ? strlen(topic) : 0;
+    DartSchema *found = NULL;
     if (!node || tlen == 0) return NULL;
+    dart_node_lock(node);   /* the zero-copy peer view vs the service thread */
     peers = dart_node_peers(node, &n_peers);
-    for (s = 0; s < n_peers; s++){
+    for (s = 0; s < n_peers && !found; s++){
         DartInterestIter it; DartTopic t;
         memset(&it, 0, sizeof it);
         while (dart_node_peer_interest_next(&peers[s], &it, &t)){
@@ -1085,11 +1159,13 @@ static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic){
             sch = dart_node_peer_topic_schema(node, peers[s].id, t.alias, NULL);
             if (!sch) continue;
             {   DartBytes wire = dart_schema_wire(sch);
-                return dart_schema_parse(wire.data, wire.len, cap_schema_alloc, NULL);
+                found = dart_schema_parse(wire.data, wire.len, cap_schema_alloc, NULL);
+                break;
             }
         }
     }
-    return NULL;
+    dart_node_unlock(node);
+    return found;
 }
 
 int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
@@ -1100,6 +1176,7 @@ int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
     int best_is_pub = 0, found = 0;
     memset(out, 0, sizeof *out);
     if (!node || tlen == 0) return 0;
+    dart_node_lock(node);   /* the zero-copy peer view vs the service thread */
     peers = dart_node_peers(node, &n_peers);
     for (s = 0; s < n_peers; s++){
         const DartDiscoveryPeer *dp = &peers[s];
@@ -1150,6 +1227,7 @@ int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
         }
     }
     if (best) cap_schema_fields(out, best);             /* cached parsed schema: field list */
+    dart_node_unlock(node);
     return found;
 }
 

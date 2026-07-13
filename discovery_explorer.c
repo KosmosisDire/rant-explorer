@@ -304,8 +304,10 @@ int main(int argc, char **argv){
             fps_frames++;
             fps_render_ms += (double)(r1 - r0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
             if (now - fps_t0 >= 1000){
-                printf("[fps] %d fps  (render %.1f ms/frame work, tab=%d, nodes=%d)\n",
-                       fps_frames, fps_render_ms / fps_frames, app.tab, g_data.n_nodes);
+                unsigned msgs = 0; int si;   /* live-feed intake across all subscriptions */
+                for (si = 0; si < g_snap.n_subs; si++) msgs += g_snap.subs[si].n_msgs;
+                printf("[fps] %d fps  (render %.1f ms/frame work, tab=%d, nodes=%d, msgs=%u)\n",
+                       fps_frames, fps_render_ms / fps_frames, app.tab, g_data.n_nodes, msgs);
                 fps_t0 = now; fps_frames = 0; fps_render_ms = 0.0;
             }
         }

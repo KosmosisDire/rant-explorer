@@ -209,6 +209,10 @@ int main(int argc, char **argv){
                                 app.form_focus = (ev.key.mod & SDL_KMOD_SHIFT)
                                     ? (app.form_focus + app.form_n - 1) % app.form_n
                                     : (app.form_focus + 1) % app.form_n;
+                        } else if (ev.key.key == SDLK_SPACE && !ev.key.repeat && form &&
+                                   app.form_kind[app.form_focus] == CAP_K_BOOL){
+                            const char *v = strcmp(buf, "true") ? "true" : "false";   /* toggle the bool */
+                            snprintf(buf, (size_t)cap, "%s", v); *len = (int)strlen(buf);
                         } else if (ev.key.key == SDLK_ESCAPE && !ev.key.repeat){
                             if (app.adding_topic){ app.adding_topic = 0; app.new_topic_len = 0; app.new_topic[0] = '\0'; }
                             else if (form){ app.form_val[app.form_focus][0] = '\0'; app.form_len[app.form_focus] = 0; }
@@ -224,6 +228,7 @@ int main(int argc, char **argv){
                         int   *len = app.adding_topic ? &app.new_topic_len : form ? &app.form_len[app.form_focus] : &app.compose_len;
                         int    cap = app.adding_topic ? (int)sizeof app.new_topic : form ? UI_FORM_VAL : UI_COMPOSE_MAX;
                         size_t add = strlen(ev.text.text);
+                        if (form && app.form_kind[app.form_focus] == CAP_K_BOOL) break;   /* bool: a toggle, not a text field */
                         if (add && *len + (int)add < cap - 1){
                             memcpy(buf + *len, ev.text.text, add);
                             *len += (int)add; buf[*len] = '\0';

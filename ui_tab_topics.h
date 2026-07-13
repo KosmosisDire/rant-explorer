@@ -477,13 +477,77 @@ static void tt_do_send(AppState *app, const char *topic){
 
 /* ------------------------------------------------- structured publish form (typed topics) */
 
-/* the prefilled default for a form field, by its display type */
+/* the prefilled default for a form field, by its kind */
 static const char *tt_form_default(const CapSchemaField *f){
-    if (!strcmp(f->type, "bool"))            return "false";
-    if (!strcmp(f->type, "struct"))          return "";  /* no setter yet: stays default */
-    if (!strncmp(f->type, "string", 6))      return "";  /* empty string(s) */
-    if (strchr(f->type, '['))                return "";  /* array: empty = all zero */
-    return "0";
+    switch (f->kind){
+        case CAP_K_BOOL:                 return "false";
+        case CAP_K_STRUCT:               /* no setter yet: stays default */
+        case CAP_K_STR:                  /* empty string(s) */
+        case CAP_K_ARR:  return "";      /* array: empty = all zero */
+        default:         return "0";     /* numeric scalar */
+    }
+}
+
+/* overwrite a form field's value (bool toggle, quick fills) */
+static void tt_form_set_val(AppState *app, int i, const char *v){
+    snprintf(app->form_val[i], UI_FORM_VAL, "%s", v);
+    app->form_len[i] = (int)strlen(app->form_val[i]);
+}
+
+/* live element count of an array value, for the "n/count" hint. Whitespace/comma runs for
+   numeric elements; comma-separated segments for strings (which may contain spaces). This
+   is only a display cue; cap_form_validate is the authoritative accept test. */
+static int tt_count_elems(const CapSchemaField *f, const char *s){
+    int n = 0;
+    if (f->elem == CAP_K_STR){
+        const char *p = s;
+        while (*p){
+            const char *q = p; while (*q && *q != ',') q++;
+            n++;
+            if (!*q) break;
+            p = q + 1;
+        }
+    } else {
+        int in = 0;
+        for (; *s; s++){
+            int sep = (*s == ' ' || *s == '\t' || *s == ',');
+            if (!sep && !in){ n++; in = 1; } else if (sep) in = 0;
+        }
+    }
+    return n;
+}
+
+/* a faint placeholder for an empty, unfocused text field, hinting the expected shape */
+static Clay_String tt_form_hint(const CapSchemaField *f){
+    if (f->kind == CAP_K_STR) return CLAY_STRING("text");
+    if (f->kind == CAP_K_ARR) return CLAY_STRING("comma-separated");
+    return CLAY_STRING("0");
+}
+
+/* one segment of the boolean toggle: click sets the field to `seg` ("true"/"false") */
+static void tt_form_bool_seg(AppState *app, const Palette *P, int i, const char *seg, int active){
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
+                       .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
+           .backgroundColor = active ? P->accent_bg : UI_NONE,
+           .cornerRadius = CLAY_CORNER_RADIUS(UISC(3)) }) {
+        if (Clay_Hovered() && g_pointer_pressed){ tt_form_set_val(app, i, seg); app->form_focus = i; app->adding_topic = 0; }
+        CLAY_TEXT(ui_str(seg), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                  .textColor = active ? P->accent : P->dim,
+                                                  .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+}
+
+/* a boolean field's smart input: a two-segment [ false | true ] control filling the value
+   column, the current value highlighted. Click a segment to set it (no typing needed). */
+static void tt_form_bool(AppState *app, const Palette *P, int i, int focused){
+    int on = !strcmp(app->form_val[i], "true");
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(24)) },
+                       .padding = CLAY_PADDING_ALL(UISC(2)), .childGap = UISCI(2) },
+           .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(4)),
+           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = focused ? P->accent : P->border } }) {
+        tt_form_bool_seg(app, P, i, "false", !on);
+        tt_form_bool_seg(app, P, i, "true",   on);
+    }
 }
 
 static void tt_form_reset(AppState *app, const CapSchema *sc, int n){
@@ -502,11 +566,18 @@ static void tt_form_send(AppState *app, const Topic *t, int n){
     cap_publish_form(app->cap, t->path, vals, n);   /* the values stay for the next send */
 }
 
-/* one editable field: name | input box | type, nested members indented. Clicking focuses
-   it; a struct row is a read-only group header (its members are the inputs). */
-static void tt_form_field_row(AppState *app, const Palette *P, const CapSchemaField *f, int i){
-    int editable = strcmp(f->type, "struct") != 0;
-    int focused  = editable && app->form_focus == i && !app->adding_topic;
+/* one field: name | type-aware input | type, nested members indented. A bool gets a
+   toggle, a string/array gets a validated box with an "n/cap" counter, a numeric scalar a
+   validated box; the input box + type turn red when the typed value won't parse (`valid`
+   comes from cap_form_validate). A struct row is a read-only group header (members are the
+   inputs). Clicking a text field focuses it. */
+static void tt_form_field_row(AppState *app, const Palette *P, const CapSchemaField *f, int i, int valid){
+    int is_struct = (f->kind == CAP_K_STRUCT);
+    int is_bool   = (f->kind == CAP_K_BOOL);
+    int focused   = !is_struct && app->form_focus == i && !app->adding_topic;
+    int has_val   = app->form_val[i][0] != '\0';
+    int bad       = !is_struct && !is_bool && has_val && !valid;   /* typed, but won't parse */
+    int show_count = (f->kind == CAP_K_STR || f->kind == CAP_K_ARR);
     CLAY({ .id = CLAY_IDI("form_field", (uint32_t)i),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(26)) },
                        .padding = { .left = UISCI(f->depth * 14) },
@@ -516,24 +587,38 @@ static void tt_form_field_row(AppState *app, const Palette *P, const CapSchemaFi
             CLAY_TEXT(ui_str(f->name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
                                                           .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         }
-        if (editable){
+        if (is_bool){
+            tt_form_bool(app, P, i, focused);
+        } else if (!is_struct){
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(24)) },
                                .padding = { .left = UISCI(8), .right = UISCI(8) },
                                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
                    .backgroundColor = P->panel2,
                    .cornerRadius = CLAY_CORNER_RADIUS(UISC(4)),
                    .border = { .width = CLAY_BORDER_OUTSIDE(1),
-                               .color = focused ? P->accent : P->border } }) {
+                               .color = bad ? P->red : focused ? P->accent : P->border } }) {
                 if (Clay_Hovered() && g_pointer_pressed){ app->form_focus = i; app->adding_topic = 0; }
-                CLAY_TEXT(ui_fmt("%s%s", app->form_val[i], focused ? (g_caret_on ? "|" : " ") : ""),
-                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
-                                             .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                if (!has_val && !focused)
+                    CLAY_TEXT(tt_form_hint(f), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                                 .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                else
+                    CLAY_TEXT(ui_fmt("%s%s", app->form_val[i], focused ? (g_caret_on ? "|" : " ") : ""),
+                              CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                 .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
             }
         } else {
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
         }
+        if (show_count){    /* live shape cue: bytes/cap for a string, elements/count for an array */
+            int cur = f->kind == CAP_K_STR ? (int)strlen(app->form_val[i]) : tt_count_elems(f, app->form_val[i]);
+            int cap = f->kind == CAP_K_STR ? (int)f->str_cap : (int)f->count;
+            int over = cur > cap;
+            CLAY_TEXT(ui_fmt("%d/%d", cur, cap), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                          .textColor = (bad || over) ? P->red : P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        }
         CLAY_TEXT(ui_str(f->type), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
-                                                      .textColor = P->accent, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                                                      .textColor = bad ? P->red : is_struct ? P->dim : P->accent,
+                                                      .wrapMode = CLAY_TEXT_WRAP_NONE }));
     }
 }
 
@@ -543,12 +628,18 @@ static void tt_form_field_row(AppState *app, const Palette *P, const CapSchemaFi
 static void topics_form(AppState *app, const Palette *P, const Topic *t, const CapSchema *sc){
     int i, n = sc->n_fields < UI_FORM_MAX ? sc->n_fields : UI_FORM_MAX;
     int send = app->form_send;
+    unsigned char valid[UI_FORM_MAX];
     app->form_send = 0; app->compose_send = 0;   /* the form owns Enter on this topic */
     if (app->form_topic != app->sel_topic){       /* switched topic: fresh defaults */
         app->form_topic = app->sel_topic;
         tt_form_reset(app, sc, n);
     }
     app->form_n = n;                              /* input routes to the form fields */
+    for (i = 0; i < n; i++) app->form_kind[i] = sc->fields[i].kind;   /* event loop: bool = toggle keys */
+    {   const char *vals[UI_FORM_MAX];            /* live per-field validity (one schema parse) */
+        for (i = 0; i < n; i++){ vals[i] = app->form_val[i]; valid[i] = 1; }
+        if (app->cap) cap_form_validate(app->cap, t->path, vals, n, valid);
+    }
     if (send) tt_form_send(app, t, n);
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM,
                        .childGap = UISCI(6) } }) {
@@ -562,7 +653,7 @@ static void topics_form(AppState *app, const Palette *P, const Topic *t, const C
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint,
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
         }
-        for (i = 0; i < n; i++) tt_form_field_row(app, P, &sc->fields[i], i);
+        for (i = 0; i < n; i++) tt_form_field_row(app, P, &sc->fields[i], i, valid[i]);
         /* Send: its own row under the fields (right-aligned), not boxed in a card */
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = { .top = UISCI(4) } } }) {
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}

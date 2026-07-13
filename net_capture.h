@@ -139,6 +139,14 @@ int  cap_publish(Capture *cap, const char *topic, const void *data, size_t len);
    (created while a publisher advertised one). Returns 1, or 0 with the reason logged. */
 int  cap_publish_form(Capture *cap, const char *topic, const char *const *values, int n_values);
 
+/* Live per-field validation for the publish form (advisory, no side effects): parse each
+   values[i] against `topic`'s advertised schema exactly as cap_publish_form would, writing
+   1 (parses, or empty = keeps the default) or 0 (would be rejected) into valid[0..n-1].
+   One schema parse per call, not per field. Returns 1 if a schema was found (results are
+   meaningful), 0 otherwise (all fields left marked valid). */
+int  cap_form_validate(const Capture *cap, const char *topic, const char *const *values,
+                       int n_values, unsigned char *valid);
+
 /* One captured message, oldest-first, copied out for the selected topic's feed. When the
    sender advertised a schema the message is REFLECTED into per-field rows (every depth,
    nested members flattened with their depth; decoded exactly as the writer declared it,
@@ -188,9 +196,23 @@ int  cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int
    structurally incompatible schema sets hash_conflict. */
 #define CAP_SCHEMA_FIELDS 24    /* top-level fields captured per schema */
 
+/* A field's type kind, numeric values mirroring DartSchemaTypeKind so the UI (which sees
+   no DART types) can branch a field onto a type-aware input control. .elem uses the same
+   values for an array's element kind. */
+enum {
+    CAP_K_U8 = 0, CAP_K_U16, CAP_K_U32, CAP_K_U64,
+    CAP_K_I8, CAP_K_I16, CAP_K_I32, CAP_K_I64,
+    CAP_K_F32, CAP_K_F64, CAP_K_BOOL,
+    CAP_K_ARR, CAP_K_STRUCT, CAP_K_STR
+};
+
 typedef struct {
     char     name[CAP_TOPIC_CAP];  /* field's own name */
     char     type[24];             /* display type: "u64", "u8[256]", "struct" */
+    uint8_t  kind;                 /* CAP_K_* of the field itself */
+    uint8_t  elem;                 /* CAP_K_* of an array's element (kind == CAP_K_ARR), else 0 */
+    uint16_t count;                /* array element count (kind == CAP_K_ARR), else 0 */
+    uint16_t str_cap;              /* string capacity (STR field or STR-element array), else 0 */
     uint8_t  depth;                /* 0 = top level; nested members are one deeper */
     uint32_t offset;               /* absolute byte offset in a message */
     uint32_t size;                 /* byte size of the field */

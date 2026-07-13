@@ -35,6 +35,8 @@ typedef struct {
        per top-level schema field, prefilled with the type's default */
     char     form_val[UI_FORM_MAX][UI_FORM_VAL];
     int      form_len[UI_FORM_MAX];
+    uint8_t  form_kind[UI_FORM_MAX];  /* each shown field's CAP_K_* (the composer sets it); lets the
+                                         event loop give a bool field toggle-not-text keystrokes */
     int      form_n;          /* fields shown this frame (the composer sets it) */
     int      form_focus;      /* focused field, or -1 (the free-text composer owns input) */
     int      form_topic;      /* sel_topic the values belong to; re-defaulted on change */
@@ -74,6 +76,7 @@ typedef struct {
 } AppState;
 
 static void app_init(AppState *a, const Dataset *data){
+    int fk;
     a->theme_dark  = 1;
     a->tab         = TAB_NODES;
     a->sel_node    = 0;
@@ -89,6 +92,7 @@ static void app_init(AppState *a, const Dataset *data){
     a->form_focus = -1;
     a->form_topic = -1;
     a->form_send  = 0;
+    for (fk = 0; fk < UI_FORM_MAX; fk++) a->form_kind[fk] = 0;   /* CAP_K_U8 = a plain text field */
     a->has_inspect_msg   = 0;
     a->inspect_msg_topic[0] = '\0';
     a->adding_topic     = 0;

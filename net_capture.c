@@ -1054,6 +1054,10 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
             snprintf(f->type, sizeof f->type, "%s[%u]", cap_kind_str(fi.elem), fi.count);
         else
             snprintf(f->type, sizeof f->type, "%s", cap_kind_str(fi.kind));
+        f->kind    = fi.kind;                                        /* CAP_K_* == DartSchemaTypeKind */
+        f->elem    = (uint8_t)(fi.kind == DART_ARR ? fi.elem : 0);
+        f->count   = (uint16_t)(fi.kind == DART_ARR ? fi.count : 0);
+        f->str_cap = fi.str_cap;                                     /* set for STR + STR-element arrays */
         f->depth  = (uint8_t)(fi.depth > 255 ? 255 : fi.depth);
         f->offset = fi.offset;
         f->size   = fi.size;
@@ -1147,4 +1151,34 @@ int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
     }
     if (best) cap_schema_fields(out, best);             /* cached parsed schema: field list */
     return found;
+}
+
+/* Live per-field validity for the publish form. Parses the topic's advertised schema
+   once (the same source the form is built from), then runs each value through cap_form_set
+   against a scratch message buffer: the authoritative accept test cap_publish_form applies,
+   with no side effects (no publisher declared, nothing sent). An empty value is valid (it
+   keeps the field's default). */
+int cap_form_validate(const Capture *cap, const char *topic, const char *const *values,
+                      int n_values, unsigned char *valid){
+    DartNode *node = cap ? (DartNode *)cap->rt : NULL;
+    DartSchema *sch; uint8_t *buf; size_t size; uint16_t i, nf;
+    int j;
+    for (j = 0; j < n_values; j++) if (valid) valid[j] = 1;   /* default: don't flag */
+    if (!node || !topic || !values) return 0;
+    sch = cap_topic_schema_parse(node, topic);
+    if (!sch) return 0;                                       /* no schema: nothing to judge against */
+    size = dart_schema_size(sch);
+    buf = (uint8_t *)malloc(size ? size : 1);
+    if (!buf){ dart_schema_free(sch, cap_schema_alloc, NULL); return 0; }
+    dart_schema_message_default(sch, buf, size);              /* per-field parse is independent of the rest */
+    nf = dart_schema_field_count(sch);
+    for (i = 0; i < nf && (int)i < n_values; i++){
+        const char *v = values[i] ? values[i] : "", *p = v;
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) continue;                                   /* empty: keeps the default, valid */
+        if (valid) valid[i] = (unsigned char)(cap_form_set(sch, i, v, buf, size) ? 1 : 0);
+    }
+    free(buf);
+    dart_schema_free(sch, cap_schema_alloc, NULL);
+    return 1;
 }

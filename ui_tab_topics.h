@@ -560,7 +560,10 @@ static const char *tt_form_default(const CapSchemaField *f){
         case CAP_K_BOOL:                 return "false";
         case CAP_K_STRUCT:               /* no setter yet: stays default */
         case CAP_K_STR:                  /* empty string(s) */
-        case CAP_K_ARR:  return "";      /* array: empty = all zero */
+        case CAP_K_ARR:                  /* array: empty = all zero */
+        case CAP_K_VSTR:                 /* variable string/array: empty */
+        case CAP_K_VARR:
+        case CAP_K_MAP:  return "";      /* map: read-only, stays empty */
         default:         return "0";     /* numeric scalar */
     }
 }
@@ -596,8 +599,8 @@ static int tt_count_elems(const CapSchemaField *f, const char *s){
 
 /* a faint placeholder for an empty, unfocused text field, hinting the expected shape */
 static Clay_String tt_form_hint(const CapSchemaField *f){
-    if (f->kind == CAP_K_STR) return CLAY_STRING("text");
-    if (f->kind == CAP_K_ARR) return CLAY_STRING("comma-separated");
+    if (f->kind == CAP_K_STR || f->kind == CAP_K_VSTR) return CLAY_STRING("text");
+    if (f->kind == CAP_K_ARR || f->kind == CAP_K_VARR) return CLAY_STRING("comma-separated");
     return CLAY_STRING("0");
 }
 
@@ -649,12 +652,13 @@ static void tt_form_send(AppState *app, const Topic *t, int n){
    comes from cap_form_validate). A struct row is a read-only group header (members are the
    inputs). Clicking a text field focuses it. */
 static void tt_form_field_row(AppState *app, const Palette *P, const CapSchemaField *f, int i, int valid){
-    int is_struct = (f->kind == CAP_K_STRUCT);
+    int is_struct = (f->kind == CAP_K_STRUCT || f->kind == CAP_K_MAP);   /* read-only rows */
     int is_bool   = (f->kind == CAP_K_BOOL);
     int focused   = !is_struct && app->form_focus == i && !app->adding_topic;
     int has_val   = app->form_val[i][0] != '\0';
     int bad       = !is_struct && !is_bool && has_val && !valid;   /* typed, but won't parse */
-    int show_count = (f->kind == CAP_K_STR || f->kind == CAP_K_ARR);
+    int show_count = (f->kind == CAP_K_STR || f->kind == CAP_K_ARR
+                   || f->kind == CAP_K_VSTR || f->kind == CAP_K_VARR);
     CLAY({ .id = CLAY_IDI("form_field", (uint32_t)i),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(26)) },
                        .padding = { .left = UISCI(f->depth * 14) },
@@ -686,11 +690,14 @@ static void tt_form_field_row(AppState *app, const Palette *P, const CapSchemaFi
         } else {
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
         }
-        if (show_count){    /* live shape cue: bytes/cap for a string, elements/count for an array */
-            int cur = f->kind == CAP_K_STR ? (int)strlen(app->form_val[i]) : tt_count_elems(f, app->form_val[i]);
-            int cap = f->kind == CAP_K_STR ? (int)f->str_cap : (int)f->count;
-            int over = cur > cap;
-            CLAY_TEXT(ui_fmt("%d/%d", cur, cap), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+        if (show_count){    /* live shape cue: bytes/cap for a string, elements/count for an array
+                               (a variable field has no bound: just the live count) */
+            int is_str = (f->kind == CAP_K_STR || f->kind == CAP_K_VSTR);
+            int cur = is_str ? (int)strlen(app->form_val[i]) : tt_count_elems(f, app->form_val[i]);
+            int cap = f->kind == CAP_K_STR ? (int)f->str_cap : f->kind == CAP_K_ARR ? (int)f->count : 0;
+            int over = cap && cur > cap;
+            CLAY_TEXT(cap ? ui_fmt("%d/%d", cur, cap) : ui_fmt("%d", cur),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
                                           .textColor = (bad || over) ? P->red : P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         }
         CLAY_TEXT(ui_str(f->type), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),

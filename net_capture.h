@@ -206,19 +206,20 @@ enum {
     CAP_K_U8 = 0, CAP_K_U16, CAP_K_U32, CAP_K_U64,
     CAP_K_I8, CAP_K_I16, CAP_K_I32, CAP_K_I64,
     CAP_K_F32, CAP_K_F64, CAP_K_BOOL,
-    CAP_K_ARR, CAP_K_STRUCT, CAP_K_STR
+    CAP_K_ARR, CAP_K_STRUCT, CAP_K_STR,
+    CAP_K_VSTR, CAP_K_VARR, CAP_K_MAP   /* variable kinds: live-sized, ride the message tail */
 };
 
 typedef struct {
     char     name[CAP_TOPIC_CAP];  /* field's own name */
-    char     type[24];             /* display type: "u64", "u8[256]", "struct" */
+    char     type[24];             /* display type: "u64", "u8[256]", "f32[]", "map", "struct" */
     uint8_t  kind;                 /* CAP_K_* of the field itself */
-    uint8_t  elem;                 /* CAP_K_* of an array's element (kind == CAP_K_ARR), else 0 */
+    uint8_t  elem;                 /* CAP_K_* of an array's element (ARR/VARR), else 0 */
     uint16_t count;                /* array element count (kind == CAP_K_ARR), else 0 */
     uint16_t str_cap;              /* string capacity (STR field or STR-element array), else 0 */
     uint8_t  depth;                /* 0 = top level; nested members are one deeper */
-    uint32_t offset;               /* absolute byte offset in a message */
-    uint32_t size;                 /* byte size of the field */
+    uint32_t offset;               /* absolute byte offset in a message; 0 for variable kinds */
+    uint32_t size;                 /* byte size of the field; 0 for variable kinds */
 } CapSchemaField;
 
 typedef struct {

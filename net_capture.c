@@ -231,6 +231,66 @@ static void cap_fmt_arr(char *dst, int cap, int *at, DartBytes a, uint8_t elem, 
     if (j < count) *at = cap_val_append(dst, cap, *at, " ..");
     *at = cap_val_append(dst, cap, *at, "]");
 }
+/* the live element count of a variable array's reflected value */
+static uint16_t cap_varr_count(const DartSchemaFieldInfo *fi, const DartValue *v){
+    uint32_t esz = (fi->elem == DART_STR) ? 2u + fi->str_cap
+                                          : dart_schema_scalar_size((DartSchemaTypeKind)fi->elem);
+    return esz ? (uint16_t)(v->bytes.len / esz) : 0;
+}
+
+/* a map body, "{k=v k2="s" nested={..} ..}"; values by their own tags, depth-capped */
+static void cap_fmt_dyn_value(char *dst, int cap, int *at, const DartValue *v,
+                              int depth, uint16_t max_items);
+static void cap_fmt_map_body(char *dst, int cap, int *at, DartBytes body,
+                             int depth, uint16_t max_items){
+    uint16_t n = dart_map_count(body), i, limit = (max_items && max_items < n) ? max_items : n;
+    *at = cap_val_append(dst, cap, *at, "{");
+    for (i = 0; i < limit && *at < cap - 8; i++){
+        DartString k; DartValue v;
+        if (!dart_map_at(body, i, &k, &v)) break;
+        *at = cap_val_append(dst, cap, *at, i ? " %.*s=" : "%.*s=",
+                             (int)k.len, k.data ? k.data : "");
+        cap_fmt_dyn_value(dst, cap, at, &v, depth, max_items);
+    }
+    if (i < n) *at = cap_val_append(dst, cap, *at, " ..");
+    *at = cap_val_append(dst, cap, *at, "}");
+}
+static void cap_fmt_dyn_value(char *dst, int cap, int *at, const DartValue *v,
+                              int depth, uint16_t max_items){
+    switch ((DartSchemaTypeKind)v->kind){
+        case DART_BOOL: *at = cap_val_append(dst, cap, *at, "%s", v->v.u ? "true" : "false"); break;
+        case DART_U8: case DART_U16: case DART_U32: case DART_U64:
+            *at = cap_val_append(dst, cap, *at, "%llu", (unsigned long long)v->v.u); break;
+        case DART_I8: case DART_I16: case DART_I32: case DART_I64:
+            *at = cap_val_append(dst, cap, *at, "%lld", (long long)v->v.i); break;
+        case DART_F32: case DART_F64:
+            *at = cap_val_append(dst, cap, *at, "%g", v->v.f); break;
+        case DART_VSTR:
+            *at = cap_val_append(dst, cap, *at, "\"%.*s\"", (int)v->bytes.len,
+                                 v->bytes.data ? (const char *)v->bytes.data : ""); break;
+        case DART_VARR: {
+            uint16_t n = dart_map_array_count(v->bytes), j,
+                     limit = (max_items && max_items < n) ? max_items : n;
+            *at = cap_val_append(dst, cap, *at, "[");
+            for (j = 0; j < limit && *at < cap - 8; j++){
+                DartValue e;
+                if (!dart_map_array_at(v->bytes, j, &e)) break;
+                if (j) *at = cap_val_append(dst, cap, *at, " ");
+                if (depth < 4) cap_fmt_dyn_value(dst, cap, at, &e, depth + 1, max_items);
+                else           *at = cap_val_append(dst, cap, *at, "..");
+            }
+            if (j < n) *at = cap_val_append(dst, cap, *at, " ..");
+            *at = cap_val_append(dst, cap, *at, "]");
+            break;
+        }
+        case DART_MAP:
+            if (depth < 4) cap_fmt_map_body(dst, cap, at, v->bytes, depth + 1, max_items);
+            else           *at = cap_val_append(dst, cap, *at, "{..}");
+            break;
+        default: *at = cap_val_append(dst, cap, *at, "?"); break;
+    }
+}
+
 /* one field's value text, from its reflected DartValue */
 static void cap_fmt_value(char *dst, int cap, const DartSchemaFieldInfo *fi, const DartValue *v){
     int at = 0;
@@ -243,8 +303,11 @@ static void cap_fmt_value(char *dst, int cap, const DartSchemaFieldInfo *fi, con
         case DART_F32: case DART_F64:
             snprintf(dst, (size_t)cap, "%g", v->v.f); break;
         case DART_ARR:    dst[0] = '\0'; cap_fmt_arr(dst, cap, &at, v->bytes, fi->elem, fi->count, fi->str_cap, 0, 0); break;
-        case DART_STR:    snprintf(dst, (size_t)cap, "\"%.*s\"", (int)v->bytes.len,
-                                   v->bytes.data ? (const char *)v->bytes.data : ""); break;
+        case DART_VARR:   dst[0] = '\0'; cap_fmt_arr(dst, cap, &at, v->bytes, fi->elem, cap_varr_count(fi, v), fi->str_cap, 0, 0); break;
+        case DART_STR: case DART_VSTR:
+            snprintf(dst, (size_t)cap, "\"%.*s\"", (int)v->bytes.len,
+                     v->bytes.data ? (const char *)v->bytes.data : ""); break;
+        case DART_MAP:    dst[0] = '\0'; cap_fmt_map_body(dst, cap, &at, v->bytes, 0, 0); break;
         case DART_STRUCT: snprintf(dst, (size_t)cap, "{...}"); break;
         default:          snprintf(dst, (size_t)cap, "?"); break;
     }
@@ -306,9 +369,13 @@ static void cap_fmt_value_preview(char *dst, int cap, int *at, const DartSchema 
         }
     } else if (fi->kind == DART_ARR){
         cap_fmt_arr(dst, cap, at, v->bytes, fi->elem, fi->count, fi->str_cap, CAP_PREVIEW_MAX_ITEMS, 1);
-    } else if (fi->kind == DART_STR){
+    } else if (fi->kind == DART_VARR){
+        cap_fmt_arr(dst, cap, at, v->bytes, fi->elem, cap_varr_count(fi, v), fi->str_cap, CAP_PREVIEW_MAX_ITEMS, 1);
+    } else if (fi->kind == DART_STR || fi->kind == DART_VSTR){
         *at = cap_val_append(dst, cap, *at, "\"%.*s\"", (int)v->bytes.len,
                              v->bytes.data ? (const char *)v->bytes.data : "");
+    } else if (fi->kind == DART_MAP){
+        cap_fmt_map_body(dst, cap, at, v->bytes, 0, CAP_PREVIEW_MAX_ITEMS);
     } else if (fi->kind == DART_F32 || fi->kind == DART_F64){
         cap_fmt_float(dst, cap, at, v->v.f);
     } else {
@@ -758,13 +825,17 @@ int cap_publish(Capture *cap, const char *topic, const void *data, size_t len){
     return 1;
 }
 
+#define CAP_FORM_MAX_ELEMS 64   /* variable-array elements the form accepts (a UI bound) */
+#define CAP_FORM_SLACK 2048     /* message-buffer room for a form's variable content */
+
 /* parse one form value into flat field i of the message being built (dart_set_value).
-   Empty keeps the default; a struct row has no value of its own (its members do). */
+   Empty keeps the default; a struct or map row has no value of its own. */
 static int cap_form_set(const DartSchema *sch, uint16_t i, const char *v, uint8_t *buf, size_t size){
     DartSchemaFieldInfo fi; DartValue val; char *end;
     if (!dart_schema_field_at(sch, i, &fi)) return 0;
     while (*v == ' ' || *v == '\t') v++;
-    if (!*v || fi.kind == DART_STRUCT) return 1;          /* empty/struct: the default stays */
+    if (!*v || fi.kind == DART_STRUCT || fi.kind == DART_MAP)
+        return 1;                                         /* empty/struct/map: the default stays */
     memset(&val, 0, sizeof val);
     switch ((DartSchemaTypeKind)fi.kind){
         case DART_BOOL:
@@ -791,13 +862,14 @@ static int cap_form_set(const DartSchema *sch, uint16_t i, const char *v, uint8_
             while (*end == ' ') end++;
             if (*end != '\0') return 0;
             break;
-        case DART_STR:                                    /* the form text IS the content */
+        case DART_STR: case DART_VSTR:                    /* the form text IS the content */
             val.bytes = dart_bytes(v, strlen(v));
             break;
-        case DART_ARR: {                                  /* comma/space-separated elements */
+        case DART_ARR: case DART_VARR: {                  /* comma/space-separated elements */
             uint32_t esz = (fi.elem == DART_STR) ? 2u + fi.str_cap
                                                  : dart_schema_scalar_size((DartSchemaTypeKind)fi.elem);
-            uint8_t *w = (uint8_t *)malloc(fi.size ? fi.size : 1);
+            uint16_t max_n = fi.kind == DART_VARR ? CAP_FORM_MAX_ELEMS : fi.count;
+            uint8_t *w = (uint8_t *)malloc(esz ? (size_t)max_n * esz : 1);
             uint16_t n = 0; const char *p = v; int ok;
             if (!w || !esz){ free(w); return 0; }
             if (fi.elem == DART_STR){                     /* comma-separated strings */
@@ -807,7 +879,7 @@ static int cap_form_set(const DartSchema *sch, uint16_t i, const char *v, uint8_
                     q = p; while (*q && *q != ',') q++;
                     l = (size_t)(q - p);
                     while (l && (p[l-1] == ' ' || p[l-1] == '\t')) l--;
-                    if (n >= fi.count || l > fi.str_cap){ free(w); return 0; }
+                    if (n >= max_n || l > fi.str_cap){ free(w); return 0; }
                     i_dart_le_w16(w + (size_t)n * esz, (uint16_t)l);
                     memcpy(w + (size_t)n * esz + 2, p, l);
                     memset(w + (size_t)n * esz + 2 + l, 0, (size_t)fi.str_cap - l);
@@ -821,7 +893,7 @@ static int cap_form_set(const DartSchema *sch, uint16_t i, const char *v, uint8_
             }
             for (;;){
                 while (*p == ' ' || *p == ',' || *p == '\t') p++;
-                if (!*p || n >= fi.count) break;
+                if (!*p || n >= max_n) break;
                 if (fi.elem == DART_F32 || fi.elem == DART_F64){
                     double d = strtod(p, &end);
                     if (end == p) break;
@@ -862,8 +934,8 @@ int cap_publish_form(Capture *cap, const char *topic, const char *const *values,
     s = cap_sub_find(topic);
     sch = (s && s->ch[s->reliable]) ? dart_channel_schema(s->ch[s->reliable]) : NULL;
     if (!sch){ cap_logf("PUBLISH %s refused: channel carries no schema", topic); return 0; }
-    size = dart_schema_size(sch);
-    buf = (uint8_t *)malloc(size ? size : 1);
+    size = dart_schema_msg_min(sch) + CAP_FORM_SLACK;     /* room for the variable content */
+    buf = (uint8_t *)malloc(size);
     if (!buf) return 0;
     dart_schema_message_default(sch, buf, size);
     nf = dart_schema_field_count(sch);
@@ -874,12 +946,14 @@ int cap_publish_form(Capture *cap, const char *topic, const char *const *values,
         free(buf);
         return 0;
     }
-    if (dart_channel_send(s->ch[s->reliable], dart_bytes(buf, size)) < 0){
-        cap_logf("PUBLISH %s send failed", topic);
-        free(buf);
-        return 0;
+    {   uint32_t msg_len = dart_schema_msg_len(sch, buf, size);
+        if (!msg_len || dart_channel_send(s->ch[s->reliable], dart_bytes(buf, msg_len)) < 0){
+            cap_logf("PUBLISH %s send failed", topic);
+            free(buf);
+            return 0;
+        }
+        cap_ring_push(s, dart_cstr(cap_cfg.name), buf, msg_len, 1, sch);   /* decoded local echo */
     }
-    cap_ring_push(s, dart_cstr(cap_cfg.name), buf, size, 1, sch);   /* decoded local echo */
     free(buf);
     return 1;
 }
@@ -1125,8 +1199,9 @@ static const char *cap_kind_str(uint8_t kind){
         case DART_I32: return "i32"; case DART_I64: return "i64";
         case DART_F32: return "f32"; case DART_F64: return "f64";
         case DART_BOOL: return "bool";
-        case DART_STR: return "string";
+        case DART_STR: case DART_VSTR: return "string";
         case DART_STRUCT: return "struct";
+        case DART_MAP: return "map";
         default: return "?";
     }
 }
@@ -1136,7 +1211,7 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
     DartSchemaFieldInfo fi; uint16_t i, nf = dart_schema_field_count(sch);
     DartString tn = dart_schema_name(sch);
     out->inlined      = 1;
-    out->msg_size     = dart_schema_size(sch);
+    out->msg_size     = dart_schema_msg_min(sch);   /* exact size, or the minimum with variable fields */
     out->total_fields = nf;
     snprintf(out->type_name, sizeof out->type_name, "%.*s", (int)tn.len, tn.data ? tn.data : "");
     for (i = 0; i < nf && out->n_fields < CAP_SCHEMA_FIELDS; i++){
@@ -1149,10 +1224,14 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
             snprintf(f->type, sizeof f->type, "string<%u>[%u]", fi.str_cap, fi.count);
         else if (fi.kind == DART_ARR)
             snprintf(f->type, sizeof f->type, "%s[%u]", cap_kind_str(fi.elem), fi.count);
+        else if (fi.kind == DART_VARR && fi.elem == DART_STR)
+            snprintf(f->type, sizeof f->type, "string<%u>[]", fi.str_cap);
+        else if (fi.kind == DART_VARR)
+            snprintf(f->type, sizeof f->type, "%s[]", cap_kind_str(fi.elem));
         else
             snprintf(f->type, sizeof f->type, "%s", cap_kind_str(fi.kind));
         f->kind    = fi.kind;                                        /* CAP_K_* == DartSchemaTypeKind */
-        f->elem    = (uint8_t)(fi.kind == DART_ARR ? fi.elem : 0);
+        f->elem    = (uint8_t)((fi.kind == DART_ARR || fi.kind == DART_VARR) ? fi.elem : 0);
         f->count   = (uint16_t)(fi.kind == DART_ARR ? fi.count : 0);
         f->str_cap = fi.str_cap;                                     /* set for STR + STR-element arrays */
         f->depth  = (uint8_t)(fi.depth > 255 ? 255 : fi.depth);
@@ -1277,8 +1356,8 @@ int cap_form_validate(const Capture *cap, const char *topic, const char *const *
     if (!node || !topic || !values) return 0;
     sch = cap_topic_schema_parse(node, topic);
     if (!sch) return 0;                                       /* no schema: nothing to judge against */
-    size = dart_schema_size(sch);
-    buf = (uint8_t *)malloc(size ? size : 1);
+    size = dart_schema_msg_min(sch) + CAP_FORM_SLACK;
+    buf = (uint8_t *)malloc(size);
     if (!buf){ dart_schema_free(sch, cap_schema_alloc, NULL); return 0; }
     dart_schema_message_default(sch, buf, size);              /* per-field parse is independent of the rest */
     nf = dart_schema_field_count(sch);

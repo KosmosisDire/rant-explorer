@@ -136,24 +136,41 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         }
         for (k = 0; k < n->n_subs; k++){
             Topic *t = &g_topics[n->subs[k]];
-            if (t->n_subs < UI_MAX_ENDPOINTS) t->subs[t->n_subs++] = ni;
+            if (t->n_subs < UI_MAX_ENDPOINTS){
+                t->sub_rel[t->n_subs] = n->sub_rel[k];
+                t->subs[t->n_subs++]  = ni;
+            }
         }
     }
 
-    /* derive each topic's reliability from its LIVE publishers: reliable only if every
-       publisher we consider offers it (a mix downgrades to best-effort, since a reliable
-       sub would refuse a best-effort publisher and get no data from it). Dropped/gone
-       publishers are ignored unless they are the only ones. This drives both the displayed
-       reliability and the recommended subscribe reliability (reliable_recommend; -1 = no
-       publishers => best-effort). */
+    /* Two reliability rollups per topic, both from the peers' announced interest (so they
+       are correct even when the explorer neither publishes nor subscribes):
+         - reliable_recommend: the reliability to SUBSCRIBE AS. Publisher-driven, because it
+           governs what we can receive (a reliable sub refuses a best-effort publisher).
+           Reliable only if every live publisher offers it. -1 = no publishers.
+         - reliable (the DISPLAYED badge): the publishers define it when present (so a
+           publisher-present topic reads exactly as before); a topic with ONLY subscribers
+           takes THEIR reliability instead, so a reliable subscriber-only topic still reads
+           reliable. has_qos = any endpoint at all (else the badge is a dash).
+       Gone/dropped peers are ignored unless they are the only ones on that axis. */
     for (k = 0; k < n_top; k++){
         Topic *t = &g_topics[k];
-        int j, live = 0, live_all_rel = 1, any_rel = 1, any = 0;
+        int j;
+        int live = 0, live_all_rel = 1, any_rel = 1, any = 0;              /* publishers */
+        int s_live = 0, s_live_all_rel = 1, s_any_rel = 1, s_any = 0;      /* subscribers */
         for (j = 0; j < t->n_pubs; j++){
-            int rel = t->pub_rel[j];
+            int rel  = t->pub_rel[j];
+            int gone = g_nodes[t->pubs[j]].state == NODE_GONE || g_nodes[t->pubs[j]].state == NODE_DROPPED;
             any = 1;
             if (!rel) any_rel = 0;
-            if (g_nodes[t->pubs[j]].state != NODE_GONE && g_nodes[t->pubs[j]].state != NODE_DROPPED){ live++; if (!rel) live_all_rel = 0; }   /* silent peers aren't live publishers */
+            if (!gone){ live++; if (!rel) live_all_rel = 0; }   /* silent peers aren't live publishers */
+        }
+        for (j = 0; j < t->n_subs; j++){        /* subscribers set the badge only when no publisher defines it */
+            int rel  = t->sub_rel[j];
+            int gone = g_nodes[t->subs[j]].state == NODE_GONE || g_nodes[t->subs[j]].state == NODE_DROPPED;
+            s_any = 1;
+            if (!rel) s_any_rel = 0;
+            if (!gone){ s_live++; if (!rel) s_live_all_rel = 0; }
         }
         /* the explorer publishing this topic counts as a live publisher too, so a topic we
            publish reliably to reads RELIABLE (not the peer-only best-effort default) */
@@ -165,7 +182,13 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
                 break;
             }
         t->reliable_recommend = !any ? -1 : (live ? live_all_rel : any_rel);
-        t->reliable        = (t->reliable_recommend == 1);
+        if (any){                               /* publishers define the topic's QoS (unchanged) */
+            t->has_qos = 1; t->reliable = (t->reliable_recommend == 1);
+        } else if (s_any){                      /* subscriber-only: take the subscribers' QoS */
+            t->has_qos = 1; t->reliable = (s_live ? s_live_all_rel : s_any_rel);
+        } else {                                /* no endpoints yet */
+            t->has_qos = 0; t->reliable = 0;
+        }
         t->qos.reliability = t->reliable ? QOS_RELIABLE : QOS_BEST_EFFORT;
     }
 

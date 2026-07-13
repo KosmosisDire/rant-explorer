@@ -633,19 +633,50 @@ int cap_unsubscribe(Capture *cap, const char *topic){
     return 1;
 }
 
+/* Scan the live peer interest for subscribers of `topic`, matched by its 32-bit interest
+   hash (available the moment an announce arrives, no detail fetch needed). Sets *any_sub
+   when some peer subscribes, and returns 1 if any of those subscribers requests reliable.
+   A publisher must OFFER reliable to satisfy a RELIABLE subscriber (RxO: offered >=
+   requested), so the explorer reads this to match a subscriber's QoS when it publishes,
+   even with no other publisher on the network to derive reliability from. */
+static int cap_topic_sub_reliable(DartNode *node, const char *topic, int *any_sub){
+    const DartDiscoveryPeer *peers; uint16_t n_peers = 0, s;
+    uint32_t want_hash;
+    int reliable = 0, seen = 0;
+    if (any_sub) *any_sub = 0;
+    if (!node || !topic || !*topic) return 0;
+    want_hash = (uint32_t)dart_topic_id(topic);
+    peers = dart_node_peers(node, &n_peers);
+    for (s = 0; s < n_peers; s++){
+        DartInterestIter it; DartTopic t;
+        memset(&it, 0, sizeof it);
+        while (dart_node_peer_interest_next(&peers[s], &it, &t)){
+            if (t.is_pub || t.hash != want_hash) continue;   /* subscriber entries for this topic */
+            seen = 1;
+            if (t.reliable) reliable = 1;
+        }
+    }
+    if (any_sub) *any_sub = seen;
+    return reliable;
+}
+
 int cap_declare_publish(Capture *cap, const char *topic){
     DartNode *node = cap ? (DartNode *)cap->rt : NULL;
     CapSub *s = node ? cap_sub_get(topic) : NULL;
-    int was, want;
+    int was, want, any_sub = 0, sub_reliable;
     if (!node || !topic || !*topic) return 0;
     if (!s){ cap_logf("PUBLISH %s refused (topic table full)", topic); return 0; }
     was = s->publishing;
     s->publishing = 1;
-    /* when also subscribed we must reuse the live channel (one identity, one live channel),
-       so the publish rides its reliability; pub-only goes reliable to reach the most subs. */
-    want = s->subscribed ? s->reliable : 1;
+    /* match the network subscribers' QoS: offer reliable if any subscriber requests it,
+       else mirror their best-effort. With no subscriber yet, reliable is the safe default
+       (it satisfies whoever shows up, and the next send re-reconciles). When we also
+       subscribe, one identity means one live channel, so our own reliable subscribe forces
+       reliable too. */
+    sub_reliable = cap_topic_sub_reliable(node, topic, &any_sub);
+    want = (s->subscribed && s->reliable) || sub_reliable || !any_sub;
     if (!cap_sub_reconcile(s, node, want)){ s->publishing = was; cap_logf("PUBLISH %s failed (channel)", topic); return 0; }
-    if (!was) cap_logf("PUBLISH %s declared (pub interest)", topic);
+    if (!was) cap_logf("PUBLISH %s declared (%s pub interest)", topic, want ? "reliable" : "best-effort");
     return 1;
 }
 

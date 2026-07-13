@@ -119,7 +119,7 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
     int sel  = row->has_topic && app->sel_topic >= 0 && app->sel_topic < D->n_topics
                && row->topic == &D->topics[app->sel_topic];
     int live = row->has_topic && row->topic->sub_state != 0;         /* rate/last need the data plane */
-    int qos  = row->has_topic && row->topic->reliable_recommend != -1; /* reliability rides discovery */
+    int qos  = row->has_topic && row->topic->has_qos;                /* reliability rides discovery */
     CLAY({ .id = CLAY_IDI("tree_row", (uint32_t)idx),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(29)) },
                        .padding = { .right = UISCI(10) }, .childGap = UISCI(TT_COL_GAP),
@@ -155,7 +155,7 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
             if (row->has_topic) tt_status_dot(P, row->topic->sub_state);
         }
         /* Rate / Jitter / Last: ride the data plane, so real only while subscribed (dash
-           otherwise); QoS rides discovery, so it shows whenever the topic has a publisher. */
+           otherwise); QoS rides discovery, so it shows whenever the topic has any endpoint. */
         tt_stat_cell(P, UISC(TT_COL_RATE), live ? tt_rate(row->topic->rate_hz) : ui_str(ND_DASH),
                      live && row->topic->rate_hz > 0.0 ? P->dim : P->faint);
         tt_stat_cell(P, UISC(TT_COL_JITTER), live ? tt_jitter(row->topic->jitter_p90_ms) : ui_str(ND_DASH),

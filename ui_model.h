@@ -63,6 +63,7 @@ typedef struct {
     int  pubs[UI_MAX_ENDPOINTS]; int n_pubs;   /* node indices */
     int  subs[UI_MAX_ENDPOINTS]; int n_subs;
     unsigned char pub_rel[UI_MAX_ENDPOINTS];   /* each publisher's offered reliability (parallel to pubs[]) */
+    unsigned char sub_rel[UI_MAX_ENDPOINTS];   /* each subscriber's requested reliability (parallel to subs[]) */
 
     double rate_hz;
     double last_age_s;
@@ -70,7 +71,11 @@ typedef struct {
                                      observed lifetime, not just the visible feed; < 0 = not enough
                                      samples yet (rides the data plane, so real only while subscribed) */
 
-    int    reliable;             /* qos.reliability == QOS_RELIABLE (any publisher offers reliable) */
+    int    reliable;             /* the DISPLAYED QoS: reliable iff every live endpoint (publisher
+                                    offered + subscriber requested) is reliable, so a topic with
+                                    only a reliable subscriber still reads reliable. */
+    int    has_qos;              /* any endpoint (pub OR sub) declares a reliability, so the badge
+                                    is meaningful; 0 = no endpoints yet, show a dash. */
     int    reliable_recommend;   /* the reliability to subscribe AS: reliable only if every
                                     publisher we consider offers it (a mix downgrades to best
                                     effort, since a reliable sub would refuse the best-effort

@@ -1,10 +1,11 @@
-/* Topic tree: build a segment tree from the topics' '/'-separated paths and flatten
-   it into TreeRow[] honoring the app's collapsed-branch set. This is the C port of
-   buildTree()/flatten() in the handoff's data.js. A node can be both a namespace and
-   a topic (e.g. "diagnostics" with child "diagnostics/heartbeat"), so an interior
-   node carries a Topic* when one exists. Rebuilt each frame before the tree renders;
-   the pools are static, so the TreeRow name/path pointers stay valid for the frame.
-   Requires ui_model.h (Dataset/TreeRow) and ui_app.h (the collapsed set). */
+/* Topic tree: build a segment tree from the topics' paths (segments split on '/' OR
+   '.', either works as a namespace separator) and flatten it into TreeRow[] honoring
+   the app's collapsed-branch set. This is the C port of buildTree()/flatten() in the
+   handoff's data.js. A node can be both a namespace and a topic (e.g. "diagnostics"
+   with child "diagnostics/heartbeat"), so an interior node carries a Topic* when one
+   exists. Rebuilt each frame before the tree renders; the pools are static, so the
+   TreeRow name/path pointers stay valid for the frame. Requires ui_model.h
+   (Dataset/TreeRow) and ui_app.h (the collapsed set). */
 #ifndef UI_TREE_H
 #define UI_TREE_H
 
@@ -118,9 +119,9 @@ static void ut_build(const Dataset *D, const char *filter){
         acc[0] = '\0';
         while (*p){
             char seg[CAP_TOPIC_CAP]; int sl = 0;
-            while (*p && *p != '/'){ if (sl < (int)sizeof seg - 1) seg[sl++] = *p; p++; }
+            while (*p && *p != '/' && *p != '.'){ if (sl < (int)sizeof seg - 1) seg[sl++] = *p; p++; }
             seg[sl] = '\0';
-            while (*p == '/') p++;
+            while (*p == '/' || *p == '.') p++;
             if (acc_len && acc_len < (int)sizeof acc - 1) acc[acc_len++] = '/';
             { int k = 0; while (seg[k] && acc_len < (int)sizeof acc - 1) acc[acc_len++] = seg[k++]; }
             acc[acc_len] = '\0';

@@ -63,7 +63,8 @@ typedef struct {
 } Qos;
 
 typedef struct {
-    char path[96];               /* "sensors/lidar/points", '/'-separated tree */
+    char path[96];               /* "sensors/lidar/points"; the tree (ui_tree.h) groups
+                                     segments split on '/' OR '.' */
     Qos  qos;
     int  pubs[UI_MAX_ENDPOINTS]; int n_pubs;   /* node indices */
     int  subs[UI_MAX_ENDPOINTS]; int n_subs;

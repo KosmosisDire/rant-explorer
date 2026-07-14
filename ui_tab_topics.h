@@ -1050,10 +1050,26 @@ static void topic_schema_field_row(const Palette *P, const CapSchemaField *f, in
    prefilters each peer's interest by topic hash, so it is cheap even at many-thousand-topic
    scale and runs live every frame (no cache, no staleness). */
 static CapSchema tt_schema;
+static char      tt_dsl[8192];          /* scratch for the DSL handed to the clipboard */
+static int       tt_dsl_copied_topic = -1;   /* which topic's Copy DSL was last clicked */
+static uint32_t  tt_dsl_copied_ms;      /* when, for the brief "Copied" flash */
 static void topic_schema_section(AppState *app, const Palette *P, const Topic *t){
-    int have, i;
+    int have, i, copied;
     have = app->cap ? cap_topic_schema(app->cap, t->path, &tt_schema) : 0;
-    ui_section_label(P, CLAY_STRING("SCHEMA"));
+    copied = tt_dsl_copied_topic == app->sel_topic && (uint32_t)(g_now_ms - tt_dsl_copied_ms) < 1500u;
+    /* SCHEMA header row: the label, and (when the shape is inlined) a Copy DSL button that
+       puts the topic's schema as compile-ready DSL text onto the system clipboard */
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(22)) },
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+        ui_section_label(P, CLAY_STRING("SCHEMA"));
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+        if (have && tt_schema.inlined && ui_copy_pill(P, copied)
+            && cap_topic_schema_dsl(app->cap, t->path, tt_dsl, sizeof tt_dsl) > 0){
+            SDL_SetClipboardText(tt_dsl);
+            tt_dsl_copied_topic = app->sel_topic;
+            tt_dsl_copied_ms    = g_now_ms;
+        }
+    }
     if (!have){
         CLAY_TEXT(CLAY_STRING("none advertised (raw bytes)"),
                   CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint }));

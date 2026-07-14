@@ -240,4 +240,10 @@ typedef struct {
    (out zeroed). Rebuilt from the live peer view on each call. */
 int  cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out);
 
+/* Spell `topic`'s advertised schema as compile-ready DSL text into out[out_cap] (always
+   NUL-terminated). Returns the text length, or 0 when no inlinable schema is advertised
+   (hash-only or none). Walks the FULL field set, not the display cap; nested structs
+   render as `name: { ... }`. */
+int  cap_topic_schema_dsl(const Capture *cap, const char *topic, char *out, size_t out_cap);
+
 #endif /* NET_CAPTURE_H */

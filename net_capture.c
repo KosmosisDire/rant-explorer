@@ -1206,6 +1206,23 @@ static const char *cap_kind_str(uint8_t kind){
     }
 }
 
+/* a field's DSL type spelling: "u64", "string<33>", "f32[8]", "string<16>[]", "map".
+   A struct is NOT spelled here: in the DSL it is `name: { members }`, handled by the caller. */
+static void cap_field_type_str(char *dst, size_t cap, const DartSchemaFieldInfo *fi){
+    if (fi->kind == DART_STR)
+        snprintf(dst, cap, "string<%u>", fi->str_cap);
+    else if (fi->kind == DART_ARR && fi->elem == DART_STR)
+        snprintf(dst, cap, "string<%u>[%u]", fi->str_cap, fi->count);
+    else if (fi->kind == DART_ARR)
+        snprintf(dst, cap, "%s[%u]", cap_kind_str(fi->elem), fi->count);
+    else if (fi->kind == DART_VARR && fi->elem == DART_STR)
+        snprintf(dst, cap, "string<%u>[]", fi->str_cap);
+    else if (fi->kind == DART_VARR)
+        snprintf(dst, cap, "%s[]", cap_kind_str(fi->elem));
+    else
+        snprintf(dst, cap, "%s", cap_kind_str(fi->kind));
+}
+
 /* fill out->fields from a parsed schema (top-level fields, capped to the UI's bound) */
 static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
     DartSchemaFieldInfo fi; uint16_t i, nf = dart_schema_field_count(sch);
@@ -1218,18 +1235,7 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
         CapSchemaField *f = &out->fields[out->n_fields];
         if (!dart_schema_field_at(sch, i, &fi)) break;
         snprintf(f->name, sizeof f->name, "%.*s", (int)fi.name.len, fi.name.data ? fi.name.data : "");
-        if (fi.kind == DART_STR)
-            snprintf(f->type, sizeof f->type, "string<%u>", fi.str_cap);
-        else if (fi.kind == DART_ARR && fi.elem == DART_STR)
-            snprintf(f->type, sizeof f->type, "string<%u>[%u]", fi.str_cap, fi.count);
-        else if (fi.kind == DART_ARR)
-            snprintf(f->type, sizeof f->type, "%s[%u]", cap_kind_str(fi.elem), fi.count);
-        else if (fi.kind == DART_VARR && fi.elem == DART_STR)
-            snprintf(f->type, sizeof f->type, "string<%u>[]", fi.str_cap);
-        else if (fi.kind == DART_VARR)
-            snprintf(f->type, sizeof f->type, "%s[]", cap_kind_str(fi.elem));
-        else
-            snprintf(f->type, sizeof f->type, "%s", cap_kind_str(fi.kind));
+        cap_field_type_str(f->type, sizeof f->type, &fi);
         f->kind    = fi.kind;                                        /* CAP_K_* == DartSchemaTypeKind */
         f->elem    = (uint8_t)((fi.kind == DART_ARR || fi.kind == DART_VARR) ? fi.elem : 0);
         f->count   = (uint16_t)(fi.kind == DART_ARR ? fi.count : 0);
@@ -1354,6 +1360,19 @@ int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
     if (best) cap_schema_fields(out, best);             /* cached parsed schema: field list */
     dart_node_unlock(node);
     return n_adv > 0;
+}
+
+int cap_topic_schema_dsl(const Capture *cap, const char *topic, char *out, size_t out_cap){
+    DartNode *node = cap ? (DartNode *)cap->rt : NULL;
+    DartSchema *sch;
+    uint32_t n;
+    if (out && out_cap) out[0] = '\0';
+    if (!node || !topic || !*topic || !out || out_cap == 0) return 0;
+    sch = cap_topic_schema_parse(node, topic);   /* full parsed schema (takes the node lock) */
+    if (!sch) return 0;
+    n = dart_schema_print(sch, out, out_cap);    /* the library spells the DSL */
+    dart_schema_free(sch, cap_schema_alloc, NULL);
+    return (int)n;
 }
 
 /* Live per-field validity for the publish form. Parses the topic's advertised schema

@@ -311,6 +311,7 @@ int main(int argc, char **argv){
             app.sel_topic = g_data.n_topics ? g_data.n_topics - 1 : 0;
 
         g_caret_on = ((now / 500) % 2) == 0;   /* composer text-cursor blink (2 Hz) */
+        g_now_ms   = (uint32_t)now;             /* transient UI feedback (e.g. "Copied" flash) */
         ui_strpool_reset();
         uint64_t r0 = SDL_GetPerformanceCounter();
         Clay_BeginLayout();

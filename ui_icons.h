@@ -27,6 +27,7 @@ typedef enum {
     ICON_CHEVRON_LEFT,   /* back (inspector: message -> topic) */
     ICON_PLUS,           /* add a new topic */
     ICON_CHECK,          /* column menu: a shown field */
+    ICON_COPY,           /* copy the schema DSL to the clipboard */
     ICON_COUNT
 } IconId;
 
@@ -77,6 +78,7 @@ static const char *const UI_ICON_SVG[ICON_COUNT] = {
     /* CHEV_LF */ UI_ICON("<path d=\"m15 18-6-6 6-6\"/>"),
     /* PLUS   */ UI_ICON("<path d=\"M5 12h14\"/><path d=\"M12 5v14\"/>"),
     /* CHECK  */ UI_ICON("<path d=\"M20 6 9 17l-5-5\"/>"),
+    /* COPY   */ UI_ICON("<rect width=\"14\" height=\"14\" x=\"8\" y=\"8\" rx=\"2\" ry=\"2\"/><path d=\"M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2\"/>"),
 };
 
 /* Icons rasterize at a supersample of their on-screen size, then SDL linear-shrinks

@@ -15,6 +15,7 @@
 static bool g_pointer_pressed = false;   /* left mouse pressed this frame; main sets it */
 static bool g_right_pressed = false;     /* right mouse pressed this frame (context menus) */
 static bool g_caret_on = true;           /* text-cursor blink phase; main sets it from the clock */
+static uint32_t g_now_ms = 0;            /* monotonic ms this frame; main sets it (transient feedback) */
 static float g_pointer_x = 0.0f, g_pointer_y = 0.0f;   /* pointer position, physical px; main sets it */
 static float g_view_w = 0.0f, g_view_h = 0.0f;         /* render output size, physical px; main sets it */
 
@@ -77,6 +78,29 @@ static bool ui_icon_button(const Palette *P, IconId id, float icon_px, float box
         hov = Clay_Hovered();
         if (hov && g_pointer_pressed) clicked = true;
         ui_icon(id, icon_px, hov ? hover_fg : fg);
+    }
+    return clicked;
+}
+
+/* a small copy-to-clipboard pill: copy icon + label, dim -> text on hover. After a copy the
+   caller passes copied=1 for a moment, flipping it to a green check + "Copied". Click = true. */
+static bool ui_copy_pill(const Palette *P, int copied){
+    bool clicked = false, hov;
+    Clay_Color fg;
+    CLAY({ .layout = { .sizing = { .height = CLAY_SIZING_FIXED(UISC(22)) },
+                       .padding = { .left = (uint16_t)UISC(7), .right = (uint16_t)UISC(8) },
+                       .childGap = (uint16_t)UISC(5),
+                       .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
+           .backgroundColor = Clay_Hovered() ? P->panel2 : UI_NONE,
+           .cornerRadius = CLAY_CORNER_RADIUS(UISC(4)),
+           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = copied ? P->green : P->border } }) {
+        hov = Clay_Hovered();
+        if (hov && g_pointer_pressed) clicked = true;
+        fg = copied ? P->green : (hov ? P->text : P->dim);
+        ui_icon(copied ? ICON_CHECK : ICON_COPY, 12, fg);
+        CLAY_TEXT(copied ? CLAY_STRING("Copied") : CLAY_STRING("Copy DSL"),
+                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_CAPTION), .textColor = fg,
+                                     .wrapMode = CLAY_TEXT_WRAP_NONE }));
     }
     return clicked;
 }

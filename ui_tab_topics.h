@@ -19,6 +19,7 @@
 static CapFeedItem tt_feed[CAP_FEED_MAX];
 static int         tt_feed_n, tt_subscribed, tt_sub_error, tt_sub_reliable;
 static uint32_t    tt_msgs, tt_drops;
+static CapSchema   tt_feed_schema;   /* the topic's main schema, for picking the feed's column template */
 
 /* topic status light: hollow grey not subscribed, green subscribed, red dropping/erroring */
 static void tt_status_dot(const Palette *P, int sub_state){
@@ -874,8 +875,14 @@ static void topics_feed(AppState *app, const Palette *P){
                 ui_placeholder(P, tt_subscribed ? CLAY_STRING("waiting for messages...")
                                                 : CLAY_STRING("subscribe to see live messages"));
             } else {
-                /* columns come from the newest decoded sample (its fields[] index maps 1:1 to
-                   every sample of this schema); a schema-less feed shows one payload column */
+                /* columns come from a decoded sample of the topic's MAIN schema (the widest
+                   compatible one, exactly what the inspector shows via cap_topic_schema), not
+                   merely the newest decoded sample: a subscriber publishing a SUBSET of the
+                   schema must not narrow the available columns to its fewer fields. A sample of
+                   the main schema matches its field count and root type; fall back to the newest
+                   decoded sample when the main schema is hash-only or not yet in the feed. A
+                   schema-less feed shows one payload column. Its fields[] index maps 1:1 across
+                   every sample of that schema, so the columns drive every row. */
                 int   n_cols = 0, tmpl = -1, j, c, n_vis = 0, raw;
                 int   field_budget, time_budget;
                 float mono_adv = tt_name_w("00000000") / 8.0f;
@@ -884,6 +891,12 @@ static void topics_feed(AppState *app, const Palette *P){
                 time_budget = (int)((UISC(TT_TIME_W) - UISC(TT_CELL_PADL + 2)) / mono_adv);
                 if (time_budget < 1) time_budget = 1;
                 for (j = tt_feed_n - 1; j >= 0; j--) if (tt_feed[j].decoded){ tmpl = j; break; }
+                if (app->cap && cap_topic_schema(app->cap, t->path, &tt_feed_schema)
+                    && tt_feed_schema.inlined)
+                    for (j = tt_feed_n - 1; j >= 0; j--)
+                        if (tt_feed[j].decoded
+                            && tt_feed[j].total_fields == tt_feed_schema.total_fields
+                            && !strcmp(tt_feed[j].type_name, tt_feed_schema.type_name)){ tmpl = j; break; }
                 if (tmpl >= 0) n_cols = tt_build_columns(&tt_feed[tmpl], tt_cols, CAP_MSG_FIELDS);
 
                 /* seed the visible set to the first TT_TABLE_COLS fields when the topic changes;

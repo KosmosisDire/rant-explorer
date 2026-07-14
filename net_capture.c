@@ -1241,52 +1241,33 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
     }
 }
 
-/* the topic's advertised schema, from the node's greedy detail cache (fetch_details):
-   walk peers x interest for an entry whose fetched name equals the topic and read the
-   cached parsed schema. The caller frees the returned copy via cap_schema_alloc (the
-   cached one is node-owned, so hand back a reparse of its canonical wire). NULL when
-   nobody advertises one (or details are still in flight). */
-static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic){
+/* Pick a topic's MAIN schema: the widest compatible one advertised by any endpoint
+   (publisher OR subscriber), preferring a publisher since it owns the wire bytes. This is
+   the SINGLE source of truth for a topic's schema, so the schema DISPLAY (cap_topic_schema),
+   the CHANNEL the explorer adopts to subscribe/publish (cap_sub_reconcile via
+   cap_topic_schema_parse), and therefore the feed's decode + column set all agree. Picking
+   the first-found schema instead let a subscriber advertising a SUBSET make the explorer
+   adopt (and decode every message down to) the narrower schema, while the inspector showed
+   the wider one -- the feed then offered only the subset's columns.
+   Returns the node-owned parsed schema (valid while the node lock is held; NULL = hash-only
+   or nobody advertises one). The node lock MUST be held by the caller. The optional
+   out-params report the winning hash, the source endpoint name, and the advertiser count /
+   structural-conflict flag (display only). */
+static const DartSchema *cap_topic_pick_schema(DartNode *node, const char *topic,
+                              uint64_t *out_hash, char *from, size_t from_cap,
+                              int *n_advertisers, int *hash_conflict){
     const DartDiscoveryPeer *peers; uint16_t n_peers = 0, s;
     size_t tlen = topic ? strlen(topic) : 0;
     uint32_t want_hash;
-    DartSchema *found = NULL;
+    const DartSchema *best = NULL;
+    int best_is_pub = 0, advertisers = 0, conflict = 0;
+    uint64_t best_hash = 0;
+    if (out_hash) *out_hash = 0;
+    if (from && from_cap) from[0] = '\0';
+    if (n_advertisers) *n_advertisers = 0;
+    if (hash_conflict) *hash_conflict = 0;
     if (!node || tlen == 0) return NULL;
     want_hash = (uint32_t)dart_topic_id(topic);
-    dart_node_lock(node);   /* the zero-copy peer view vs the service thread */
-    peers = dart_node_peers(node, &n_peers);
-    for (s = 0; s < n_peers && !found; s++){
-        DartInterestIter it; DartTopic t;
-        memset(&it, 0, sizeof it);
-        while (dart_node_peer_interest_next(&peers[s], &it, &t)){
-            DartString nm;
-            const DartSchema *sch;
-            if (t.hash != want_hash) continue;   /* cheap prefilter: the name lookup below is O(topics) */
-            nm = dart_node_peer_topic_name(node, peers[s].id, t.alias);
-            if (nm.len != tlen || memcmp(nm.data, topic, tlen) != 0) continue;   /* confirm vs a hash collision */
-            sch = dart_node_peer_topic_schema(node, peers[s].id, t.alias, NULL);
-            if (!sch) continue;
-            {   DartBytes wire = dart_schema_wire(sch);
-                found = dart_schema_parse(wire.data, wire.len, cap_schema_alloc, NULL);
-                break;
-            }
-        }
-    }
-    dart_node_unlock(node);
-    return found;
-}
-
-int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
-    DartNode *node = cap ? (DartNode *)cap->rt : NULL;
-    const DartDiscoveryPeer *peers; uint16_t n_peers = 0, s;
-    size_t tlen = topic ? strlen(topic) : 0;
-    uint32_t want_hash;
-    const DartSchema *best = NULL;   /* parsed wire schema of the shown hash (NULL = hash-only) */
-    int best_is_pub = 0, found = 0;
-    memset(out, 0, sizeof *out);
-    if (!node || tlen == 0) return 0;
-    want_hash = (uint32_t)dart_topic_id(topic);
-    dart_node_lock(node);   /* the zero-copy peer view vs the service thread */
     peers = dart_node_peers(node, &n_peers);
     for (s = 0; s < n_peers; s++){
         const DartDiscoveryPeer *dp = &peers[s];
@@ -1305,41 +1286,74 @@ int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
             if (nm.len != tlen || memcmp(nm.data, topic, tlen) != 0) continue;
             sch = dart_node_peer_topic_schema(node, dp->id, t.alias, &hash);
             if (!hash) continue;                        /* untyped endpoint */
-            if (!found){                                /* first advertiser: adopt it */
-                found = 1; out->n_advertisers = 1; take = 1;
-            } else if (hash == out->hash){              /* identical schema: agree */
-                out->n_advertisers++;
+            if (advertisers == 0){                      /* first advertiser: adopt it */
+                advertisers = 1; take = 1;
+            } else if (hash == best_hash){              /* identical schema: agree */
+                advertisers++;
                 /* upgrade the shown source to a publisher (owns the wire) or, if we only
                    had the hash before, to the parsed form so the field list can render */
                 take = (t.is_pub && !best_is_pub) || (sch && !best);
             } else if (best && sch){
                 /* DIFFERENT hash but structurally compatible is NOT a conflict: subset
                    binding lets a narrower reader consume a wider writer (dart_schema_subset,
-                   the same gate the C matcher runs). Show the WIDER schema, preferring a
+                   the same gate the C matcher runs). Take the WIDER schema, preferring a
                    publisher since it owns the actual wire bytes. */
                 int best_narrower = dart_schema_subset(best, sch);   /* best subset of sch: sch is wider */
                 int new_narrower  = dart_schema_subset(sch, best);   /* sch subset of best: best is wider */
                 if (!best_narrower && !new_narrower){   /* neither reads the other: real conflict */
-                    out->hash_conflict = 1;
+                    conflict = 1;
                     continue;
                 }
-                out->n_advertisers++;
+                advertisers++;
                 take = (t.is_pub && !best_is_pub)                    /* publisher wins the wire */
                     || (t.is_pub == best_is_pub && best_narrower);   /* same role: the wider wins */
             } else {                                    /* one side hash-only: cannot prove subset */
-                out->hash_conflict = 1;
+                conflict = 1;
                 continue;
             }
             if (take){
-                best = sch; best_is_pub = t.is_pub; out->hash = hash;
-                snprintf(out->from, sizeof out->from, "%.*s", (int)dp->name.len,
-                         dp->name.data ? dp->name.data : "");
+                best = sch; best_is_pub = t.is_pub; best_hash = hash;
+                if (from && from_cap)
+                    snprintf(from, from_cap, "%.*s", (int)dp->name.len, dp->name.data ? dp->name.data : "");
             }
         }
     }
+    if (out_hash)      *out_hash      = best_hash;
+    if (n_advertisers) *n_advertisers = advertisers;
+    if (hash_conflict) *hash_conflict = conflict;
+    return best;
+}
+
+/* the topic's MAIN schema (see cap_topic_pick_schema) as a freeable parsed copy: the
+   cached one is node-owned, so hand back a reparse of its canonical wire. The caller frees
+   it via cap_schema_alloc. NULL when nobody advertises one (or details are still in
+   flight). Used for the CHANNEL the explorer adopts, so it decodes at the same width the
+   inspector shows. */
+static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic){
+    const DartSchema *best; DartSchema *copy = NULL;
+    if (!node || !topic || !*topic) return NULL;
+    dart_node_lock(node);   /* the zero-copy peer view + node-owned schema vs the service thread */
+    best = cap_topic_pick_schema(node, topic, NULL, NULL, 0, NULL, NULL);
+    if (best){
+        DartBytes wire = dart_schema_wire(best);
+        copy = dart_schema_parse(wire.data, wire.len, cap_schema_alloc, NULL);
+    }
+    dart_node_unlock(node);
+    return copy;
+}
+
+int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
+    DartNode *node = cap ? (DartNode *)cap->rt : NULL;
+    const DartSchema *best; int n_adv = 0;
+    memset(out, 0, sizeof *out);
+    if (!node || !topic || !*topic) return 0;
+    dart_node_lock(node);   /* the zero-copy peer view vs the service thread */
+    best = cap_topic_pick_schema(node, topic, &out->hash, out->from, sizeof out->from,
+                                 &n_adv, &out->hash_conflict);
+    out->n_advertisers = n_adv;
     if (best) cap_schema_fields(out, best);             /* cached parsed schema: field list */
     dart_node_unlock(node);
-    return found;
+    return n_adv > 0;
 }
 
 /* Live per-field validity for the publish form. Parses the topic's advertised schema

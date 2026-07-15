@@ -100,7 +100,8 @@ int main(int argc, char **argv){
         fprintf(stderr, "SDL_CreateWindowAndRenderer failed: %s\n", SDL_GetError());
         return 1;
     }
-    SDL_SetRenderVSync(ren, 0);
+    SDL_SetRenderVSync(ren, 1);   /* the node's service thread owns the poll now, so the
+                                     render loop no longer drives it: pace to the display */
     SDL_StartTextInput(win);   /* deliver SDL_EVENT_TEXT_INPUT for the Topics message composer */
 
     dpi = SDL_GetWindowPixelDensity(win);   /* physical px per logical px (1.0 = 100%) */
@@ -147,8 +148,8 @@ int main(int argc, char **argv){
     app.cap = &cap;          /* lets the Topics tab subscribe and read the live feed */
 
     last_ticks = SDL_GetTicks();
-    /* optional readout (set DART_UI_FPS=1): the node poll is once per frame, so this fps IS
-       the discovery poll rate; render-ms is the per-frame layout+text work, vsync excluded. */
+    /* optional readout (set DART_UI_FPS=1): the service thread owns the poll, so this fps is
+       just the (vsync-paced) render rate; render-ms is the per-frame layout+text work. */
     int      fps_show = getenv("DART_UI_FPS") != NULL;
     uint64_t fps_t0 = last_ticks; int fps_frames = 0; double fps_render_ms = 0.0;
     for (;;){

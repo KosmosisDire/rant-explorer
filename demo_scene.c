@@ -39,9 +39,9 @@ static unsigned long long now_ms(void){
 #endif
 }
 
-/* a publishing channel: its handle, name, period, and running sequence number */
+/* a publishing topic: its handle, name, period, and running sequence number */
 typedef struct {
-    DartChannel       *ch;
+    DartTopic       *ch;
     const char        *topic;
     unsigned           period_ms;
     unsigned           seq;
@@ -75,7 +75,7 @@ static int reliable(const char *path){
 
 typedef struct { const char *name; const char **pubs; const char **subs; } Profile;
 
-/* open the node, declare its interest, and record its pub channels into pubs[] (up to
+/* open the node, declare its interest, and record its pub topics into pubs[] (up to
    MAX_PUBS) so the main loop can publish to them. *n_pubs gets the count. */
 static DartNode *open_node(const Profile *p, uint16_t domain, const char *ifc,
                            PubCh *pubs, int *n_pubs){
@@ -84,11 +84,11 @@ static DartNode *open_node(const Profile *p, uint16_t domain, const char *ifc,
     int i;
     *n_pubs = 0;
     n = dart_node_open(&mem, p->name, NULL, NULL, &(DartNodeOpts){
-        .domain = domain, .max_channels = 16,
+        .domain = domain, .max_topics = 16,
         .net = { .multicast_interface = ifc } });
     if (!n){ fprintf(stderr, "  open %s failed\n", p->name); return NULL; }
     for (i = 0; p->pubs && p->pubs[i]; i++){
-        DartChannel *ch = dart_node_create_channel(n, p->pubs[i], DART_PUB_ONLY, NULL, &(DartChannelOpts){
+        DartTopic *ch = dart_node_create_topic(n, p->pubs[i], DART_PUB_ONLY, NULL, &(DartTopicOpts){
             .qos = { .reliability = reliable(p->pubs[i]) ? DART_RELIABLE : DART_BEST_EFFORT,
                      .keep_last = 16 } });
         if (ch && *n_pubs < MAX_PUBS){
@@ -98,7 +98,7 @@ static DartNode *open_node(const Profile *p, uint16_t domain, const char *ifc,
         }
     }
     for (i = 0; p->subs && p->subs[i]; i++)
-        dart_node_create_channel(n, p->subs[i], DART_SUB_ONLY, NULL, &(DartChannelOpts){
+        dart_node_create_topic(n, p->subs[i], DART_SUB_ONLY, NULL, &(DartTopicOpts){
             .qos = { .reliability = reliable(p->subs[i]) ? DART_RELIABLE : DART_BEST_EFFORT } });
     return n;
 }
@@ -167,7 +167,7 @@ int main(int argc, char **argv){
                                    (double)(t - start_ms) / 1000.0);
                 if (len < 0) len = 0;
                 if (len > (int)sizeof buf) len = (int)sizeof buf;
-                dart_channel_send(pubs[i].ch, dart_bytes(buf, (size_t)len));
+                dart_topic_send(pubs[i].ch, dart_bytes(buf, (size_t)len));
                 pubs[i].seq++;
                 pubs[i].next_ms = t + pubs[i].period_ms;
             }

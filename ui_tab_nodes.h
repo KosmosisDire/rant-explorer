@@ -170,7 +170,7 @@ static void node_endpoint_row(const Palette *P, Clay_String path, int reliable){
 }
 
 static void node_endpoint_list(const Palette *P, const Dataset *D,
-                               const int *topic_idx, const unsigned char *rel, int n){
+                               const int *topic_indices, const unsigned char *rel, int n){
     int i;
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM, .childGap = UISCI(5) } }) {
@@ -179,7 +179,7 @@ static void node_endpoint_list(const Palette *P, const Dataset *D,
                                                              .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         }
         for (i = 0; i < n; i++){
-            const Topic *t = &D->topics[topic_idx[i]];
+            const Topic *t = &D->topics[topic_indices[i]];
             node_endpoint_row(P, ui_str(t->path), rel[i]);
         }
     }

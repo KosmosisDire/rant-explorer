@@ -61,7 +61,7 @@ typedef enum { CAP_ST_ACTIVE = 0, CAP_ST_DROPPED = 1, CAP_ST_GONE = 2 } CapState
 
 typedef struct {
     char     name[CAP_TOPIC_CAP];
-    uint16_t alias;          /* the advertiser's local channel index */
+    uint16_t index;          /* the advertiser's local topic index */
     int      reliable;       /* offered (pub) / requested (sub) reliability */
 } CapEndpoint;
 
@@ -88,7 +88,7 @@ typedef struct {
     char     name[CAP_TOPIC_CAP];
     int      active;         /* 1 = a live subscription right now */
     int      publishing;     /* 1 = the explorer is publishing to this topic */
-    int      reliable;       /* the live channel's reliability (the reliability we offer/request) */
+    int      reliable;       /* the live topic's reliability (the reliability we offer/request) */
     int      error;          /* 1 = dropped messages or a QoS/oversize error */
     uint32_t n_msgs;         /* messages received on this subscription */
     uint32_t n_drops;        /* messages the reliable layer reported skipped */
@@ -116,7 +116,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out);
 /* ------------------------------------------------------------------- live feed
    The explorer can join a topic's data plane on demand: cap_subscribe creates (or
    reactivates) a real DART subscriber for `topic`, so matching publishers start
-   sending it data; cap_unsubscribe flips that channel inactive. reliable should
+   sending it data; cap_unsubscribe flips that topic inactive. reliable should
    mirror the topic's advertised reliability (a reliable sub gets drop reporting; a
    best-effort sub matches the widest set of publishers). Both return 1 on success.
    These mutate node state, so call them from the same thread as cap_poll. */
@@ -124,13 +124,13 @@ int  cap_subscribe(Capture *cap, const char *topic, int reliable);
 int  cap_unsubscribe(Capture *cap, const char *topic);
 
 /* Declare a publish interest on a topic without sending: creates (or reuses) the topic's
-   publisher channel and advertises it, so subscribers match the explorer as a publisher.
+   publisher topic and advertises it, so subscribers match the explorer as a publisher.
    Used when a topic is created in the UI. Returns 1 ok. */
 int  cap_declare_publish(Capture *cap, const char *topic);
 
 /* Publish one message to a topic from the observer node. Creates (or reuses) a publisher
-   for the topic; if we are also subscribed it rides the same channel (so one identity keeps
-   one live channel), otherwise it publishes reliable to reach the most subscribers. The
+   for the topic; if we are also subscribed it rides the same topic (so one identity keeps
+   one live topic), otherwise it publishes reliable to reach the most subscribers. The
    message is echoed into the topic's own feed (mine=1) so the sender sees it. Returns 1 ok. */
 int  cap_publish(Capture *cap, const char *topic, const void *data, size_t len);
 
@@ -138,7 +138,7 @@ int  cap_publish(Capture *cap, const char *topic, const void *data, size_t len);
    field of the topic's schema in field order (the publish form). Empty/NULL values keep
    the canonical default (zero); scalars parse by kind ("42", "-1.5", "true"); arrays take
    comma/space-separated numbers (at most the element count, the rest zero); struct fields
-   stay default (no setter yet). Requires the topic's live channel to carry the schema
+   stay default (no setter yet). Requires the topic's live topic to carry the schema
    (created while a publisher advertised one). Returns 1, or 0 with the reason logged. */
 int  cap_publish_form(Capture *cap, const char *topic, const char *const *values, int n_values);
 

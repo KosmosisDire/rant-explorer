@@ -1,8 +1,8 @@
 /* Live DART observer, built on a real NODE (not bare discovery). The node owns the
    discovery->transport wiring and decodes every peer's announce-metadata overlay, so
    this TU reads peers back through the node's peer API (dart_node_peers) and never
-   parses the overlay itself. It runs with no channels of its own (it publishes and
-   subscribes nothing); a generous channel reserve only sizes discovery's incoming
+   parses the overlay itself. It runs with no topics of its own (it publishes and
+   subscribes nothing); a generous topic reserve only sizes discovery's incoming
    overlay buffer so we can hold peers that advertise many topics.
 
    Compiled as its own TU (see net_capture.h for why) and owns the DART implementation.
@@ -29,9 +29,9 @@
 
 #define CAP_MAX_PEERS         64
 #define CAP_MAX_TOPICS        16000  /* pub or sub interest entries captured per peer (>= wire ceiling) */
-#define CAP_OBSERVER_CHANNELS 64     /* node channel reserve: our OWN subscriptions only (<=2 channels per
+#define CAP_OBSERVER_CHANNELS 64     /* node topic reserve: our OWN subscriptions only (<=2 topics per
                                         topic, see CAP_MAX_SUBS = 32). Deliberately NOT sized to a big
-                                        peer's topic count: max_channels also reserves per-channel history
+                                        peer's topic count: max_topics also reserves per-topic history
                                         buffers, so a large value costs hundreds of MB. A many-topic peer
                                         whose announce blob exceeds our initial accept bound is handled by
                                         the node's self-heal instead (it reads the blob's true length, grows
@@ -44,7 +44,7 @@ typedef enum { CAP_ACTIVE = 0, CAP_DROPPED = 1, CAP_GONE = 2 } CapPeerState;
 
 typedef struct {
     char     name[DART_TOPIC_NAME_MAX + 1];
-    uint16_t alias;
+    uint16_t index;
     int      reliable;       /* offered (pub) / requested (sub): flags bit 0 */
 } CapTopic;
 
@@ -88,12 +88,12 @@ static Config  cap_cfg;          /* echoed into the snapshot for display */
 
 /* THREADING. The node's SERVICE THREAD (dart_node_start) owns discovery/RX/timers, so
    the poll cadence is independent of the UI frame rate. Message content never runs
-   there: every explorer channel is QUEUED (consumer queues), and cap_poll drains the
+   there: every explorer topic is QUEUED (consumer queues), and cap_poll drains the
    queues on the UI thread each frame (dart_node_dispatch -> cap_on_message), so the
    feed rings and their metrics stay UI-thread-owned with no locking. Only cap_on_event
    still fires on the service thread (peer/log/error bookkeeping); it always runs WITH
    the node lock held, so the shared bits (the log ring, cap_peers, the cap_subs
-   channel bookkeeping) are serialized by bracketing the UI side's access with
+   topic bookkeeping) are serialized by bracketing the UI side's access with
    dart_node_lock/dart_node_unlock (cap_node below is that handle). The bracket is not
    nestable (an inner unlock releases the outer hold), so bracketed code never calls
    another bracketing helper and never logs. */
@@ -104,14 +104,14 @@ static void *cap_schema_alloc(void *user, void *ptr, size_t size);          /* d
 static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic);/* defined below */
 
 /* one observer-side topic the explorer is using: a ring of recent messages plus the DART
-   channel(s) wiring it up. A channel's reliability is FIXED at creation, but our wanted
-   reliability can change as publishers come and go, so a topic owns up to TWO channels
+   topic(s) wiring it up. A topic's reliability is FIXED at creation, but our wanted
+   reliability can change as publishers come and go, so a topic owns up to TWO topics
    (ch[0] best-effort, ch[1] reliable), created on demand, with exactly one live at a time.
-   That live channel's ROLE is the union of what we want: SUB_ONLY (receive), PUB_ONLY
-   (send), or PUBSUB (both) -- one channel does both directions, since two live channels of
+   That live topic's ROLE is the union of what we want: SUB_ONLY (receive), PUB_ONLY
+   (send), or PUBSUB (both) -- one topic does both directions, since two live topics of
    the same identity would misroute. cap_sub_reconcile keeps it in sync. The message/event
-   callbacks find the topic by either channel's local index. */
-#define CAP_MAX_SUBS 32              /* distinct topics in use (each may own 2 channels) */
+   callbacks find the topic by either topic's local index. */
+#define CAP_MAX_SUBS 32              /* distinct topics in use (each may own 2 topics) */
 
 typedef struct {
     double   t_s;
@@ -130,12 +130,12 @@ typedef struct {
 typedef struct {
     int          used;
     int          subscribed;             /* user wants to receive (drives the topic light) */
-    int          publishing;             /* user has sent here, so the channel stays PUB-capable */
-    int          error;                  /* a QoS-incompatible / oversize event hit the live channel */
-    int          reliable;               /* reliability of the currently live channel (0/1) */
+    int          publishing;             /* user has sent here, so the topic stays PUB-capable */
+    int          error;                  /* a QoS-incompatible / oversize event hit the live topic */
+    int          reliable;               /* reliability of the currently live topic (0/1) */
     char         name[DART_TOPIC_NAME_MAX + 1];
-    DartChannel *ch[2];                  /* [0] best-effort, [1] reliable; NULL until first needed */
-    uint16_t     index[2];               /* their channel indices (valid where ch[i] != NULL) */
+    DartTopic *ch[2];                  /* [0] best-effort, [1] reliable; NULL until first needed */
+    uint16_t     index[2];               /* their topic indices (valid where ch[i] != NULL) */
     unsigned long long n_msgs;
     unsigned long long n_drops;
     uint32_t     uid_next;               /* next message uid (expand/collapse key) */
@@ -342,11 +342,11 @@ static uint16_t cap_field_skip(const DartSchema *s, uint16_t nf, uint16_t idx){
    CAP_PREVIEW_MAX_ITEMS shown, " .." past that) recursively up to CAP_PREVIEW_MAX_DEPTH
    levels of nesting; deeper structs fold to "{...}" */
 static void cap_fmt_value_preview(char *dst, int cap, int *at, const DartSchema *s, DartBytes data,
-                                  uint16_t nf, uint16_t field_idx, const DartSchemaFieldInfo *fi,
+                                  uint16_t nf, uint16_t field_index, const DartSchemaFieldInfo *fi,
                                   const DartValue *v){
     if (fi->kind == DART_STRUCT){
         if (fi->depth < CAP_PREVIEW_MAX_DEPTH){
-            uint16_t idx = (uint16_t)(field_idx + 1);
+            uint16_t idx = (uint16_t)(field_index + 1);
             int shown = 0;
             *at = cap_val_append(dst, cap, *at, "{");
             while (idx < nf){
@@ -546,15 +546,15 @@ static CapPeer *cap_peer_get(uint32_t id){
 }
 
 /* the node's message sink: append a delivered message to its topic ring. Every explorer
-   channel is queued, so this only ever runs on the UI thread (cap_poll's dispatch) --
+   topic is queued, so this only ever runs on the UI thread (cap_poll's dispatch) --
    the rings and their metrics need no locking. We keep only a short payload preview. */
 static void cap_on_message(const DartMsg *msg){
-    CapSub *s = cap_sub_by_index(msg->channel_id);
+    CapSub *s = cap_sub_by_index(msg->topic_index);
     if (!s) return;
     /* jitter from the POLL-side arrival stamp, not from when this frame got around to
        dispatching: a frame-paced consumer must never quantize inter-arrival times */
     cap_jitter_update(s, (double)msg->recv_us / 1e6);
-    cap_ring_push(s, msg->sender_name, msg->data.data, msg->data.len, 0, msg->schema);
+    cap_ring_push(s, msg->publisher_name, msg->data.data, msg->data.len, 0, msg->schema);
     s->n_msgs++;
 }
 
@@ -585,16 +585,16 @@ static void cap_on_event(const DartEvent *ev){
         cap_logf("DOWN  id=%u", ev->peer);
         break; }
     case DART_MSG_LOST: {                            /* reliable subscriber skipped past a gap */
-        CapSub *s = cap_sub_by_index(ev->channel);
+        CapSub *s = cap_sub_by_index(ev->topic);
         if (s) s->n_drops += ev->lost_count;
-        cap_logf("        LOST  ch=%u peer=%u first=%llu count=%llu", ev->channel, ev->peer,
+        cap_logf("        LOST  ch=%u peer=%u first=%llu count=%llu", ev->topic, ev->peer,
                  (unsigned long long)ev->lost_first, (unsigned long long)ev->lost_count);
         break; }
-    case DART_ERROR: {                               /* every failure funnels here; mark the sub if channel-scoped */
+    case DART_ERROR: {                               /* every failure funnels here; mark the sub if topic-scoped */
         char line[160];
         if (ev->error == DART_E_QOS_INCOMPATIBLE || ev->error == DART_E_SCHEMA_MISMATCH ||
             ev->error == DART_E_MSG_TOO_BIG){
-            CapSub *s = cap_sub_by_index(ev->channel);
+            CapSub *s = cap_sub_by_index(ev->topic);
             if (s) s->error = 1;
         }
         cap_logf("        %s", dart_event_str(ev, line, sizeof line));
@@ -647,13 +647,13 @@ int cap_start(Capture *cap, const Config *cfg){
     cap_start_ms = cap_now_ms();
     cap_cfg = *cfg;          /* group/name point into argv: stable for the run */
 
-    /* a real node, owning its memory via a dynamic allocator. It starts with no channels but
+    /* a real node, owning its memory via a dynamic allocator. It starts with no topics but
        subscribes to topics on demand (cap_subscribe); CAP_OBSERVER_CHANNELS bounds those and
        sizes discovery's per-peer overlay buffer, so a peer advertising many topics is held in full. */
     mem  = dart_allocator_dynamic(i_dart_plat_realloc, 0);
     node = dart_node_open(&mem, cfg->name, cap_on_message, cap_on_event, &(DartNodeOpts){
         .domain        = cfg->domain,
-        .max_channels  = CAP_OBSERVER_CHANNELS,
+        .max_topics  = CAP_OBSERVER_CHANNELS,
         .fetch_details = 1,   /* observer: fetch every peer topic's name + schema */
         .net           = { .discovery_group     = cfg->group,
                            .discovery_port      = cfg->port,
@@ -694,7 +694,7 @@ void cap_stop(Capture *cap){
     cap->rt = NULL; cap->mem = NULL;
 }
 
-/* bring the topic's live channel in line with subscribed/publishing: make the channel for
+/* bring the topic's live topic in line with subscribed/publishing: make the topic for
    `want` reliability live with the combined role (SUB_ONLY/PUB_ONLY/PUBSUB), creating it once
    if needed, and turn the other one off. Data is unicast (point-to-point to each subscriber),
    so a publish reaches every subscriber and a subscribe hears every unicast publisher.
@@ -706,18 +706,18 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
                   :                                    DART_INACTIVE;
     want = want ? 1 : 0;
     if (role == DART_INACTIVE){
-        if (s->ch[0]) dart_channel_set_role(s->ch[0], DART_INACTIVE);
-        if (s->ch[1]) dart_channel_set_role(s->ch[1], DART_INACTIVE);
+        if (s->ch[0]) dart_topic_set_role(s->ch[0], DART_INACTIVE);
+        if (s->ch[1]) dart_topic_set_role(s->ch[1], DART_INACTIVE);
         return 1;
     }
     if (!s->ch[want]){
-        /* a typed topic gets a typed channel: adopt the schema its advertisers carry, so
+        /* a typed topic gets a typed topic: adopt the schema its advertisers carry, so
            our publishes reach typed readers and the schema gate matches us. Trade-off:
-           this channel then matches only that schema (the drawer flags topics whose
+           this topic then matches only that schema (the drawer flags topics whose
            publishers disagree); a topic with no advertised schema stays generic. */
         DartSchema *sch = cap_topic_schema_parse(node, s->name);
-        DartChannel *ch = dart_node_create_channel(node, s->name, role, sch,
-                 &(DartChannelOpts){ .qos = { .reliability = want ? DART_RELIABLE : DART_BEST_EFFORT,
+        DartTopic *ch = dart_node_create_topic(node, s->name, role, sch,
+                 &(DartTopicOpts){ .qos = { .reliability = want ? DART_RELIABLE : DART_BEST_EFFORT,
                                               .catch_up = 1 } });
         if (sch) dart_schema_free(sch, cap_schema_alloc, NULL);   /* the node keeps its own copy */
         if (!ch) return 0;
@@ -726,17 +726,17 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
            service thread. An observer never stalls a publisher: at the cap a best-effort
            queue drops oldest, and a parked reliable one only throttles publishers that
            opted into backpressure_wait_us. */
-        dart_channel_dispatch(ch, 0, 0);
+        dart_topic_dispatch(ch, 0, 0);
         /* publish the (index, handle) pair under the node lock: the service thread's
            event callback maps events back to topics through it (cap_sub_by_index) */
         dart_node_lock(node);
-        s->index[want] = dart_channel_index(ch);
+        s->index[want] = dart_topic_index(ch);
         s->ch[want] = ch;
         dart_node_unlock(node);
     } else {
-        dart_channel_set_role(s->ch[want], role);
+        dart_topic_set_role(s->ch[want], role);
     }
-    if (s->ch[!want]) dart_channel_set_role(s->ch[!want], DART_INACTIVE);   /* one live at a time */
+    if (s->ch[!want]) dart_topic_set_role(s->ch[!want], DART_INACTIVE);   /* one live at a time */
     s->reliable = want;
     return 1;
 }
@@ -779,7 +779,7 @@ static int cap_topic_sub_reliable(DartNode *node, const char *topic, int *any_su
     dart_node_lock(node);   /* the zero-copy peer view vs the service thread */
     peers = dart_node_peers(node, &n_peers);
     for (s = 0; s < n_peers; s++){
-        DartInterestIter it; DartTopic t;
+        DartInterestIter it; DartTopicEntry t;
         memset(&it, 0, sizeof it);
         while (dart_node_peer_interest_next(&peers[s], &it, &t)){
             if (t.is_pub || t.hash != want_hash) continue;   /* subscriber entries for this topic */
@@ -803,11 +803,11 @@ int cap_declare_publish(Capture *cap, const char *topic){
     /* match the network subscribers' QoS: offer reliable if any subscriber requests it,
        else mirror their best-effort. With no subscriber yet, reliable is the safe default
        (it satisfies whoever shows up, and the next send re-reconciles). When we also
-       subscribe, one identity means one live channel, so our own reliable subscribe forces
+       subscribe, one identity means one live topic, so our own reliable subscribe forces
        reliable too. */
     sub_reliable = cap_topic_sub_reliable(node, topic, &any_sub);
     want = (s->subscribed && s->reliable) || sub_reliable || !any_sub;
-    if (!cap_sub_reconcile(s, node, want)){ s->publishing = was; cap_logf("PUBLISH %s failed (channel)", topic); return 0; }
+    if (!cap_sub_reconcile(s, node, want)){ s->publishing = was; cap_logf("PUBLISH %s failed (topic)", topic); return 0; }
     if (!was) cap_logf("PUBLISH %s declared (%s pub interest)", topic, want ? "reliable" : "best-effort");
     return 1;
 }
@@ -815,11 +815,11 @@ int cap_declare_publish(Capture *cap, const char *topic){
 int cap_publish(Capture *cap, const char *topic, const void *data, size_t len){
     CapSub *s; const DartSchema *echo;
     if (!topic || (!data && len)) return 0;
-    if (!cap_declare_publish(cap, topic)) return 0;   /* ensure the publisher channel is live */
+    if (!cap_declare_publish(cap, topic)) return 0;   /* ensure the publisher topic is live */
     s = cap_sub_find(topic);
     if (!s) return 0;
-    if (dart_channel_send(s->ch[s->reliable], dart_bytes(data, len)) < 0){ cap_logf("PUBLISH %s send failed", topic); return 0; }
-    echo = s->ch[s->reliable] ? dart_channel_schema(s->ch[s->reliable]) : NULL;   /* decoded echo when typed */
+    if (dart_topic_send(s->ch[s->reliable], dart_bytes(data, len)) < 0){ cap_logf("PUBLISH %s send failed", topic); return 0; }
+    echo = s->ch[s->reliable] ? dart_topic_schema(s->ch[s->reliable]) : NULL;   /* decoded echo when typed */
     if (echo && !dart_schema_validate(echo, dart_bytes(data, len))) echo = NULL;
     cap_ring_push(s, dart_cstr(cap_cfg.name), data, len, 1, echo);
     return 1;
@@ -932,8 +932,8 @@ int cap_publish_form(Capture *cap, const char *topic, const char *const *values,
     if (!topic || !values) return 0;
     if (!cap_declare_publish(cap, topic)) return 0;
     s = cap_sub_find(topic);
-    sch = (s && s->ch[s->reliable]) ? dart_channel_schema(s->ch[s->reliable]) : NULL;
-    if (!sch){ cap_logf("PUBLISH %s refused: channel carries no schema", topic); return 0; }
+    sch = (s && s->ch[s->reliable]) ? dart_topic_schema(s->ch[s->reliable]) : NULL;
+    if (!sch){ cap_logf("PUBLISH %s refused: topic carries no schema", topic); return 0; }
     size = dart_schema_msg_min(sch) + CAP_FORM_SLACK;     /* room for the variable content */
     buf = (uint8_t *)malloc(size);
     if (!buf) return 0;
@@ -947,7 +947,7 @@ int cap_publish_form(Capture *cap, const char *topic, const char *const *values,
         return 0;
     }
     {   uint32_t msg_len = dart_schema_msg_len(sch, buf, size);
-        if (!msg_len || dart_channel_send(s->ch[s->reliable], dart_bytes(buf, msg_len)) < 0){
+        if (!msg_len || dart_topic_send(s->ch[s->reliable], dart_bytes(buf, msg_len)) < 0){
             cap_logf("PUBLISH %s send failed", topic);
             free(buf);
             return 0;
@@ -963,7 +963,7 @@ int cap_publish_form(Capture *cap, const char *topic, const char *const *values,
    helpers (so we never touch dart_meta_*). The interest list is walked in full; we keep up
    to CAP_MAX_TOPICS of each (the observer's own storage bound, not an API limit). */
 static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer *dp){
-    DartInterestIter it; DartTopic t;
+    DartInterestIter it; DartTopicEntry t;
     uint16_t frag = dart_node_peer_frag(dp);
     p->seen_frame = 1;
     p->state      = (dp->liveness == DART_PEER_DROPPED) ? CAP_DROPPED : CAP_ACTIVE;
@@ -988,14 +988,14 @@ static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer
     memset(&it, 0, sizeof it);
     while (dart_node_peer_interest_next(dp, &it, &t)){
         CapTopic *e; int *cnt;
-        DartString nm = dart_node_peer_topic_name(node, dp->id, t.alias);
+        DartString nm = dart_node_peer_topic_name(node, dp->id, t.index);
         if (t.is_pub){ if (p->n_pub >= CAP_MAX_TOPICS) continue; e = &p->pub[p->n_pub]; cnt = &p->n_pub; }
         else         { if (p->n_sub >= CAP_MAX_TOPICS) continue; e = &p->sub[p->n_sub]; cnt = &p->n_sub; }
         /* the fetched name (the announce carries only hashes; fetch_details fills the
            cache within an RTT), the hash as a placeholder until it lands */
         if (nm.data) snprintf(e->name, sizeof e->name, "%.*s", (int)nm.len, nm.data);
         else       { snprintf(e->name, sizeof e->name, "0x%08x", (unsigned)t.hash); p->names_pending = 1; }
-        e->alias = t.alias; e->reliable = t.reliable;
+        e->index = t.index; e->reliable = t.reliable;
         (*cnt)++;
     }
     p->topics_ver = dp->meta_version;   /* cache is now in sync with this announce version */
@@ -1125,13 +1125,13 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
                                                                already a NUL-terminated 65-byte field,
                                                                and per-entry snprintf x thousands is slow */
             memcpy(n->pub[k].name, p->pub[k].name, sizeof n->pub[k].name);
-            n->pub[k].alias    = p->pub[k].alias;
+            n->pub[k].index    = p->pub[k].index;
             n->pub[k].reliable = p->pub[k].reliable;
         }
         n->n_pub = k;
         for (k = 0; k < p->n_sub && k < CAP_MAX_EP; k++){
             memcpy(n->sub[k].name, p->sub[k].name, sizeof n->sub[k].name);
-            n->sub[k].alias    = p->sub[k].alias;
+            n->sub[k].index    = p->sub[k].index;
             n->sub[k].reliable = p->sub[k].reliable;
         }
         n->n_sub = k;
@@ -1250,7 +1250,7 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
 /* Pick a topic's MAIN schema: the widest compatible one advertised by any endpoint
    (publisher OR subscriber), preferring a publisher since it owns the wire bytes. This is
    the SINGLE source of truth for a topic's schema, so the schema DISPLAY (cap_topic_schema),
-   the CHANNEL the explorer adopts to subscribe/publish (cap_sub_reconcile via
+   the TOPIC the explorer adopts to subscribe/publish (cap_sub_reconcile via
    cap_topic_schema_parse), and therefore the feed's decode + column set all agree. Picking
    the first-found schema instead let a subscriber advertising a SUBSET make the explorer
    adopt (and decode every message down to) the narrower schema, while the inspector showed
@@ -1277,20 +1277,20 @@ static const DartSchema *cap_topic_pick_schema(DartNode *node, const char *topic
     peers = dart_node_peers(node, &n_peers);
     for (s = 0; s < n_peers; s++){
         const DartDiscoveryPeer *dp = &peers[s];
-        DartInterestIter it; DartTopic t;
-        uint16_t last_alias = 0xFFFF;   /* PUBSUB yields both directions: one schema per alias */
+        DartInterestIter it; DartTopicEntry t;
+        uint16_t last_alias = 0xFFFF;   /* PUBSUB yields both directions: one schema per index */
         memset(&it, 0, sizeof it);
         while (dart_node_peer_interest_next(dp, &it, &t)){
             DartString nm; uint64_t hash = 0; const DartSchema *sch;
             int take = 0;
             if (t.hash != want_hash) continue;          /* cheap prefilter before the O(topics) name lookup */
-            if (t.alias == last_alias) continue;        /* second direction of a PUBSUB entry */
-            last_alias = t.alias;
+            if (t.index == last_alias) continue;        /* second direction of a PUBSUB entry */
+            last_alias = t.index;
             /* any endpoint (publisher OR subscriber) is authoritative about its schema:
                a subscriber-in-charge topic advertises the shape its generic publisher fills */
-            nm = dart_node_peer_topic_name(node, dp->id, t.alias);
+            nm = dart_node_peer_topic_name(node, dp->id, t.index);
             if (nm.len != tlen || memcmp(nm.data, topic, tlen) != 0) continue;
-            sch = dart_node_peer_topic_schema(node, dp->id, t.alias, &hash);
+            sch = dart_node_peer_topic_schema(node, dp->id, t.index, &hash);
             if (!hash) continue;                        /* untyped endpoint */
             if (advertisers == 0){                      /* first advertiser: adopt it */
                 advertisers = 1; take = 1;
@@ -1333,7 +1333,7 @@ static const DartSchema *cap_topic_pick_schema(DartNode *node, const char *topic
 /* the topic's MAIN schema (see cap_topic_pick_schema) as a freeable parsed copy: the
    cached one is node-owned, so hand back a reparse of its canonical wire. The caller frees
    it via cap_schema_alloc. NULL when nobody advertises one (or details are still in
-   flight). Used for the CHANNEL the explorer adopts, so it decodes at the same width the
+   flight). Used for the TOPIC the explorer adopts, so it decodes at the same width the
    inspector shows. */
 static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic){
     const DartSchema *best; DartSchema *copy = NULL;

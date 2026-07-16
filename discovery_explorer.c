@@ -43,8 +43,9 @@
 #include "ui_icons.h"
 #include "ui_model.h"
 #include "ui_data.h"
-#include "ui_app.h"
 #include "ui_widgets.h"
+#include "ui_textbox.h"
+#include "ui_app.h"
 #include "ui_tree.h"
 #include "ui_tab_nodes.h"
 #include "ui_tab_topics.h"
@@ -102,7 +103,7 @@ int main(int argc, char **argv){
     }
     SDL_SetRenderVSync(ren, 1);   /* the node's service thread owns the poll now, so the
                                      render loop no longer drives it: pace to the display */
-    SDL_StartTextInput(win);   /* deliver SDL_EVENT_TEXT_INPUT for the Topics message composer */
+    SDL_StartTextInput(win);   /* deliver SDL_EVENT_TEXT_INPUT for the text boxes */
 
     dpi = SDL_GetWindowPixelDensity(win);   /* physical px per logical px (1.0 = 100%) */
     if (dpi <= 0.0f) dpi = 1.0f;
@@ -163,12 +164,19 @@ int main(int argc, char **argv){
 
         g_pointer_pressed = false;   /* edge-triggered: set only on a press this frame */
         g_right_pressed   = false;
+        g_pointer_pressed_raw = false;   /* the unconsumed twins (menu dismissal) */
+        g_right_pressed_raw   = false;
+        ui_tb_events_reset();        /* text-box key/text queue is per frame */
         while (SDL_PollEvent(&ev)){
             switch (ev.type){
                 case SDL_EVENT_QUIT: quit = true; break;
                 case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                    if (ev.button.button == SDL_BUTTON_LEFT){ mouse_held = true; g_pointer_pressed = true; }
-                    else if (ev.button.button == SDL_BUTTON_RIGHT) g_right_pressed = true;
+                    if (ev.button.button == SDL_BUTTON_LEFT){
+                        mouse_held = true; g_pointer_pressed = true; g_pointer_pressed_raw = true;
+                        ui_tb_click_count(ev.button.clicks);   /* double/triple-click selection */
+                    } else if (ev.button.button == SDL_BUTTON_RIGHT){
+                        g_right_pressed = true; g_right_pressed_raw = true;
+                    }
                     break;
                 case SDL_EVENT_MOUSE_BUTTON_UP:
                     if (ev.button.button == SDL_BUTTON_LEFT) mouse_held = false;
@@ -181,85 +189,10 @@ int main(int argc, char **argv){
                         if (!ev.key.repeat){ debug_enabled = !debug_enabled; Clay_SetDebugModeEnabled(debug_enabled); }
                         break;
                     }
-                    /* topic-filter box focused: keystrokes edit the filter (takes precedence) */
-                    if (app.tab == TAB_TOPICS && app.topic_filter_focus){
-                        if (ev.key.key == SDLK_BACKSPACE){    /* (repeat allowed: hold to delete) */
-                            if (app.topic_filter_len > 0){
-                                int n = app.topic_filter_len - 1;
-                                while (n > 0 && (app.topic_filter[n] & 0xC0) == 0x80) n--;  /* whole UTF-8 char */
-                                app.topic_filter_len = n; app.topic_filter[n] = '\0';
-                            }
-                        } else if (ev.key.key == SDLK_ESCAPE && !ev.key.repeat){
-                            app.topic_filter_len = 0; app.topic_filter[0] = '\0';
-                            app.topic_filter_focus = 0;
-                        } else if ((ev.key.key == SDLK_RETURN || ev.key.key == SDLK_KP_ENTER) && !ev.key.repeat){
-                            app.topic_filter_focus = 0;
-                        }
-                        break;
-                    }
-                    /* active text field: the tree's new-topic input, or (only when the Publish
-                       sidebar tab is open) the composer form field > free-text composer */
-                    if (app.tab == TAB_TOPICS &&
-                        (app.adding_topic || (app.drawer_open && app.drawer_tab == DRAWER_PUBLISH))){
-                        int   form = !app.adding_topic && app.form_focus >= 0 && app.form_focus < UI_FORM_MAX;
-                        char *buf = app.adding_topic ? app.new_topic : form ? app.form_val[app.form_focus] : app.compose;
-                        int  *len = app.adding_topic ? &app.new_topic_len : form ? &app.form_len[app.form_focus] : &app.compose_len;
-                        int   cap = app.adding_topic ? (int)sizeof app.new_topic : form ? UI_FORM_VAL : UI_COMPOSE_MAX;
-                        if (ev.key.key == SDLK_BACKSPACE){    /* (repeat allowed: hold to delete) */
-                            if (*len > 0){
-                                int n = *len - 1;
-                                while (n > 0 && (buf[n] & 0xC0) == 0x80) n--;  /* whole UTF-8 char */
-                                *len = n; buf[n] = '\0';
-                            }
-                        } else if ((ev.key.key == SDLK_RETURN || ev.key.key == SDLK_KP_ENTER) && !ev.key.repeat){
-                            if (!app.adding_topic && !form && (ev.key.mod & SDL_KMOD_SHIFT)){   /* shift+enter: newline */
-                                if (*len + 1 < cap - 1){ buf[*len] = '\n'; (*len)++; buf[*len] = '\0'; }
-                            } else if (app.adding_topic){
-                                app.new_topic_commit = 1;
-                            } else if (form){
-                                app.form_send = 1;
-                            } else {
-                                app.compose_send = 1;
-                            }
-                        } else if (ev.key.key == SDLK_TAB && !ev.key.repeat){
-                            if (form && app.form_n > 0)       /* tab cycles the form fields */
-                                app.form_focus = (ev.key.mod & SDL_KMOD_SHIFT)
-                                    ? (app.form_focus + app.form_n - 1) % app.form_n
-                                    : (app.form_focus + 1) % app.form_n;
-                        } else if (ev.key.key == SDLK_SPACE && !ev.key.repeat && form &&
-                                   app.form_kind[app.form_focus] == CAP_K_BOOL){
-                            const char *v = strcmp(buf, "true") ? "true" : "false";   /* toggle the bool */
-                            snprintf(buf, (size_t)cap, "%s", v); *len = (int)strlen(buf);
-                        } else if (ev.key.key == SDLK_ESCAPE && !ev.key.repeat){
-                            if (app.adding_topic){ app.adding_topic = 0; app.new_topic_len = 0; app.new_topic[0] = '\0'; }
-                            else if (form){ app.form_val[app.form_focus][0] = '\0'; app.form_len[app.form_focus] = 0; }
-                            else { app.compose_len = 0; app.compose[0] = '\0'; }
-                        }
-                    }
+                    ui_tb_feed_key(ev.key.key, ev.key.mod);   /* the focused text box consumes these */
                     break;
-                case SDL_EVENT_TEXT_INPUT:                    /* typed characters -> active field */
-                    if (app.tab == TAB_TOPICS && app.topic_filter_focus && ev.text.text){
-                        size_t add = strlen(ev.text.text);
-                        if (add && app.topic_filter_len + (int)add < (int)sizeof app.topic_filter - 1){
-                            memcpy(app.topic_filter + app.topic_filter_len, ev.text.text, add);
-                            app.topic_filter_len += (int)add;
-                            app.topic_filter[app.topic_filter_len] = '\0';
-                        }
-                        break;
-                    }
-                    if (app.tab == TAB_TOPICS && ev.text.text &&
-                        (app.adding_topic || (app.drawer_open && app.drawer_tab == DRAWER_PUBLISH))){
-                        int    form = !app.adding_topic && app.form_focus >= 0 && app.form_focus < UI_FORM_MAX;
-                        char  *buf = app.adding_topic ? app.new_topic : form ? app.form_val[app.form_focus] : app.compose;
-                        int   *len = app.adding_topic ? &app.new_topic_len : form ? &app.form_len[app.form_focus] : &app.compose_len;
-                        int    cap = app.adding_topic ? (int)sizeof app.new_topic : form ? UI_FORM_VAL : UI_COMPOSE_MAX;
-                        size_t add = strlen(ev.text.text);
-                        if (form && app.form_kind[app.form_focus] == CAP_K_BOOL) break;   /* bool: a toggle, not a text field */
-                        if (add && *len + (int)add < cap - 1){
-                            memcpy(buf + *len, ev.text.text, add);
-                            *len += (int)add; buf[*len] = '\0';
-                        }
-                    }
+                case SDL_EVENT_TEXT_INPUT:                    /* typed characters -> the focused text box */
+                    if (ev.text.text) ui_tb_feed_text(ev.text.text);
                     break;
                 default: break;
             }
@@ -285,6 +218,11 @@ int main(int argc, char **argv){
         last_ticks = now;
         if (dt <= 0.0f) dt = 1.0f / 60.0f;
 
+        {   /* wheel over a scrolling text box goes to the box, not the Clay containers */
+            float tb_wheel = 0.0f;
+            if (wheel_y != 0.0f && ui_tb_wheel_hit(mx, my)){ tb_wheel = wheel_y; wheel_x = wheel_y = 0.0f; }
+            ui_tb_frame(mouse_held, tb_wheel);
+        }
         Clay_SetLayoutDimensions((Clay_Dimensions){ (float)ow, (float)oh });
         Clay_SetPointerState((Clay_Vector2){ mx, my }, mouse_held);
         Clay_UpdateScrollContainers(true, (Clay_Vector2){ wheel_x * UISC(UI_SCROLL_SPEED),
@@ -311,8 +249,7 @@ int main(int argc, char **argv){
         if (app.sel_topic >= g_data.n_topics)
             app.sel_topic = g_data.n_topics ? g_data.n_topics - 1 : 0;
 
-        g_caret_on = ((now / 500) % 2) == 0;   /* composer text-cursor blink (2 Hz) */
-        g_now_ms   = (uint32_t)now;             /* transient UI feedback (e.g. "Copied" flash) */
+        g_now_ms = (uint32_t)now;   /* caret blink, undo coalescing, transient UI feedback */
         ui_strpool_reset();
         uint64_t r0 = SDL_GetPerformanceCounter();
         Clay_BeginLayout();

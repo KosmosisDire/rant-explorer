@@ -72,42 +72,44 @@ static void tt_sanitize(char *dst, int cap, const char *src, int n){
     dst[j] = '\0';
 }
 
-/* the topic filter box: click to focus (the event loop then routes text into
-   app->topic_filter), a click anywhere else or Enter/Escape unfocuses, the X clears.
-   The tree hides rows whose topic doesn't match (path or endpoint node name). */
+/* the topic filter box: a bare text box in the search row. Click to focus, a
+   click anywhere else or Enter unfocuses, Escape or the X clears. The tree
+   hides rows whose topic doesn't match (path or endpoint node name). */
 static void ui_filter_box(AppState *app, const Palette *P, Clay_String hint){
-    int focused = app->topic_filter_focus;
+    int focused = ui_tb_focused(&app->tb_filter), act;
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(30)) },
                        .padding = { .left = UISCI(9), .right = UISCI(9) }, .childGap = UISCI(7),
                        .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
            .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)),
            .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = focused ? P->accent : P->border } }) {
         ui_icon(ICON_SEARCH, 14, P->faint);
-        if (app->topic_filter_len || focused)
-            /* typed text; focused gets a blinking caret (mono "|"/" ", stable width) */
-            CLAY_TEXT(ui_fmt("%s%s", app->topic_filter, focused ? (g_caret_on ? "|" : " ") : ""),
-                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
-                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
-        else
-            CLAY_TEXT(hint, CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint,
-                                               .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        act = ui_textbox(P, CLAY_ID("topic_filter_tb"), &app->tb_filter,
+                         app->topic_filter, (int)sizeof app->topic_filter, &app->topic_filter_len,
+                         &(UiTextBoxOpts){ .bare = 1, .fill_w = 1, .placeholder = hint,
+                                           .fam = FAM_MONO, .wt = WT_REG, .sz = FS_SMALL });
+        if (ui_tb_focused(&app->tb_filter))
+            app->adding_topic = 0;               /* the two inputs never hold focus together */
+        if (act & UI_TB_SUBMIT) ui_tb_blur(&app->tb_filter);
+        if (act & UI_TB_CANCEL){
+            app->topic_filter_len = 0; app->topic_filter[0] = '\0';
+            ui_tb_reset(&app->tb_filter); ui_tb_blur(&app->tb_filter);
+        }
         if (app->topic_filter_len){
-            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* right-anchor the clear X */
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(16)), .height = CLAY_SIZING_GROW(0) },
                                .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
                 if (Clay_Hovered() && g_pointer_pressed){
                     app->topic_filter_len = 0; app->topic_filter[0] = '\0';
+                    ui_tb_reset(&app->tb_filter);
                     g_pointer_pressed = false;   /* consumed: don't also focus the box */
                 }
                 ui_icon(ICON_X, 12, Clay_Hovered() ? P->text : P->faint);
             }
         }
-        if (Clay_Hovered() && g_pointer_pressed){
-            app->topic_filter_focus = 1;
-            app->adding_topic = 0;               /* the two inputs never hold focus together */
+        if (Clay_Hovered() && g_pointer_pressed){   /* click on the row chrome (icon, padding) */
+            ui_tb_focus(&app->tb_filter);
+            app->tb_filter.caret = app->tb_filter.anchor = app->topic_filter_len;
+            app->adding_topic = 0;
             g_pointer_pressed = false;
-        } else if (g_pointer_pressed && !Clay_Hovered()){
-            app->topic_filter_focus = 0;         /* click anywhere else unfocuses */
         }
     }
 }
@@ -262,28 +264,30 @@ static void tt_commit_new_topic(AppState *app){
     app->adding_topic  = 0;
     app->new_topic_len = 0;
     app->new_topic[0]  = '\0';
+    ui_tb_reset(&app->tb_new_topic);
+    ui_tb_blur(&app->tb_new_topic);
 }
 
-/* the inline "new topic name" field, shown under the filter while adding_topic. Text is
-   captured into app->new_topic by the event loop; Enter (app->new_topic_commit) or Add commits. */
+/* the inline "new topic name" field, shown under the filter while adding_topic.
+   Enter or Add commits, Escape closes. */
 static void tt_new_topic_input(AppState *app, const Palette *P){
-    int can;
-    if (app->new_topic_commit){ app->new_topic_commit = 0; tt_commit_new_topic(app); }
-    if (!app->adding_topic) return;
+    int can, act;
+    if (!app->adding_topic){ ui_tb_blur(&app->tb_new_topic); return; }   /* closed elsewhere */
     can = app->new_topic_len > 0;
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(6),
                        .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(30)) },
-                           .padding = { .left = UISCI(9), .right = UISCI(9) },
-                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
-               .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)),
-               .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->accent } }) {
-            /* always focused while shown: a blinking caret (mono "|"/" ", stable width), no placeholder */
-            CLAY_TEXT(ui_fmt("%s%s", app->new_topic, g_caret_on ? "|" : " "),
-                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
-                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        act = ui_textbox(P, CLAY_ID("new_topic_tb"), &app->tb_new_topic,
+                         app->new_topic, (int)sizeof app->new_topic, &app->new_topic_len,
+                         &(UiTextBoxOpts){ .fill_w = 1, .h_min = 30, .pad_x = 9, .radius = 5,
+                                           .fam = FAM_MONO, .wt = WT_REG, .sz = FS_SMALL,
+                                           .bg = P->panel2, .border = P->accent, .border_focus = P->accent });
+        if (act & UI_TB_SUBMIT) tt_commit_new_topic(app);
+        if (act & UI_TB_CANCEL){
+            app->adding_topic = 0; app->new_topic_len = 0; app->new_topic[0] = '\0';
+            ui_tb_reset(&app->tb_new_topic); ui_tb_blur(&app->tb_new_topic);
         }
-        if (ui_pill(P, CLAY_STRING("Add"), FAM_SANS, WT_SEMI, FS_SMALL,
+        if (app->adding_topic &&
+            ui_pill(P, CLAY_STRING("Add"), FAM_SANS, WT_SEMI, FS_SMALL,
                     can ? P->accent : P->faint, can ? P->accent_bg : P->panel2, UI_NONE, UISC(30)) && can)
             tt_commit_new_topic(app);
     }
@@ -358,6 +362,9 @@ static void topics_tree(AppState *app, const Palette *P){
                 if (ui_icon_button(P, ICON_PLUS, 16, 30, app->adding_topic ? P->accent : P->dim, P->text)){
                     app->adding_topic = !app->adding_topic;
                     app->new_topic_len = 0; app->new_topic[0] = '\0';
+                    ui_tb_reset(&app->tb_new_topic);
+                    if (app->adding_topic) ui_tb_focus(&app->tb_new_topic);
+                    else                   ui_tb_blur(&app->tb_new_topic);
                 }
             }
             tt_new_topic_input(app, P);
@@ -605,6 +612,7 @@ static void tt_do_send(AppState *app, const char *topic){
     cap_publish(app->cap, topic, app->compose, (size_t)app->compose_len);
     app->compose_len = 0;
     app->compose[0]  = '\0';
+    ui_tb_reset(&app->tb_compose);
 }
 
 /* ------------------------------------------------- structured publish form (typed topics) */
@@ -623,10 +631,11 @@ static const char *tt_form_default(const CapSchemaField *f){
     }
 }
 
-/* overwrite a form field's value (bool toggle, quick fills) */
+/* overwrite a form field's value (bool toggle, quick fills, defaults) */
 static void tt_form_set_val(AppState *app, int i, const char *v){
     snprintf(app->form_val[i], UI_FORM_VAL, "%s", v);
     app->form_len[i] = (int)strlen(app->form_val[i]);
+    ui_tb_reset(&app->tb_form[i]);   /* the buffer changed under the box */
 }
 
 /* live element count of an array value, for the "n/count" hint. Whitespace/comma runs for
@@ -665,7 +674,11 @@ static void tt_form_bool_seg(AppState *app, const Palette *P, int i, const char 
                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
            .backgroundColor = active ? P->accent_bg : UI_NONE,
            .cornerRadius = CLAY_CORNER_RADIUS(UISC(3)) }) {
-        if (Clay_Hovered() && g_pointer_pressed){ tt_form_set_val(app, i, seg); app->form_focus = i; app->adding_topic = 0; }
+        if (Clay_Hovered() && g_pointer_pressed){
+            tt_form_set_val(app, i, seg);
+            app->form_focus = i; app->adding_topic = 0;
+            ui_tb_blur_all();   /* keyboard "focus" is the bool row now, no text box */
+        }
         CLAY_TEXT(ui_str(seg), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
                                                   .textColor = active ? P->accent : P->dim,
                                                   .wrapMode = CLAY_TEXT_WRAP_NONE }));
@@ -690,8 +703,15 @@ static void tt_form_reset(AppState *app, const CapSchema *sc, int n){
     for (i = 0; i < n; i++){
         snprintf(app->form_val[i], UI_FORM_VAL, "%s", tt_form_default(&sc->fields[i]));
         app->form_len[i] = (int)strlen(app->form_val[i]);
+        ui_tb_reset(&app->tb_form[i]);
     }
     app->form_focus = 0;
+    if (g_tb_focus == NULL && n > 0 && sc->fields[0].kind != CAP_K_BOOL &&
+        sc->fields[0].kind != CAP_K_STRUCT && sc->fields[0].kind != CAP_K_MAP){
+        ui_tb_focus(&app->tb_form[0]);           /* type straight into the first field... */
+        app->tb_form[0].anchor = 0;              /* ...replacing its prefilled default */
+        app->tb_form[0].caret  = app->form_len[0];
+    }
 }
 
 static void tt_form_send(AppState *app, const Topic *t, int n){
@@ -709,18 +729,18 @@ static void tt_form_force(AppState *app, const Topic *t, int n){
 }
 
 /* one field: name | type-aware input | type, nested members indented. A bool gets a
-   toggle, a string/array gets a validated box with an "n/cap" counter, a numeric scalar a
-   validated box; the input box + type turn red when the typed value won't parse (`valid`
-   comes from cap_form_validate). A struct row is a read-only group header (members are the
-   inputs). Clicking a text field focuses it. */
-static void tt_form_field_row(AppState *app, const Palette *P, const CapSchemaField *f, int i, int valid){
+   toggle, a string/array gets a validated text box with an "n/cap" counter, a numeric
+   scalar a validated text box; the box + type turn red when the typed value won't parse
+   (`valid` comes from cap_form_validate). A struct row is a read-only group header
+   (members are the inputs). Returns the text box's action bits (Enter, Tab, ...). */
+static int tt_form_field_row(AppState *app, const Palette *P, const CapSchemaField *f, int i, int valid){
     int is_struct = (f->kind == CAP_K_STRUCT || f->kind == CAP_K_MAP);   /* read-only rows */
     int is_bool   = (f->kind == CAP_K_BOOL);
-    int focused   = !is_struct && app->form_focus == i && !app->adding_topic;
     int has_val   = app->form_val[i][0] != '\0';
     int bad       = !is_struct && !is_bool && has_val && !valid;   /* typed, but won't parse */
     int show_count = (f->kind == CAP_K_STR || f->kind == CAP_K_ARR
                    || f->kind == CAP_K_VSTR || f->kind == CAP_K_VARR);
+    int act = 0;
     CLAY({ .id = CLAY_IDI("form_field", (uint32_t)i),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(26)) },
                        .padding = { .left = UISCI(f->depth * 14) },
@@ -731,23 +751,20 @@ static void tt_form_field_row(AppState *app, const Palette *P, const CapSchemaFi
                                                           .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         }
         if (is_bool){
-            tt_form_bool(app, P, i, focused);
+            tt_form_bool(app, P, i, app->form_focus == i && g_tb_focus == NULL);
         } else if (!is_struct){
-            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(24)) },
-                               .padding = { .left = UISCI(8), .right = UISCI(8) },
-                               .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
-                   .backgroundColor = P->panel2,
-                   .cornerRadius = CLAY_CORNER_RADIUS(UISC(4)),
-                   .border = { .width = CLAY_BORDER_OUTSIDE(1),
-                               .color = bad ? P->red : focused ? P->accent : P->border } }) {
-                if (Clay_Hovered() && g_pointer_pressed){ app->form_focus = i; app->adding_topic = 0; }
-                if (!has_val && !focused)
-                    CLAY_TEXT(tt_form_hint(f), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
-                                                                 .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-                else
-                    CLAY_TEXT(ui_fmt("%s%s", app->form_val[i], focused ? (g_caret_on ? "|" : " ") : ""),
-                              CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
-                                                 .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+            act = ui_textbox(P, CLAY_IDI("form_tb", (uint32_t)i), &app->tb_form[i],
+                             app->form_val[i], UI_FORM_VAL, &app->form_len[i],
+                             &(UiTextBoxOpts){ .fill_w = 1, .h_min = 24, .pad_x = 8, .radius = 4,
+                                               .placeholder = tt_form_hint(f),
+                                               .fam = FAM_MONO, .wt = WT_REG, .sz = FS_SMALL,
+                                               .bg = P->panel2,
+                                               .border = bad ? P->red : P->border,
+                                               .border_focus = bad ? P->red : P->accent });
+            if (ui_tb_focused(&app->tb_form[i])){ app->form_focus = i; app->adding_topic = 0; }
+            if (act & UI_TB_CANCEL){                     /* Escape clears the field */
+                app->form_val[i][0] = '\0'; app->form_len[i] = 0;
+                ui_tb_reset(&app->tb_form[i]);
             }
         } else {
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
@@ -766,6 +783,7 @@ static void tt_form_field_row(AppState *app, const Palette *P, const CapSchemaFi
                                                       .textColor = bad ? P->red : is_struct ? P->dim : P->accent,
                                                       .wrapMode = CLAY_TEXT_WRAP_NONE }));
     }
+    return act;
 }
 
 /* the structured composer: the message type name, one input per schema field (nested members
@@ -773,20 +791,17 @@ static void tt_form_field_row(AppState *app, const Palette *P, const CapSchemaFi
    (empty fields keep the canonical default zero). */
 static void topics_form(AppState *app, const Palette *P, const Topic *t, const CapSchema *sc){
     int i, n = sc->n_fields < UI_FORM_MAX ? sc->n_fields : UI_FORM_MAX;
-    int send = app->form_send;
+    int send = 0, tab = 0, tab_from = -1;
     unsigned char valid[UI_FORM_MAX];
-    app->form_send = 0; app->compose_send = 0;   /* the form owns Enter on this topic */
     if (app->form_topic != app->sel_topic){       /* switched topic: fresh defaults */
         app->form_topic = app->sel_topic;
         tt_form_reset(app, sc, n);
     }
-    app->form_n = n;                              /* input routes to the form fields */
-    for (i = 0; i < n; i++) app->form_kind[i] = sc->fields[i].kind;   /* event loop: bool = toggle keys */
+    app->form_n = n;
     {   const char *vals[UI_FORM_MAX];            /* live per-field validity (one schema parse) */
         for (i = 0; i < n; i++){ vals[i] = app->form_val[i]; valid[i] = 1; }
         if (app->cap) cap_form_validate(app->cap, t->path, vals, n, valid);
     }
-    if (send) tt_form_send(app, t, n);
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM,
                        .childGap = UISCI(6) } }) {
         /* header: message type name + input hint */
@@ -799,7 +814,38 @@ static void topics_form(AppState *app, const Palette *P, const Topic *t, const C
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint,
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
         }
-        for (i = 0; i < n; i++) tt_form_field_row(app, P, &sc->fields[i], i, valid[i]);
+        for (i = 0; i < n; i++){
+            int a = tt_form_field_row(app, P, &sc->fields[i], i, valid[i]);
+            if (a & UI_TB_SUBMIT) send = 1;
+            if (a & (UI_TB_TAB | UI_TB_BACKTAB)){ tab = (a & UI_TB_TAB) ? 1 : -1; tab_from = i; }
+        }
+        /* a focused bool row has no text box, so its keys stay in the frame queue:
+           Space toggles, Enter sends, Tab cycles on */
+        if (g_tb_focus == NULL && app->form_focus >= 0 && app->form_focus < n &&
+            sc->fields[app->form_focus].kind == CAP_K_BOOL){
+            if (ui_tb_take_key(SDLK_SPACE, 0))
+                tt_form_set_val(app, app->form_focus,
+                                strcmp(app->form_val[app->form_focus], "true") ? "true" : "false");
+            if (ui_tb_take_key(SDLK_RETURN, 0) || ui_tb_take_key(SDLK_KP_ENTER, 0)) send = 1;
+            if (ui_tb_take_key(SDLK_TAB, SDL_KMOD_SHIFT)){ tab = -1; tab_from = app->form_focus; }
+            else if (ui_tb_take_key(SDLK_TAB, 0)){ tab = 1; tab_from = app->form_focus; }
+        }
+        if (tab && n > 0){                        /* cycle to the next editable/bool field */
+            int j = tab_from, k;
+            for (k = 0; k < n; k++){
+                j = (j + tab + n) % n;
+                if (sc->fields[j].kind != CAP_K_STRUCT && sc->fields[j].kind != CAP_K_MAP) break;
+            }
+            app->form_focus = j;
+            if (sc->fields[j].kind == CAP_K_BOOL) ui_tb_blur_all();
+            else {
+                ui_tb_focus(&app->tb_form[j]);
+                app->tb_form[j].anchor = 0;       /* select the value, so typing replaces it */
+                app->tb_form[j].caret  = app->form_len[j];
+                app->tb_form[j].ensure = 1;
+            }
+        }
+        if (send) tt_form_send(app, t, n);
         /* Send: its own row under the fields (right-aligned), not boxed in a card. A
            writable variable also gets the debug override pair: Force pins the form's
            value at the owner (writes absorb until Unforce releases it). */
@@ -821,53 +867,41 @@ static void topics_form(AppState *app, const Palette *P, const Topic *t, const C
     }
 }
 
-/* The message composer, hosted in the Publish sidebar tab: an input box that grows in height
-   with the wrapped text plus a Send button. Enter (app->compose_send, set in the event loop)
-   sends too. Text is captured into app->compose by the SDL text-input handler while the
-   Publish tab is open. Room for QoS/options beside Send comes later. */
+/* The message composer, hosted in the Publish sidebar tab: a wrapping multi-line text box
+   that grows in height with the text (then scrolls) plus a Send button. Enter sends,
+   shift+Enter inserts a newline. Focused by default so you can just type. */
 static void topics_composer(AppState *app, const Palette *P, const Topic *t){
     static CapSchema tt_form_schema;   /* the selected topic's advertised schema, per frame */
-    int can, focused, send;
+    int can, act;
     if (app->cap && cap_topic_schema(app->cap, t->path, &tt_form_schema)
         && tt_form_schema.inlined && tt_form_schema.n_fields > 0){
         topics_form(app, P, t, &tt_form_schema);   /* typed topic: the structured form */
         return;
     }
     app->form_focus = -1; app->form_n = 0;         /* free-text composer owns input */
-    send = app->compose_send;
-    app->compose_send = 0;
     if (app->compose_topic != app->sel_topic){      /* switched topic: drop the stale draft */
         app->compose_topic = app->sel_topic;
         app->compose_len = 0; app->compose[0] = '\0';
+        ui_tb_reset(&app->tb_compose);
     }
-    /* the composer is focused by default (so you can just type); the new-topic field steals
-       focus while it is open. The blinking caret marks where text goes. */
-    focused = !app->adding_topic;
+    /* focused by default (so you can just type) whenever no other box holds the focus */
+    if (g_tb_focus == NULL && !app->adding_topic) ui_tb_focus(&app->tb_compose);
     can = app->compose_len > 0 && app->cap != NULL;
-    if (send) tt_do_send(app, t->path);
 
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(10),
                        .childAlignment = { .y = CLAY_ALIGN_Y_BOTTOM } } }) {
-        /* input box: FIT height grows with the text, min one line, capped before it scrolls */
-        CLAY({ .id = CLAY_ID("compose_box"),
-               .layout = { .sizing = { .width = CLAY_SIZING_GROW(0),
-                                       .height = CLAY_SIZING_FIT(UISC(38), UISC(150)) },
-                           .padding = { .left = UISCI(11), .right = UISCI(11),
-                                        .top = UISCI(10), .bottom = UISCI(10) },
-                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
-               .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
-               .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = focused ? P->accent : P->border } }) {
-            if (Clay_Hovered() && g_pointer_pressed) app->adding_topic = 0;   /* click returns focus here */
-            if (app->compose_len == 0 && !focused)
-                CLAY_TEXT(CLAY_STRING("Type a message, Enter to send"),
-                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->faint,
-                                             .wrapMode = CLAY_TEXT_WRAP_NONE }));
-            else
-                /* mono caret: "|" on / " " off keeps the same advance + line height every frame,
-                   so the blink never resizes the box (a space and a bar are one cell each) */
-                CLAY_TEXT(ui_fmt("%s%s", app->compose, !focused ? "" : (g_caret_on ? "|" : " ")),
-                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
-                                             .wrapMode = CLAY_TEXT_WRAP_WORDS }));
+        act = ui_textbox(P, CLAY_ID("compose_box"), &app->tb_compose,
+                         app->compose, UI_COMPOSE_MAX, &app->compose_len,
+                         &(UiTextBoxOpts){ .fill_w = 1, .multiline = 1, .wrap = 1, .enter_submits = 1,
+                                           .h_min = 38, .h_max = 150, .pad_x = 11, .pad_y = 10, .radius = 6,
+                                           .placeholder = CLAY_STRING("Type a message, Enter to send"),
+                                           .fam = FAM_MONO, .wt = WT_REG, .sz = FS_SMALL,
+                                           .bg = P->panel2, .border = P->border, .border_focus = P->accent });
+        if (ui_tb_focused(&app->tb_compose)) app->adding_topic = 0;   /* a click here exits add mode */
+        if ((act & UI_TB_SUBMIT) && can) tt_do_send(app, t->path);
+        if (act & UI_TB_CANCEL){
+            app->compose_len = 0; app->compose[0] = '\0';
+            ui_tb_reset(&app->tb_compose);
         }
         if (ui_pill(P, ui_str(tt_send_verb(t)), FAM_SANS, WT_SEMI, FS_SMALL,
                     can ? P->accent : P->faint, can ? P->accent_bg : P->panel2, P->border2, UISC(38)) && can)

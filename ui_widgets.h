@@ -14,7 +14,8 @@
 
 static bool g_pointer_pressed = false;   /* left mouse pressed this frame; main sets it */
 static bool g_right_pressed = false;     /* right mouse pressed this frame (context menus) */
-static bool g_caret_on = true;           /* text-cursor blink phase; main sets it from the clock */
+static bool g_pointer_pressed_raw = false;   /* like the two above, but never consumed by a */
+static bool g_right_pressed_raw = false;     /* widget: dismiss checks see every press */
 static uint32_t g_now_ms = 0;            /* monotonic ms this frame; main sets it (transient feedback) */
 static float g_pointer_x = 0.0f, g_pointer_y = 0.0f;   /* pointer position, physical px; main sets it */
 static float g_view_w = 0.0f, g_view_h = 0.0f;         /* render output size, physical px; main sets it */
@@ -102,6 +103,73 @@ static bool ui_copy_pill(const Palette *P, int copied){
                   CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_CAPTION), .textColor = fg,
                                      .wrapMode = CLAY_TEXT_WRAP_NONE }));
     }
+    return clicked;
+}
+
+/* ---- generic context menu: one open at a time, keyed by an owner pointer ---- */
+
+typedef struct {
+    Clay_String label;
+    Clay_String keys;     /* right-aligned shortcut hint ("" = none) */
+    int enabled;          /* 0 = dimmed, not clickable */
+} UiMenuItem;
+
+static const void *g_menu_owner = NULL;   /* whose menu is open (NULL = none) */
+static float g_menu_x, g_menu_y;          /* anchor, physical px */
+static int   g_menu_fresh = 0;            /* opened this frame: skip the dismiss checks once */
+
+static void ui_menu_open(const void *owner, float x, float y){
+    g_menu_owner = owner; g_menu_x = x; g_menu_y = y; g_menu_fresh = 1;
+}
+static void ui_menu_close(void){ g_menu_owner = NULL; }
+static int  ui_menu_is_open(const void *owner){ return g_menu_owner == owner; }
+static int  ui_menu_pointer_over(void){ return g_menu_owner && Clay_PointerOver(CLAY_ID("ui_ctx_menu")); }
+
+/* one menu row; returns true on click */
+static bool ui_menu_item(const Palette *P, const UiMenuItem *it){
+    bool clicked = false;
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(24)) },
+                       .padding = { .left = UISCI(10), .right = UISCI(10) }, .childGap = UISCI(18),
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+           .backgroundColor = it->enabled && Clay_Hovered() ? P->panel3 : UI_NONE }) {
+        if (it->enabled && Clay_Hovered() && g_pointer_pressed){ clicked = true; g_pointer_pressed = false; }
+        CLAY_TEXT(it->label, CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL),
+                                                .textColor = it->enabled ? P->text : P->faint,
+                                                .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+        if (it->keys.length)
+            CLAY_TEXT(it->keys, CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
+                                                   .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+    return clicked;
+}
+
+/* draw the owner's open menu: floating at the anchor, clamped to the window, z
+   above everything. Returns the clicked item index (the menu then closes) or
+   -1. Any press outside it dismisses it. Call every frame while open; a no-op
+   (-1) when this owner's menu isn't. */
+static int ui_menu(const Palette *P, const void *owner, const UiMenuItem *items, int n, float w){
+    int clicked = -1, i;
+    float mxp = g_menu_x, myp = g_menu_y, mh = (float)n * UISC(24) + UISC(8);
+    if (!ui_menu_is_open(owner)) return -1;
+    if (g_menu_fresh) g_menu_fresh = 0;      /* the opening press must not also dismiss */
+    else if ((g_pointer_pressed_raw || g_right_pressed_raw) && !ui_menu_pointer_over()){
+        ui_menu_close();
+        return -1;
+    }
+    if (g_view_w > 0 && mxp > g_view_w - UISC(w) - UISC(10)) mxp = g_view_w - UISC(w) - UISC(10);
+    if (g_view_h > 0 && myp > g_view_h - mh - UISC(10))      myp = g_view_h - mh - UISC(10);
+    CLAY({ .id = CLAY_ID("ui_ctx_menu"),
+           .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(w)) },
+                       .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(UISC(4)) },
+           .backgroundColor = P->panel, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
+           .border = { .width = { 1, 1, 1, 1, 0 }, .color = P->border2 },
+           .floating = { .offset = { mxp, myp }, .zIndex = 1000,
+                         .attachTo = CLAY_ATTACH_TO_ROOT } }) {
+        for (i = 0; i < n; i++)
+            if (ui_menu_item(P, &items[i])) clicked = i;
+    }
+    if (clicked >= 0) ui_menu_close();
     return clicked;
 }
 

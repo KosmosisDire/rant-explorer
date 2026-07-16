@@ -28,19 +28,15 @@ typedef struct {
     /* message composer at the bottom of the Topics feed (publishes to the selected topic) */
     char     compose[UI_COMPOSE_MAX];
     int      compose_len;
-    int      compose_send;    /* set by Enter in the event loop; consumed when the feed draws */
     int      compose_topic;   /* selected topic the draft belongs to (reset draft on change) */
 
     /* structured publish form (replaces the composer on a typed topic): one value string
        per top-level schema field, prefilled with the type's default */
     char     form_val[UI_FORM_MAX][UI_FORM_VAL];
     int      form_len[UI_FORM_MAX];
-    uint8_t  form_kind[UI_FORM_MAX];  /* each shown field's CAP_K_* (the composer sets it); lets the
-                                         event loop give a bool field toggle-not-text keystrokes */
     int      form_n;          /* fields shown this frame (the composer sets it) */
     int      form_focus;      /* focused field, or -1 (the free-text composer owns input) */
     int      form_topic;      /* sel_topic the values belong to; re-defaulted on change */
-    int      form_send;       /* Enter in a form field: publish (consumed by the composer) */
 
     /* a message pulled out of the feed to inspect: a durable COPY (survives the feed ring
        overwriting the original), shown in the Inspect sidebar tab in place of the topic
@@ -51,16 +47,18 @@ typedef struct {
 
     /* topic-tree filter (the search box above the tree): rows whose topic path or any
        endpoint node name doesn't contain this substring (case-insensitive) are hidden */
-    int      topic_filter_focus;  /* 1 = the filter box has focus (text routes here) */
     char     topic_filter[CAP_TOPIC_CAP];
     int      topic_filter_len;
 
     /* "add a topic" input (the + by the filter): type a name to publish to a new topic */
-    int      adding_topic;    /* 1 = the new-topic name field has focus (text routes here) */
+    int      adding_topic;    /* 1 = the new-topic name field is showing */
     char     new_topic[CAP_TOPIC_CAP];
     int      new_topic_len;
-    int      new_topic_commit;/* set by Enter in the event loop; consumed when the tree draws */
     char     select_topic[CAP_TOPIC_CAP]; /* pending: select this topic once it appears in the list */
+
+    /* text-box widget state, one per editable field (ui_textbox.h owns the semantics) */
+    UiTbState tb_filter, tb_new_topic, tb_compose;
+    UiTbState tb_form[UI_FORM_MAX];
 
     /* Topics feed auto-scroll: stick to the newest message at the bottom while the user
        is parked there; a scroll up unlocks it, returning to the bottom re-locks. */
@@ -91,24 +89,23 @@ static void app_init(AppState *a, const Dataset *data){
     a->drawer_tab  = DRAWER_INSPECT;
     a->n_collapsed = 0;
     a->compose_len   = 0;
-    a->compose_send  = 0;
     a->compose[0]    = '\0';
     a->compose_topic = -1;
     a->form_n     = 0;
     a->form_focus = -1;
     a->form_topic = -1;
-    a->form_send  = 0;
-    for (fk = 0; fk < UI_FORM_MAX; fk++) a->form_kind[fk] = 0;   /* CAP_K_U8 = a plain text field */
     a->has_inspect_msg   = 0;
     a->inspect_msg_topic[0] = '\0';
-    a->topic_filter_focus = 0;
     a->topic_filter_len   = 0;
     a->topic_filter[0]    = '\0';
     a->adding_topic     = 0;
     a->new_topic_len    = 0;
     a->new_topic[0]     = '\0';
-    a->new_topic_commit = 0;
     a->select_topic[0]  = '\0';
+    memset(&a->tb_filter, 0, sizeof a->tb_filter);
+    memset(&a->tb_new_topic, 0, sizeof a->tb_new_topic);
+    memset(&a->tb_compose, 0, sizeof a->tb_compose);
+    for (fk = 0; fk < UI_FORM_MAX; fk++) memset(&a->tb_form[fk], 0, sizeof a->tb_form[fk]);
     a->feed_pinned    = 1;
     a->feed_sel_topic = -1;
     a->feed_prev_scroll_y = 0.0f;

@@ -790,7 +790,7 @@ typedef struct {
 } CapReplyPending;
 static CapReplyPending cap_replies[CAP_REPLY_PENDING];
 
-static void cap_fn_on_reply(const DartCallReply *r){
+static void cap_fn_on_reply(const DartResponse *r){
     CapSub *s = (CapSub *)r->user;
     int i;
     for (i = 0; i < CAP_REPLY_PENDING; i++){

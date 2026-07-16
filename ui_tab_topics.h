@@ -18,8 +18,43 @@
 /* the selected topic's live feed, refetched from the capture each frame */
 static CapFeedItem tt_feed[CAP_FEED_MAX];
 static int         tt_feed_n, tt_subscribed, tt_sub_error, tt_sub_reliable;
+static int         tt_send_pending;   /* a send is parked on the forming match (spinner) */
 static uint32_t    tt_msgs, tt_drops;
 static CapSchema   tt_feed_schema;   /* the topic's main schema, for picking the feed's column template */
+
+/* entity glyph for a topic's kind: the capture layer folds pattern channels through the
+   canonical reflection walk, so a function/variable/signal arrives as ONE entity and this
+   is a straight kind -> icon map. Returns 1 if it drew. Colored per family for a quick scan. */
+static int tt_kind_icon(const Palette *P, int kind){
+    IconId id; Clay_Color c;
+    switch (kind){
+        case CAP_KIND_FUNCTION: id = ICON_FUNCTION; c = P->accent; break;
+        case CAP_KIND_VARIABLE: id = ICON_VARIABLE; c = P->amber;  break;
+        case CAP_KIND_SIGNAL:   id = ICON_SIGNAL;   c = P->green;  break;
+        default: return 0;
+    }
+    ui_icon(id, 14, c);
+    return 1;
+}
+static const char *tt_kind_label(const Topic *t){
+    switch (t->kind){
+        case CAP_KIND_FUNCTION: return t->incomplete ? "function (half advertised)" : "function";
+        case CAP_KIND_VARIABLE: return t->incomplete ? "variable (half advertised)"
+                                     : (t->writable ? "variable" : "variable (read-only)");
+        case CAP_KIND_SIGNAL:   return "signal";
+        default: return "topic";
+    }
+}
+/* the send verb the composer/form buttons carry: sending IS calling / setting / emitting
+   for a pattern entity (the capture layer routes it) */
+static const char *tt_send_verb(const Topic *t){
+    switch (t->kind){
+        case CAP_KIND_FUNCTION: return "Call";
+        case CAP_KIND_VARIABLE: return "Set";
+        case CAP_KIND_SIGNAL:   return "Emit";
+        default: return "Send";
+    }
+}
 
 /* topic status light: hollow grey not subscribed, green subscribed, red dropping/erroring */
 static void tt_status_dot(const Palette *P, int sub_state){
@@ -165,6 +200,14 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
             if (row->is_branch){
                 if (Clay_Hovered() && g_pointer_pressed){ app_toggle_collapsed(app, row->path); g_pointer_pressed = false; }
                 ui_icon(row->open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12, P->dim);
+            }
+        }
+        /* entity glyph: a function/variable/signal channel shows its type icon; a plain topic
+           shows nothing here (its subscription light rides the right-hand columns) */
+        if (row->has_topic && row->topic->kind){
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(18)), .height = CLAY_SIZING_GROW(0) },
+                               .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
+                tt_kind_icon(P, row->topic->kind);
             }
         }
         /* name: a branch (has children) gets a trailing '/' so a namespace reads as a
@@ -367,6 +410,7 @@ static void topics_tree(AppState *app, const Palette *P){
 
 #define TT_TABLE_COLS 6    /* fields shown by default (right-click the header to change) */
 #define TT_TIME_W    60    /* time column width, unscaled px */
+#define TT_FROM_W   110    /* sender column width, unscaled px ("> " call / "< " reply + name) */
 #define TT_FIELD_W   94    /* field column width, unscaled px (fallback before layout is known) */
 #define TT_CELL_PADL  8    /* cell left padding, unscaled px */
 #define TT_DRAWER_W 332    /* right sidebar width, unscaled px (must match topics_drawer) */
@@ -437,7 +481,8 @@ static void tt_cell_grow(const Palette *P, const char *text, Clay_Color col){
    shows a single payload column instead; with a schema but no fields selected only the time
    column shows. Right-clicking the row opens the column-selection menu at the cursor. */
 static void tt_table_header(AppState *app, const Palette *P, const TblCol *cols, int n_show,
-                            float field_w, int field_budget, int time_budget, int raw){
+                            float field_w, int field_budget, int time_budget, int from_budget,
+                            int raw){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(26)) } },
            .backgroundColor = P->panel2,
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border2 } }) {
@@ -447,6 +492,7 @@ static void tt_table_header(AppState *app, const Palette *P, const TblCol *cols,
             app->col_menu_x = g_pointer_x; app->col_menu_y = g_pointer_y;
         }
         tt_cell(P, UISC(TT_TIME_W), "t (s)", time_budget, P->faint);
+        tt_cell(P, UISC(TT_FROM_W), "from", from_budget, P->faint);
         if (raw) tt_cell_grow(P, "payload", P->faint);
         else for (c = 0; c < n_show; c++) tt_cell(P, field_w, cols[c].name, field_budget, P->faint);
     }
@@ -457,18 +503,26 @@ static void tt_table_header(AppState *app, const Palette *P, const TblCol *cols,
    instead. Clicking copies the sample into the inspector; the inspected sample is highlighted. */
 static void tt_table_row(AppState *app, const Palette *P, const char *topic, const CapFeedItem *m,
                          int idx, const TblCol *cols, int n_show, float field_w,
-                         int field_budget, int time_budget, int raw){
+                         int field_budget, int time_budget, int from_budget, int kind, int raw){
     int  selected = app->has_inspect_msg && m->uid == app->inspect_msg.uid
                     && !strcmp(topic, app->inspect_msg_topic);
-    char tbuf[16];
+    char tbuf[16], fbuf[CAP_NAME_CAP + 12];
     int  c;
     snprintf(tbuf, sizeof tbuf, "%.2f", m->t_s);
+    /* the sender, direction-marked on a function feed ("> " = our call, "< " = the reply);
+       a FORCED variable value carries its pin marker with the writer */
+    snprintf(fbuf, sizeof fbuf, "%s%s%s",
+             kind == CAP_KIND_FUNCTION ? (m->mine ? "> " : "< ") : "",
+             m->sender,
+             m->forced ? " [F]" : "");
     CLAY({ .id = CLAY_IDI("feed_row", (uint32_t)idx),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(24)) } },
            .backgroundColor = selected ? P->accent_bg : (Clay_Hovered() ? P->panel : UI_NONE),
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
         if (Clay_Hovered() && g_pointer_pressed) app_inspect_msg(app, topic, m);
         tt_cell(P, UISC(TT_TIME_W), tbuf, time_budget, P->faint);
+        tt_cell(P, UISC(TT_FROM_W), fbuf, from_budget,
+                m->forced ? P->amber : m->mine ? P->accent : P->dim);
         if (raw){
             char rawbuf[CAP_MSG_PREVIEW + 1];
             const char *pv = m->preview;
@@ -646,6 +700,13 @@ static void tt_form_send(AppState *app, const Topic *t, int n){
     for (i = 0; i < n; i++) vals[i] = app->form_val[i];
     cap_publish_form(app->cap, t->path, vals, n);   /* the values stay for the next send */
 }
+/* variable debug override: pin the form's value until Unforce (op bits on the set channel) */
+static void tt_form_force(AppState *app, const Topic *t, int n){
+    const char *vals[UI_FORM_MAX]; int i;
+    if (!app->cap) return;
+    for (i = 0; i < n; i++) vals[i] = app->form_val[i];
+    cap_variable_force_form(app->cap, t->path, vals, n);
+}
 
 /* one field: name | type-aware input | type, nested members indented. A bool gets a
    toggle, a string/array gets a validated box with an "n/cap" counter, a numeric scalar a
@@ -739,10 +800,21 @@ static void topics_form(AppState *app, const Palette *P, const Topic *t, const C
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
         }
         for (i = 0; i < n; i++) tt_form_field_row(app, P, &sc->fields[i], i, valid[i]);
-        /* Send: its own row under the fields (right-aligned), not boxed in a card */
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = { .top = UISCI(4) } } }) {
+        /* Send: its own row under the fields (right-aligned), not boxed in a card. A
+           writable variable also gets the debug override pair: Force pins the form's
+           value at the owner (writes absorb until Unforce releases it). */
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = { .top = UISCI(4) },
+                           .childGap = UISCI(8) } }) {
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
-            if (ui_pill(P, CLAY_STRING("Send"), FAM_SANS, WT_SEMI, FS_SMALL,
+            if (t->kind == CAP_KIND_VARIABLE && t->writable){
+                if (ui_pill(P, CLAY_STRING("Force"), FAM_SANS, WT_SEMI, FS_SMALL,
+                            P->amber, P->panel2, P->border2, UISC(34)))
+                    tt_form_force(app, t, n);
+                if (ui_pill(P, CLAY_STRING("Unforce"), FAM_SANS, WT_SEMI, FS_SMALL,
+                            P->dim, P->panel2, P->border2, UISC(34)) && app->cap)
+                    cap_variable_unforce(app->cap, t->path);
+            }
+            if (ui_pill(P, ui_str(tt_send_verb(t)), FAM_SANS, WT_SEMI, FS_SMALL,
                         P->accent, P->accent_bg, P->border2, UISC(34)))
                 tt_form_send(app, t, n);
         }
@@ -797,7 +869,7 @@ static void topics_composer(AppState *app, const Palette *P, const Topic *t){
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
                                              .wrapMode = CLAY_TEXT_WRAP_WORDS }));
         }
-        if (ui_pill(P, CLAY_STRING("Send"), FAM_SANS, WT_SEMI, FS_SMALL,
+        if (ui_pill(P, ui_str(tt_send_verb(t)), FAM_SANS, WT_SEMI, FS_SMALL,
                     can ? P->accent : P->faint, can ? P->accent_bg : P->panel2, P->border2, UISC(38)) && can)
             tt_do_send(app, t->path);
     }
@@ -811,9 +883,12 @@ static void topics_feed(AppState *app, const Palette *P){
 
     /* refetch the selected topic's live feed for this frame (before drawing the controls) */
     tt_feed_n = 0; tt_subscribed = tt_sub_error = tt_sub_reliable = 0; tt_msgs = tt_drops = 0;
-    if (t && app->cap)
+    tt_send_pending = 0;
+    if (t && app->cap){
         tt_feed_n = cap_topic_feed(app->cap, t->path, tt_feed, CAP_FEED_MAX,
                                    &tt_subscribed, &tt_sub_error, &tt_sub_reliable, &tt_msgs, &tt_drops);
+        tt_send_pending = cap_topic_send_pending(app->cap, t->path);
+    }
     feed_state = tt_subscribed ? (tt_sub_error ? 2 : 1) : 0;
 
     CLAY({ .id = CLAY_ID("topics_feed"),
@@ -847,9 +922,19 @@ static void topics_feed(AppState *app, const Palette *P){
                 CLAY_TEXT(ui_fmt("%d subscribers", t->n_subs + t->self_sub),
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
             }
-            /* control row: subscribe toggle + live subscription status */
+            /* control row: subscribe toggle + live subscription status. A FUNCTION has no
+               subscribe: replies are DIRECTED to their caller, so there is nothing to
+               passively receive; the feed is this explorer's own call log, opened by the
+               first Call. */
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(12),
                                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+                if (t->kind == CAP_KIND_FUNCTION){
+                    tt_status_dot(P, tt_feed_n > 0 ? (tt_sub_error ? 2 : 1) : 0);
+                    CLAY_TEXT(tt_feed_n > 0 ? ui_fmt("call log  \xC2\xB7  %u replies", tt_msgs)
+                                            : CLAY_STRING("call log (replies are directed: only your own calls appear)"),
+                              CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
+                                                 .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                } else {
                 if (!tt_subscribed){
                     if (ui_pill(P, CLAY_STRING("Subscribe"), FAM_SANS, WT_SEMI, FS_SMALL,
                                 P->accent, P->accent_bg, UI_NONE, UISC(28)) && app->cap)
@@ -866,14 +951,27 @@ static void topics_feed(AppState *app, const Palette *P){
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
                                              .textColor = feed_state == 2 ? P->red : P->dim,
                                              .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                }
                 if (tt_drops > 0)
                     CLAY_TEXT(ui_fmt("%u dropped", tt_drops),
                               CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->red,
                                                  .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                /* variable: the newest value's FORCED flag, live from the value prefix */
+                if (t->kind == CAP_KIND_VARIABLE && tt_feed_n > 0 && tt_feed[tt_feed_n - 1].forced)
+                    CLAY_TEXT(CLAY_STRING("FORCED"),
+                              CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_SEMI, FS_CAPTION),
+                                                 .textColor = P->amber, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                /* a send parked on the forming match (cap_pend_poll flushes it) */
+                if (tt_send_pending)
+                    CLAY_TEXT(CLAY_STRING("SENDING..."),
+                              CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_SEMI, FS_CAPTION),
+                                                 .textColor = P->amber, .wrapMode = CLAY_TEXT_WRAP_NONE }));
             }
             if (tt_feed_n == 0){
-                ui_placeholder(P, tt_subscribed ? CLAY_STRING("waiting for messages...")
-                                                : CLAY_STRING("subscribe to see live messages"));
+                ui_placeholder(P, t->kind == CAP_KIND_FUNCTION
+                                    ? CLAY_STRING("compose a call in the Publish tab to see requests and replies")
+                                    : tt_subscribed ? CLAY_STRING("waiting for messages...")
+                                                    : CLAY_STRING("subscribe to see live messages"));
             } else {
                 /* columns come from a decoded sample of the topic's MAIN schema (the widest
                    compatible one, exactly what the inspector shows via cap_topic_schema), not
@@ -884,7 +982,7 @@ static void topics_feed(AppState *app, const Palette *P){
                    schema-less feed shows one payload column. Its fields[] index maps 1:1 across
                    every sample of that schema, so the columns drive every row. */
                 int   n_cols = 0, tmpl = -1, j, c, n_vis = 0, raw;
-                int   field_budget, time_budget;
+                int   field_budget, time_budget, from_budget;
                 float mono_adv = tt_name_w("00000000") / 8.0f;
                 float table_w = 0.0f, field_w;
                 if (mono_adv <= 0.5f) mono_adv = UISC(7);
@@ -922,17 +1020,21 @@ static void topics_feed(AppState *app, const Palette *P){
                     if (td.found)
                         table_w = g_view_w - td.boundingBox.width - drawer_w - UISC(TT_FEED_PAD) * 2.0f - UISC(2);
                 }
-                field_w = (n_vis > 0 && table_w > UISC(TT_TIME_W))
-                          ? floorf((table_w - UISC(TT_TIME_W)) / (float)n_vis) : UISC(TT_FIELD_W);
+                field_w = (n_vis > 0 && table_w > UISC(TT_TIME_W) + UISC(TT_FROM_W))
+                          ? floorf((table_w - UISC(TT_TIME_W) - UISC(TT_FROM_W)) / (float)n_vis)
+                          : UISC(TT_FIELD_W);
                 if (field_w < 1.0f) field_w = 1.0f;
                 field_budget = (int)((field_w - UISC(TT_CELL_PADL + 2)) / mono_adv);
                 if (field_budget < 1) field_budget = 1;
+                from_budget = (int)((UISC(TT_FROM_W) - UISC(TT_CELL_PADL + 2)) / mono_adv);
+                if (from_budget < 1) from_budget = 1;
 
                 CLAY({ .id = CLAY_ID("topics_table"),
                        .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                                    .layoutDirection = CLAY_TOP_TO_BOTTOM },
                        .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-                    tt_table_header(app, P, tt_vis, n_vis, field_w, field_budget, time_budget, raw);
+                    tt_table_header(app, P, tt_vis, n_vis, field_w, field_budget, time_budget,
+                                    from_budget, raw);
                     /* scrolling body, newest at the bottom; topics_feed_autoscroll keeps it pinned */
                     CLAY({ .id = CLAY_ID("topics_feed_scroll"),
                            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
@@ -940,7 +1042,7 @@ static void topics_feed(AppState *app, const Palette *P){
                            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
                         for (i = 0; i < tt_feed_n; i++)
                             tt_table_row(app, P, t->path, &tt_feed[i], i, tt_vis, n_vis, field_w,
-                                         field_budget, time_budget, raw);
+                                         field_budget, time_budget, from_budget, t->kind, raw);
                     }
                 }
                 tt_col_menu(app, P, tt_cols, n_cols);   /* the header's right-click column picker */
@@ -1049,29 +1151,36 @@ static void topic_schema_field_row(const Palette *P, const CapSchemaField *f, in
 /* the selected topic's advertised message schema (from any endpoint: pub or sub). The query
    prefilters each peer's interest by topic hash, so it is cheap even at many-thousand-topic
    scale and runs live every frame (no cache, no staleness). */
-static CapSchema tt_schema;
+static CapSchema tt_schema[2];          /* [0] request/primary, [1] response: Clay renders the
+                                           frame's text AFTER both sections fill, so each needs
+                                           its own strings to point into */
 static char      tt_dsl[8192];          /* scratch for the DSL handed to the clipboard */
 static int       tt_dsl_copied_topic = -1;   /* which topic's Copy DSL was last clicked */
 static uint32_t  tt_dsl_copied_ms;      /* when, for the brief "Copied" flash */
-static void topic_schema_section(AppState *app, const Palette *P, const Topic *t){
+static void topic_schema_section(AppState *app, const Palette *P, const Topic *t,
+                                 Clay_String label, int rsp){
+    CapSchema *sc = &tt_schema[rsp ? 1 : 0];
     int have, i, copied;
-    have = app->cap ? cap_topic_schema(app->cap, t->path, &tt_schema) : 0;
-    copied = tt_dsl_copied_topic == app->sel_topic && (uint32_t)(g_now_ms - tt_dsl_copied_ms) < 1500u;
-    /* SCHEMA header row: the label, and (when the shape is inlined) a Copy DSL button that
-       puts the topic's schema as compile-ready DSL text onto the system clipboard */
+    have = app->cap ? (rsp ? cap_topic_rsp_schema(app->cap, t->path, sc)
+                           : cap_topic_schema(app->cap, t->path, sc)) : 0;
+    copied = tt_dsl_copied_topic == app->sel_topic * 2 + rsp
+          && (uint32_t)(g_now_ms - tt_dsl_copied_ms) < 1500u;
+    /* header row: the label, and (inlined) a Copy DSL button that puts this section's
+       schema (request OR response) as compile-ready DSL text onto the system clipboard */
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(22)) },
                        .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-        ui_section_label(P, CLAY_STRING("SCHEMA"));
+        ui_section_label(P, label);
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
-        if (have && tt_schema.inlined && ui_copy_pill(P, copied)
-            && cap_topic_schema_dsl(app->cap, t->path, tt_dsl, sizeof tt_dsl) > 0){
+        if (have && sc->inlined && ui_copy_pill(P, copied)
+            && cap_topic_schema_dsl(app->cap, t->path, rsp, tt_dsl, sizeof tt_dsl) > 0){
             SDL_SetClipboardText(tt_dsl);
-            tt_dsl_copied_topic = app->sel_topic;
+            tt_dsl_copied_topic = app->sel_topic * 2 + rsp;
             tt_dsl_copied_ms    = g_now_ms;
         }
     }
     if (!have){
-        CLAY_TEXT(CLAY_STRING("none advertised (raw bytes)"),
+        CLAY_TEXT(rsp ? CLAY_STRING("none advertised (empty acknowledgement)")
+                      : CLAY_STRING("none advertised (raw bytes)"),
                   CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint }));
     } else {
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
@@ -1083,31 +1192,33 @@ static void topic_schema_section(AppState *app, const Palette *P, const Topic *t
                    .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
                 CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8),
                                    .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-                    CLAY_TEXT(tt_schema.inlined ? ui_str(tt_schema.type_name) : CLAY_STRING("(hash only)"),
+                    CLAY_TEXT(sc->inlined ? ui_str(sc->type_name) : CLAY_STRING("(hash only)"),
                               CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_SEMI, FS_SMALL),
                                                  .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
                     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
-                    if (tt_schema.inlined)
-                        CLAY_TEXT(ui_fmt("%u B/msg", tt_schema.msg_size),
+                    if (sc->inlined)
+                        CLAY_TEXT(ui_fmt("%u B/msg", sc->msg_size),
                                   CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
                                                      .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
                 }
-                CLAY_TEXT(ui_fmt("id %08x%08x", (unsigned)(tt_schema.hash >> 32), (unsigned)tt_schema.hash),
+                CLAY_TEXT(ui_fmt("id %08x%08x", (unsigned)(sc->hash >> 32), (unsigned)sc->hash),
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
                                              .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
             }
-            if (tt_schema.inlined)
-                for (i = 0; i < tt_schema.n_fields; i++) topic_schema_field_row(P, &tt_schema.fields[i], i);
-            if (tt_schema.inlined && tt_schema.total_fields > tt_schema.n_fields)
-                CLAY_TEXT(ui_fmt("  +%d more fields", tt_schema.total_fields - tt_schema.n_fields),
+            if (sc->inlined)   /* id space split: request + response sections coexist */
+                for (i = 0; i < sc->n_fields; i++)
+                    topic_schema_field_row(P, &sc->fields[i],
+                                           i + (rsp ? CAP_SCHEMA_FIELDS : 0));
+            if (sc->inlined && sc->total_fields > sc->n_fields)
+                CLAY_TEXT(ui_fmt("  +%d more fields", sc->total_fields - sc->n_fields),
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint }));
-            if (!tt_schema.inlined)
+            if (!sc->inlined)
                 CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(9)) } }) {
                     CLAY_TEXT(CLAY_STRING("schema advertised by hash only (too large to inline)"),
                               CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint }));
                 }
         }
-        if (tt_schema.hash_conflict)
+        if (sc->hash_conflict)
             CLAY_TEXT(CLAY_STRING("endpoints disagree on this topic's schema"),
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_CAPTION), .textColor = P->red }));
     }
@@ -1120,14 +1231,27 @@ static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
                        .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(UISC(14)),
                        .childGap = UISCI(11) },
            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
-        CLAY_TEXT(ui_str(t->path), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_BODY), .textColor = P->text }));
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(6),
+                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+            if (t->kind) tt_kind_icon(P, t->kind);
+            CLAY_TEXT(ui_str(t->path), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_BODY), .textColor = P->text }));
+        }
+        if (t->kind)   /* patterns layer: name the entity + channel role this topic plays */
+            CLAY_TEXT(ui_str(tt_kind_label(t)),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->dim }));
 
         ui_section_label(P, CLAY_STRING("QUALITY OF SERVICE"));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8) } }) {
             topic_qos_cell(P, CLAY_STRING("Reliability"), tt_rel_word(t->reliable), ui_qos_color(P, t->reliable));
         }
 
-        topic_schema_section(app, P, t);
+        if (t->kind == CAP_KIND_FUNCTION){
+            /* a function has two shapes: what a call sends and what the reply carries */
+            topic_schema_section(app, P, t, CLAY_STRING("REQUEST SCHEMA"), 0);
+            topic_schema_section(app, P, t, CLAY_STRING("RESPONSE SCHEMA"), 1);
+        } else {
+            topic_schema_section(app, P, t, CLAY_STRING("SCHEMA"), 0);
+        }
 
         ui_section_label(P, ui_fmt("PUBLISHERS  %d", t->n_pubs + t->self_pub));
         if (t->n_pubs == 0 && !t->self_pub)
@@ -1152,7 +1276,10 @@ static void topics_publish(AppState *app, const Palette *P, const Topic *t){
                        .childGap = UISCI(11) },
            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
         CLAY_TEXT(ui_str(t->path), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_BODY), .textColor = P->text }));
-        ui_section_label(P, CLAY_STRING("COMPOSE MESSAGE"));
+        ui_section_label(P, t->kind == CAP_KIND_FUNCTION ? CLAY_STRING("COMPOSE CALL")
+                          : t->kind == CAP_KIND_VARIABLE ? CLAY_STRING("SET VALUE")
+                          : t->kind == CAP_KIND_SIGNAL   ? CLAY_STRING("EMIT SIGNAL")
+                          :                                CLAY_STRING("COMPOSE MESSAGE"));
         topics_composer(app, P, t);
     }
 }

@@ -136,6 +136,11 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
             n->pubs[n->n_pubs]    = ti;
             n->pub_rel[n->n_pubs] = (unsigned char)cn->pub[k].reliable;
             n->n_pubs++;
+            if (cn->pub[k].kind){   /* entity kind (agrees across peers) */
+                g_topics[ti].kind = cn->pub[k].kind;
+                if (cn->pub[k].writable)   g_topics[ti].writable = 1;
+                if (cn->pub[k].incomplete) g_topics[ti].incomplete = 1;
+            }
         }
         for (k = 0; k < cn->n_sub && n->n_subs < UI_MAX_NODE_TOPICS; k++){
             int ti = uid_topic_for(cn->sub[k].name, &n_top);
@@ -143,6 +148,11 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
             n->subs[n->n_subs]    = ti;
             n->sub_rel[n->n_subs] = (unsigned char)cn->sub[k].reliable;
             n->n_subs++;
+            if (cn->sub[k].kind){
+                g_topics[ti].kind = cn->sub[k].kind;
+                if (cn->sub[k].writable)   g_topics[ti].writable = 1;
+                if (cn->sub[k].incomplete) g_topics[ti].incomplete = 1;
+            }
         }
     }
 

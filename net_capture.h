@@ -59,10 +59,21 @@ void cap_stop(Capture *cap);
 
 typedef enum { CAP_ST_ACTIVE = 0, CAP_ST_DROPPED = 1, CAP_ST_GONE = 2 } CapState;
 
+/* ENTITY kind, values mirroring DartEntityKind (patterns/core.h). The capture layer walks
+   peers through the canonical entity reflection (dart_node_peer_entity_next), so pattern
+   channels (f@req / f@rsp / v@set) never reach the UI: a function or variable is ONE entry
+   under its base name, a signal one entry, everything else a plain topic. */
+enum {
+    CAP_KIND_TOPIC = 0, CAP_KIND_FUNCTION, CAP_KIND_VARIABLE, CAP_KIND_SIGNAL
+};
+
 typedef struct {
-    char     name[CAP_TOPIC_CAP];
-    uint16_t index;          /* the advertiser's local topic index */
+    char     name[CAP_TOPIC_CAP];   /* the ENTITY base name (never an @-mangled internal) */
+    uint16_t index;          /* the advertiser's primary channel index (schema query key) */
     int      reliable;       /* offered (pub) / requested (sub) reliability */
+    uint8_t  kind;           /* CAP_KIND_*: what this entity is */
+    uint8_t  writable;       /* CAP_KIND_VARIABLE: a set channel is advertised */
+    uint8_t  incomplete;     /* a pattern half-pair (partner channel missing/unresolved) */
 } CapEndpoint;
 
 typedef struct {
@@ -173,6 +184,7 @@ typedef struct {
     uint32_t len;                    /* true payload length */
     uint16_t preview_len;            /* bytes filled in preview[] */
     int      mine;                   /* 1 = we published it (local echo) */
+    int      forced;                 /* VARIABLE value: the owner published it FORCED (prefix flag) */
     int      decoded;                /* 1 = fields[] holds the reflected decode */
     int      n_fields;               /* fields filled (capped to CAP_MSG_FIELDS) */
     int      total_fields;           /* fields the schema actually has */
@@ -237,13 +249,32 @@ typedef struct {
 } CapSchema;
 
 /* Fill *out with `topic`'s advertised schema; 1 if any endpoint advertises one, else 0
-   (out zeroed). Rebuilt from the live peer view on each call. */
+   (out zeroed). Rebuilt from the live peer view on each call. For a FUNCTION entity this
+   is the REQUEST schema (what the publish form fills / a call sends). */
 int  cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out);
 
+/* A FUNCTION entity's RESPONSE schema (what a reply carries); 0 for every other kind or
+   when no provider advertises one. */
+int  cap_topic_rsp_schema(const Capture *cap, const char *topic, CapSchema *out);
+
 /* Spell `topic`'s advertised schema as compile-ready DSL text into out[out_cap] (always
-   NUL-terminated). Returns the text length, or 0 when no inlinable schema is advertised
-   (hash-only or none). Walks the FULL field set, not the display cap; nested structs
-   render as `name: { ... }`. */
-int  cap_topic_schema_dsl(const Capture *cap, const char *topic, char *out, size_t out_cap);
+   NUL-terminated). rsp = 1 spells a FUNCTION's response schema instead of the primary
+   (request/value/payload) one. Returns the text length, or 0 when no inlinable schema is
+   advertised (hash-only or none). Walks the FULL field set, not the display cap; nested
+   structs render as `name: { ... }`. */
+int  cap_topic_schema_dsl(const Capture *cap, const char *topic, int rsp, char *out, size_t out_cap);
+
+/* Variable FORCE control (a writable VARIABLE entity only): force pins the value built
+   from the publish-form values (same field parsing as cap_publish_form) until unforce;
+   both are opaque ops on the variable's set channel (an owner without allow_force ignores
+   them silently). Return 1 on send. */
+int  cap_variable_force_form(Capture *cap, const char *topic, const char *const *values, int n_values);
+int  cap_variable_unforce(Capture *cap, const char *topic);
+
+/* 1 while a send on `topic` is PARKED waiting for its match to resolve (a variable op,
+   signal emit, or best-effort publish fired while the announce/detail cycle was still
+   verifying a candidate receiver). cap_poll flushes it the moment matching resolves and
+   drops it loudly after a few seconds; the UI shows a sending indicator meanwhile. */
+int  cap_topic_send_pending(const Capture *cap, const char *topic);
 
 #endif /* NET_CAPTURE_H */

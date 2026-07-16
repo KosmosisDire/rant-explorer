@@ -28,6 +28,9 @@ typedef enum {
     ICON_PLUS,           /* add a new topic */
     ICON_CHECK,          /* column menu: a shown field */
     ICON_COPY,           /* copy the schema DSL to the clipboard */
+    ICON_FUNCTION,       /* patterns: a function channel (req/resp) */
+    ICON_VARIABLE,       /* patterns: a variable channel (value/set) */
+    ICON_SIGNAL,         /* patterns: a signal channel (fire-and-forget event) */
     ICON_COUNT
 } IconId;
 
@@ -79,6 +82,9 @@ static const char *const UI_ICON_SVG[ICON_COUNT] = {
     /* PLUS   */ UI_ICON("<path d=\"M5 12h14\"/><path d=\"M12 5v14\"/>"),
     /* CHECK  */ UI_ICON("<path d=\"M20 6 9 17l-5-5\"/>"),
     /* COPY   */ UI_ICON("<rect width=\"14\" height=\"14\" x=\"8\" y=\"8\" rx=\"2\" ry=\"2\"/><path d=\"M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2\"/>"),
+    /* FUNCTION */ UI_ICON("<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\"/><path d=\"M9 17c2 0 2.8-1 2.8-2.8V10c0-2 1-3.3 3.2-3\"/><path d=\"M9 11.2h5.7\"/>"),
+    /* VARIABLE */ UI_ICON("<path d=\"M8 21s-4-3-4-9 4-9 4-9\"/><path d=\"M16 3s4 3 4 9-4 9-4 9\"/><line x1=\"15\" x2=\"9\" y1=\"9\" y2=\"15\"/><line x1=\"9\" x2=\"15\" y1=\"9\" y2=\"15\"/>"),
+    /* SIGNAL  */ UI_ICON("<path d=\"M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z\"/>"),
 };
 
 /* Icons rasterize at a supersample of their on-screen size, then SDL linear-shrinks

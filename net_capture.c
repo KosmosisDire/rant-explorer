@@ -910,7 +910,7 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
             req = cap_topic_schema_parse(node, cn);
             cap_primary_channel_name(cn, sizeof cn, s->name, CAP_KIND_FUNCTION, 1);
             rsp = cap_topic_schema_parse(node, cn);
-            s->fn = dart_node_open_function(node, s->name, req, rsp, NULL);
+            s->fn = dart_node_create_function_caller(node, s->name, req, rsp, NULL);
             if (!s->fn){
                 if (req) dart_schema_free(req, cap_schema_alloc, NULL);
                 if (rsp) dart_schema_free(rsp, cap_schema_alloc, NULL);

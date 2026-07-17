@@ -406,8 +406,9 @@ static void topics_tree(AppState *app, const Palette *P){
    The feed is a TABLE: columns are the message's fields (flattened, so a nested member reads
    pos.x), rows are samples (newest at the bottom). The header is sticky: it is a sibling
    ABOVE the scroll body sharing the same column widths, so the columns line up while the body
-   scrolls. The first TT_TABLE_COLS fields show by default; right-click the header to pick which
-   fields are shown (with none selected only the time column shows). A schema-less topic falls
+   scrolls. The first TT_TABLE_COLS fields show by default; right-click the header for a
+   checklist of every column, the fixed time/sender ones included (field picks are re-seeded
+   per topic, the time/sender toggles persist). A schema-less topic falls
    back to a single "payload" column. The shown field columns stretch to fill the table width
    (measured from the previous frame's laid-out body). Clicking a row copies that sample into
    the inspector (the full decode). Cell text is truncated to its (now dynamic) column width: a
@@ -483,10 +484,10 @@ static void tt_cell_grow(const Palette *P, const char *text, Clay_Color col){
     }
 }
 
-/* the sticky header row: a fixed time column then a header cell per shown field. `field_w`
-   is the stretched column width so the fields fill the table. `raw` (a schema-less topic)
-   shows a single payload column instead; with a schema but no fields selected only the time
-   column shows. Right-clicking the row opens the column-selection menu at the cursor. */
+/* the sticky header row: the fixed time/sender columns (each hideable from the header
+   menu) then a header cell per shown field. `field_w` is the stretched column width so the
+   fields fill the table. `raw` (a schema-less topic) shows a single payload column instead.
+   Right-clicking the row opens the column checklist menu at the cursor. */
 static void tt_table_header(AppState *app, const Palette *P, const TblCol *cols, int n_show,
                             float field_w, int field_budget, int time_budget, int from_budget,
                             int raw){
@@ -495,19 +496,20 @@ static void tt_table_header(AppState *app, const Palette *P, const TblCol *cols,
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border2 } }) {
         int c;
         if (Clay_Hovered() && g_right_pressed){
-            app->col_menu_open = 1;
-            app->col_menu_x = g_pointer_x; app->col_menu_y = g_pointer_y;
+            ui_menu_open(tt_cols, g_pointer_x, g_pointer_y);
+            g_right_pressed = false;
         }
-        tt_cell(P, UISC(TT_TIME_W), "t (s)", time_budget, P->faint);
-        tt_cell(P, UISC(TT_FROM_W), "from", from_budget, P->faint);
+        if (app->col_show_time) tt_cell(P, UISC(TT_TIME_W), "t (s)", time_budget, P->faint);
+        if (app->col_show_from) tt_cell(P, UISC(TT_FROM_W), "from", from_budget, P->faint);
         if (raw) tt_cell_grow(P, "payload", P->faint);
         else for (c = 0; c < n_show; c++) tt_cell(P, field_w, cols[c].name, field_budget, P->faint);
     }
 }
 
-/* one sample row: the time column then a cell per shown field (its decoded value, or "-"
-   when a message lacks it), field cells stretched to `field_w`. `raw` shows the payload
-   instead. Clicking copies the sample into the inspector; the inspected sample is highlighted. */
+/* one sample row: the shown fixed columns then a cell per shown field (its decoded value,
+   or "-" when a message lacks it), field cells stretched to `field_w`. `raw` shows the
+   payload instead. Clicking copies the sample into the inspector; the inspected sample is
+   highlighted. */
 static void tt_table_row(AppState *app, const Palette *P, const char *topic, const CapFeedItem *m,
                          int idx, const TblCol *cols, int n_show, float field_w,
                          int field_budget, int time_budget, int from_budget, int kind, int raw){
@@ -527,9 +529,9 @@ static void tt_table_row(AppState *app, const Palette *P, const char *topic, con
            .backgroundColor = selected ? P->accent_bg : (Clay_Hovered() ? P->panel : UI_NONE),
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
         if (Clay_Hovered() && g_pointer_pressed) app_inspect_msg(app, topic, m);
-        tt_cell(P, UISC(TT_TIME_W), tbuf, time_budget, P->faint);
-        tt_cell(P, UISC(TT_FROM_W), fbuf, from_budget,
-                m->forced ? P->amber : m->mine ? P->accent : P->dim);
+        if (app->col_show_time) tt_cell(P, UISC(TT_TIME_W), tbuf, time_budget, P->faint);
+        if (app->col_show_from) tt_cell(P, UISC(TT_FROM_W), fbuf, from_budget,
+                                        m->forced ? P->amber : m->mine ? P->accent : P->dim);
         if (raw){
             char rawbuf[CAP_MSG_PREVIEW + 1];
             const char *pv = m->preview;
@@ -544,66 +546,25 @@ static void tt_table_row(AppState *app, const Palette *P, const char *topic, con
     }
 }
 
-/* one column-menu row: a checkbox + the field's flattened name; click toggles its visibility */
-static void tt_col_menu_item(AppState *app, const Palette *P, const TblCol *col, int idx){
-    int on = app_col_visible(app, col->name);
-    CLAY({ .id = CLAY_IDI("col_menu_item", (uint32_t)idx),
-           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(26)) },
-                       .padding = { .left = UISCI(7), .right = UISCI(9) }, .childGap = UISCI(8),
-                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
-           .backgroundColor = Clay_Hovered() ? P->panel2 : UI_NONE,
-           .cornerRadius = CLAY_CORNER_RADIUS(UISC(4)) }) {
-        if (Clay_Hovered() && g_pointer_pressed) app_col_toggle(app, col->name);
-        /* checkbox: accent box + check when shown, empty bordered box when hidden */
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(15)), .height = CLAY_SIZING_FIXED(UISC(15)) },
-                           .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
-               .backgroundColor = on ? P->accent_bg : UI_NONE,
-               .cornerRadius = CLAY_CORNER_RADIUS(UISC(3)),
-               .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = on ? P->accent : P->border2 } }) {
-            if (on) ui_icon(ICON_CHECK, 11, P->accent);
-        }
-        CLAY_TEXT(ui_str(col->name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
-                                                        .textColor = on ? P->text : P->dim,
-                                                        .wrapMode = CLAY_TEXT_WRAP_NONE }));
-    }
-}
-
-/* the header's right-click column menu: a floating checklist of every field over a full-screen
-   backdrop that dismisses it on an outside click. Anchored at the cursor, clamped to the window. */
+/* the header's right-click column menu: the generic ui_menu in checklist form, owned by
+   tt_cols (one feed table exists at a time). The fixed time/sender columns lead, then every
+   field; a click toggles visibility and the menu stays open for the next toggle. */
 static void tt_col_menu(AppState *app, const Palette *P, const TblCol *cols, int n_cols){
-    float menu_w = UISC(210);
-    float menu_h = UISC(30) + UISC(26) * (float)(n_cols > 0 ? n_cols : 1) + UISC(10);
-    float x, y;
-    int c;
-    if (!app->col_menu_open) return;
-    /* backdrop under the menu: an outside click (either button) closes it */
-    CLAY({ .id = CLAY_ID("col_menu_backdrop"),
-           .floating = { .attachTo = CLAY_ATTACH_TO_ROOT, .zIndex = 200 },
-           .layout = { .sizing = { .width = CLAY_SIZING_FIXED(g_view_w), .height = CLAY_SIZING_FIXED(g_view_h) } } }) {
-        if (Clay_Hovered() && (g_pointer_pressed || g_right_pressed)) app->col_menu_open = 0;
-    }
-    x = app->col_menu_x; y = app->col_menu_y;
-    if (x + menu_w > g_view_w) x = g_view_w - menu_w;
-    if (y + menu_h > g_view_h) y = g_view_h - menu_h;
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
-    CLAY({ .id = CLAY_ID("col_menu"),
-           .floating = { .attachTo = CLAY_ATTACH_TO_ROOT, .offset = { x, y }, .zIndex = 201 },
-           .layout = { .sizing = { .width = CLAY_SIZING_FIXED(menu_w) }, .layoutDirection = CLAY_TOP_TO_BOTTOM,
-                       .padding = CLAY_PADDING_ALL(UISC(5)), .childGap = UISCI(1) },
-           .backgroundColor = P->panel3, .cornerRadius = CLAY_CORNER_RADIUS(UISC(7)),
-           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border2 } }) {
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) },
-                           .padding = { .left = UISCI(7), .top = UISCI(4), .bottom = UISCI(5) } } }) {
-            ui_section_label(P, CLAY_STRING("COLUMNS"));
-        }
-        if (n_cols == 0)
-            CLAY({ .layout = { .padding = { .left = UISCI(7), .bottom = UISCI(4) } } }) {
-                CLAY_TEXT(CLAY_STRING("no fields"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
-                                                                      .textColor = P->faint }));
-            }
-        for (c = 0; c < n_cols; c++) tt_col_menu_item(app, P, &cols[c], c);
-    }
+    UiMenuItem items[CAP_MSG_FIELDS + 2];
+    int c, n = 0, hit;
+    if (!ui_menu_is_open(tt_cols)) return;
+    items[n++] = (UiMenuItem){ .label = CLAY_STRING("t (s)"), .enabled = 1,
+                               .check = app->col_show_time ? UI_MENU_ON : UI_MENU_OFF };
+    items[n++] = (UiMenuItem){ .label = CLAY_STRING("from"), .enabled = 1,
+                               .check = app->col_show_from ? UI_MENU_ON : UI_MENU_OFF };
+    for (c = 0; c < n_cols; c++)
+        items[n++] = (UiMenuItem){ .label = ui_str(cols[c].name), .enabled = 1,
+                                   .check = app_col_visible(app, cols[c].name) ? UI_MENU_ON
+                                                                               : UI_MENU_OFF };
+    hit = ui_menu(P, tt_cols, items, n, 210);
+    if (hit == 0)      app->col_show_time = !app->col_show_time;
+    else if (hit == 1) app->col_show_from = !app->col_show_from;
+    else if (hit >= 2) app_col_toggle(app, cols[hit - 2].name);
 }
 
 /* publish the composed message to `topic` and clear the box */
@@ -1035,7 +996,7 @@ static void topics_feed(AppState *app, const Palette *P){
                    thereafter the right-click menu owns it */
                 if (app->col_vis_topic != app->sel_topic){
                     app->col_vis_topic = app->sel_topic;
-                    app->col_menu_open = 0;
+                    if (ui_menu_is_open(tt_cols)) ui_menu_close();
                     app->n_col_vis = 0;
                     for (c = 0; c < n_cols && c < TT_TABLE_COLS; c++) app_col_toggle(app, tt_cols[c].name);
                 }
@@ -1054,9 +1015,12 @@ static void topics_feed(AppState *app, const Palette *P){
                     if (td.found)
                         table_w = g_view_w - td.boundingBox.width - drawer_w - UISC(TT_FEED_PAD) * 2.0f - UISC(2);
                 }
-                field_w = (n_vis > 0 && table_w > UISC(TT_TIME_W) + UISC(TT_FROM_W))
-                          ? floorf((table_w - UISC(TT_TIME_W) - UISC(TT_FROM_W)) / (float)n_vis)
-                          : UISC(TT_FIELD_W);
+                {   float fixed_w = (app->col_show_time ? UISC(TT_TIME_W) : 0.0f)
+                                  + (app->col_show_from ? UISC(TT_FROM_W) : 0.0f);
+                    field_w = (n_vis > 0 && table_w > fixed_w)
+                              ? floorf((table_w - fixed_w) / (float)n_vis)
+                              : UISC(TT_FIELD_W);
+                }
                 if (field_w < 1.0f) field_w = 1.0f;
                 field_budget = (int)((field_w - UISC(TT_CELL_PADL + 2)) / mono_adv);
                 if (field_budget < 1) field_budget = 1;

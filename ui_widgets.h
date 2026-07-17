@@ -108,10 +108,14 @@ static bool ui_copy_pill(const Palette *P, int copied){
 
 /* ---- generic context menu: one open at a time, keyed by an owner pointer ---- */
 
+enum { UI_MENU_ON = 1, UI_MENU_OFF };   /* UiMenuItem.check states (0 = plain item) */
+
 typedef struct {
     Clay_String label;
     Clay_String keys;     /* right-aligned shortcut hint ("" = none) */
     int enabled;          /* 0 = dimmed, not clickable */
+    int check;            /* 0 = plain item; UI_MENU_ON/OFF = a leading checkbox, and a
+                             click reports the toggle but keeps the menu open (checklists) */
 } UiMenuItem;
 
 static const void *g_menu_owner = NULL;   /* whose menu is open (NULL = none) */
@@ -128,13 +132,24 @@ static int  ui_menu_pointer_over(void){ return g_menu_owner && Clay_PointerOver(
 /* one menu row; returns true on click */
 static bool ui_menu_item(const Palette *P, const UiMenuItem *it){
     bool clicked = false;
+    int on = it->check == UI_MENU_ON;
+    Clay_Color fg = !it->enabled ? P->faint : (it->check == UI_MENU_OFF ? P->dim : P->text);
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(24)) },
                        .padding = { .left = UISCI(10), .right = UISCI(10) }, .childGap = UISCI(18),
                        .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
            .backgroundColor = it->enabled && Clay_Hovered() ? P->panel3 : UI_NONE }) {
         if (it->enabled && Clay_Hovered() && g_pointer_pressed){ clicked = true; g_pointer_pressed = false; }
+        /* the checkbox: accent box + check when on, empty bordered box when off */
+        if (it->check)
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(15)), .height = CLAY_SIZING_FIXED(UISC(15)) },
+                               .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
+                   .backgroundColor = on ? P->accent_bg : UI_NONE,
+                   .cornerRadius = CLAY_CORNER_RADIUS(UISC(3)),
+                   .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = on ? P->accent : P->border2 } }) {
+                if (on) ui_icon(ICON_CHECK, 11, P->accent);
+            }
         CLAY_TEXT(it->label, CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL),
-                                                .textColor = it->enabled ? P->text : P->faint,
+                                                .textColor = fg,
                                                 .wrapMode = CLAY_TEXT_WRAP_NONE }));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
         if (it->keys.length)
@@ -145,9 +160,10 @@ static bool ui_menu_item(const Palette *P, const UiMenuItem *it){
 }
 
 /* draw the owner's open menu: floating at the anchor, clamped to the window, z
-   above everything. Returns the clicked item index (the menu then closes) or
-   -1. Any press outside it dismisses it. Call every frame while open; a no-op
-   (-1) when this owner's menu isn't. */
+   above everything. Returns the clicked item index or -1; a plain item closes
+   the menu, a check item leaves it open so the caller's toggle shows next
+   frame. Any press outside it dismisses it. Call every frame while open; a
+   no-op (-1) when this owner's menu isn't. */
 static int ui_menu(const Palette *P, const void *owner, const UiMenuItem *items, int n, float w){
     int clicked = -1, i;
     float mxp = g_menu_x, myp = g_menu_y, mh = (float)n * UISC(24) + UISC(8);
@@ -169,7 +185,7 @@ static int ui_menu(const Palette *P, const void *owner, const UiMenuItem *items,
         for (i = 0; i < n; i++)
             if (ui_menu_item(P, &items[i])) clicked = i;
     }
-    if (clicked >= 0) ui_menu_close();
+    if (clicked >= 0 && !items[clicked].check) ui_menu_close();
     return clicked;
 }
 

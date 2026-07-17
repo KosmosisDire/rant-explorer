@@ -910,7 +910,7 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
             req = cap_topic_schema_parse(node, cn);
             cap_primary_channel_name(cn, sizeof cn, s->name, CAP_KIND_FUNCTION, 1);
             rsp = cap_topic_schema_parse(node, cn);
-            s->fn = dart_node_create_function_caller(node, s->name, req, rsp, NULL);
+            s->fn = dart_node_create_remote_function(node, s->name, req, rsp, NULL);
             if (!s->fn){
                 if (req) dart_schema_free(req, cap_schema_alloc, NULL);
                 if (rsp) dart_schema_free(rsp, cap_schema_alloc, NULL);
@@ -1079,7 +1079,7 @@ static int cap_send_routed(CapSub *s, const void *data, size_t len, uint8_t var_
     DartTopic *ch;
     *echo_sch = NULL;
     if (s->kind == CAP_KIND_FUNCTION){
-        if (!s->fn || dart_function_call(s->fn, dart_bytes(data, len), cap_fn_on_reply, s) != DART_OK)
+        if (!s->fn || dart_function_call_async(s->fn, dart_bytes(data, len), cap_fn_on_reply, s) != DART_OK)
             return 0;   /* a call racing the provider match queues in the patterns layer */
         *echo_sch = s->req_schema;
         return 1;

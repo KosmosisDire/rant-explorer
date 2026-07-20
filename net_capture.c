@@ -28,17 +28,32 @@
 #include "net_capture.h"
 
 #define CAP_MAX_PEERS         64
-#define CAP_MAX_TOPICS        16000  /* pub or sub interest entries captured per peer (>= wire ceiling) */
-#define CAP_OBSERVER_CHANNELS 64     /* node topic reserve: our OWN subscriptions only (<=2 topics per
-                                        topic, see CAP_MAX_SUBS = 32). Deliberately NOT sized to a big
-                                        peer's topic count: max_topics also reserves per-topic history
-                                        buffers, so a large value costs hundreds of MB. A many-topic peer
-                                        whose announce blob exceeds our initial accept bound is handled by
-                                        the node's self-heal instead (it reads the blob's true length, grows
-                                        the bound + RX buffers up to the 65000-byte cap, and re-solicits),
-                                        so the peer's full interest lands within an announce interval. */
+#define CAP_OBSERVER_CHANNELS 64     /* node topic reserve: our OWN subscriptions only (each observed
+                                        topic owns 1-2 DART topics). This is the STARTING reserve, not a
+                                        ceiling: the node grows max_topics automatically when we create
+                                        more (dynamic-mode i_dart_node_grow), so subscribing to thousands
+                                        of topics just relocates the reserve, it never refuses. A peer
+                                        that advertises many topics is handled by the node's meta self-
+                                        heal (it grows the accept bound + RX buffers and re-solicits). */
 #define CAP_LOG_LINES         400
 /* CAP_LOG_LINE comes from net_capture.h (shared with the snapshot) */
+
+/* Ensure *arr can hold index `need` (0-based): grow it by doubling through realloc, so a
+   per-node/per-snapshot entity list scales to the peer's actual topic count with no fixed
+   ceiling and no steady-state churn (it settles at the high-water mark). Returns 1 if the
+   slot is available, 0 on OOM (the caller then skips that entry rather than overrunning). */
+static int cap_grow(void *arr_ptr, int *cap, int need, size_t elem){
+    void **arr = (void **)arr_ptr;
+    if (need < *cap) return 1;
+    {   int ncap = *cap ? *cap * 2 : 8;
+        void *na;
+        while (ncap <= need) ncap *= 2;
+        na = realloc(*arr, (size_t)ncap * elem);
+        if (!na) return 0;
+        *arr = na; *cap = ncap;
+    }
+    return 1;
+}
 
 typedef enum { CAP_ACTIVE = 0, CAP_DROPPED = 1, CAP_GONE = 2 } CapPeerState;
 
@@ -71,9 +86,13 @@ typedef struct {
     uint8_t  ip[16];
     uint8_t  ip_len;
     uint16_t port;
-    int      n_pub, n_sub;
-    CapTopic pub[CAP_MAX_TOPICS];
-    CapTopic sub[CAP_MAX_TOPICS];
+    /* advertised entities, grown to the peer's actual topic count (no fixed ceiling). The
+       buffers are high-water heap allocations, preserved across a slot reclaim (see
+       cap_peer_get) and reused, so a run makes no steady-state malloc/free churn. */
+    int      n_pub, pub_cap;
+    int      n_sub, sub_cap;
+    CapTopic *pub;
+    CapTopic *sub;
     uint32_t topics_ver;     /* dp->meta_version the pub/sub lists were last built from */
     int      names_pending;  /* 1 = a topic name was still an unfetched placeholder last build */
 
@@ -115,7 +134,12 @@ static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic);/* 
    (send), or PUBSUB (both) -- one topic does both directions, since two live topics of
    the same identity would misroute. cap_sub_reconcile keeps it in sync. The message/event
    callbacks find the topic by either topic's local index. */
-#define CAP_MAX_SUBS 512              /* distinct topics in use (each may own 2 topics) */
+#define CAP_MAX_SUBS 16000           /* distinct topics the explorer may show data for at once (each
+                                        owns 1-2 DART topics). Matches the ~13k announce topic ceiling
+                                        so the user can watch a whole large network with no artificial
+                                        cap. CapSub is ~300 B (the feed ring is a lazily-allocated
+                                        pointer, NOT embedded), so the fixed table is ~4.8 MB; an idle
+                                        or never-used slot costs nothing beyond that. */
 
 typedef struct {
     double   t_s;
@@ -164,7 +188,9 @@ typedef struct {
     unsigned long long n_msgs;
     unsigned long long n_drops;
     uint32_t     uid_next;               /* next message uid (expand/collapse key) */
-    CapMsgRec    ring[CAP_FEED_MAX];
+    CapMsgRec   *ring;                   /* CAP_FEED_MAX records, allocated LAZILY on the first
+                                            message (cap_ring_push): an idle/never-used slot costs
+                                            nothing, so 512 slots don't reserve ~275 MB up front */
     int          head, count;            /* ring write cursor + fill */
     double       rate_hz;                /* publish rate (msgs/s), refreshed ~1 Hz (below) */
     double       rate_prev_hr;           /* high-res time of the last rate-window boundary */
@@ -439,7 +465,12 @@ static void cap_decode_fields(CapMsgRec *m, DartBytes data, const DartSchema *s)
    n_msgs. With a schema the message is reflected into field rows; raw bytes else. */
 static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t len, int mine,
                           const DartSchema *schema){
-    CapMsgRec *m = &s->ring[s->head];
+    CapMsgRec *m;
+    if (!s->ring){                       /* lazy: first message on this topic allocates the ring */
+        s->ring = (CapMsgRec *)calloc(CAP_FEED_MAX, sizeof *s->ring);
+        if (!s->ring) return;            /* out of memory: drop the message rather than crash */
+    }
+    m = &s->ring[s->head];
     m->t_s = (double)(cap_now_ms() - cap_start_ms) / 1000.0;
     m->uid = ++s->uid_next;
     m->len = (uint32_t)len;
@@ -563,7 +594,14 @@ static CapPeer *cap_peer_get(uint32_t id){
     if (victim < 0) victim = 0;
 
     p = &cap_peers[victim];
-    memset(p, 0, sizeof *p);
+    {   /* preserve the grown pub/sub buffers across the reset: the new peer refills them
+           (n_pub/n_sub go to 0 below), so the allocation is reused, not leaked or re-malloc'd */
+        CapTopic *keep_pub = p->pub, *keep_sub = p->sub;
+        int keep_pub_cap = p->pub_cap, keep_sub_cap = p->sub_cap;
+        memset(p, 0, sizeof *p);
+        p->pub = keep_pub; p->pub_cap = keep_pub_cap;
+        p->sub = keep_sub; p->sub_cap = keep_sub_cap;
+    }
     p->used = 1;
     p->local_id = id;
     p->first_seen_ms = cap_now_ms();
@@ -584,7 +622,7 @@ static void cap_on_message(const DartMsg *msg){
         int newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
         s->forced    = (msg->header.data[0] & 0x01) ? 1 : 0;
         s->write_seq = i_dart_le_r32(msg->header.data + 1);
-        s->ring[newest].forced = s->forced;
+        if (s->ring) s->ring[newest].forced = s->forced;   /* ring is NULL only if the push OOM'd */
     }
     s->n_msgs++;
 }
@@ -730,9 +768,32 @@ int cap_poll(Capture *cap){
 }
 
 void cap_stop(Capture *cap){
+    int i;
     cap_node = NULL;
     if (cap->rt) dart_node_close((DartNode *)cap->rt, 1);   /* stops the service thread, sends a BYE, frees */
     cap->rt = NULL; cap->mem = NULL;
+    /* release the observer's own heap (lazy feed rings, grown peer entity lists, parked
+       sends), so a clean shutdown leaves nothing behind for a leak check */
+    for (i = 0; i < CAP_MAX_SUBS; i++){
+        free(cap_subs[i].ring);   cap_subs[i].ring = NULL; cap_subs[i].count = cap_subs[i].head = 0;
+        free(cap_subs[i].pend_data); cap_subs[i].pend_data = NULL; cap_subs[i].pend_used = 0;
+        cap_subs[i].used = 0;
+    }
+    for (i = 0; i < CAP_MAX_PEERS; i++){
+        free(cap_peers[i].pub); cap_peers[i].pub = NULL; cap_peers[i].pub_cap = cap_peers[i].n_pub = 0;
+        free(cap_peers[i].sub); cap_peers[i].sub = NULL; cap_peers[i].sub_cap = cap_peers[i].n_sub = 0;
+        cap_peers[i].used = 0;
+    }
+}
+/* Free a CapSnapshot's grown per-node entity buffers (the caller owns the CapSnapshot
+   struct; net_capture owns the buffers it malloc'd into it). Call once at shutdown. */
+void cap_snapshot_free(CapSnapshot *snap){
+    int i;
+    if (!snap) return;
+    for (i = 0; i < CAP_SNAP_NODES; i++){
+        free(snap->nodes[i].pub); snap->nodes[i].pub = NULL; snap->nodes[i].pub_cap = 0;
+        free(snap->nodes[i].sub); snap->nodes[i].sub = NULL; snap->nodes[i].sub_cap = 0;
+    }
 }
 
 /* ---- pattern-entity interop -----------------------------------------------------------
@@ -1247,7 +1308,7 @@ static int cap_publish_form_op(Capture *cap, const char *topic, const char *cons
             return 0;
         }
         cap_ring_push(s, dart_cstr(cap_cfg.name), buf, msg_len, 1, sch);   /* decoded local echo */
-        if (var_op & CAP_SET_OP_FORCE){   /* mark the echo: this write PINS the value */
+        if ((var_op & CAP_SET_OP_FORCE) && s->ring){   /* mark the echo: this write PINS the value */
             int newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
             s->ring[newest].forced = 1;
         }
@@ -1311,8 +1372,8 @@ static void cap_endpoint_fill(CapTopic *e, const DartEntityInfo *ei, int *names_
    discovery-level name/addr + liveness, then the peer's advertised ENTITIES via the
    patterns layer's canonical reflection walk (dart_node_peer_entity_next), so pattern
    channels arrive already folded into functions/variables/signals and this TU never
-   sees the @-mangling. We keep up to CAP_MAX_TOPICS of each direction (the observer's
-   own storage bound, not an API limit). */
+   sees the @-mangling. Each direction's list grows to the peer's actual topic count
+   (cap_grow), so there is no fixed ceiling. */
 static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer *dp){
     DartEntityIter it; DartEntityInfo ei;
     uint16_t frag = dart_node_peer_frag(dp);
@@ -1342,9 +1403,9 @@ static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer
            consumes = its sink side. An entity on both sides lands in both lists. Names
            come from the detail cache (fetch_details fills it within an RTT); the hash is
            the placeholder until then. */
-        if (ei.provides && p->n_pub < CAP_MAX_TOPICS)
+        if (ei.provides && cap_grow(&p->pub, &p->pub_cap, p->n_pub, sizeof *p->pub))
             cap_endpoint_fill(&p->pub[p->n_pub++], &ei, &p->names_pending);
-        if (ei.consumes && p->n_sub < CAP_MAX_TOPICS)
+        if (ei.consumes && cap_grow(&p->sub, &p->sub_cap, p->n_sub, sizeof *p->sub))
             cap_endpoint_fill(&p->sub[p->n_sub++], &ei, &p->names_pending);
     }
     p->topics_ver = dp->meta_version;   /* cache is now in sync with this announce version */
@@ -1357,8 +1418,9 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
     uint16_t slot, n_peers = 0;
     int i, k;
 
-    /* Do NOT memset the whole snapshot: at CAP_MAX_EP it is ~150 MB, and zeroing it every
-       frame is the dominant per-frame cost. It is fully count-delimited instead: n_nodes /
+    /* Do NOT memset the whole snapshot: the per-node entity buffers are grown high-water
+       heap and zeroing them every frame would be a large per-frame cost. It is fully
+       count-delimited instead: n_nodes /
        n_log / n_subs below bound the reader, and every used node/sub/log slot is completely
        overwritten as it is filled, so the untouched tail never needs clearing. */
     out->n_nodes   = 0;
@@ -1470,9 +1532,10 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         snprintf(n->name, sizeof n->name, "%s", p->name);
         cap_fmt_ip(n->ip, sizeof n->ip, p->ip, p->ip_len);
 
-        for (k = 0; k < p->n_pub && k < CAP_MAX_EP; k++){   /* memcpy, not snprintf: the name is
-                                                               already a NUL-terminated 65-byte field,
-                                                               and per-entry snprintf x thousands is slow */
+        /* grow the node's snapshot buffers to the peer's actual counts (high-water, reused
+           across frames), then copy (memcpy, not snprintf: the name is already a NUL-
+           terminated 65-byte field, and per-entry snprintf x thousands is slow) */
+        for (k = 0; k < p->n_pub && cap_grow(&n->pub, &n->pub_cap, k, sizeof *n->pub); k++){
             memcpy(n->pub[k].name, p->pub[k].name, sizeof n->pub[k].name);
             n->pub[k].index      = p->pub[k].index;
             n->pub[k].reliable   = p->pub[k].reliable;
@@ -1482,7 +1545,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
             n->pub[k].incomplete = p->pub[k].incomplete;
         }
         n->n_pub = k;
-        for (k = 0; k < p->n_sub && k < CAP_MAX_EP; k++){
+        for (k = 0; k < p->n_sub && cap_grow(&n->sub, &n->sub_cap, k, sizeof *n->sub); k++){
             memcpy(n->sub[k].name, p->sub[k].name, sizeof n->sub[k].name);
             n->sub[k].index      = p->sub[k].index;
             n->sub[k].reliable   = p->sub[k].reliable;

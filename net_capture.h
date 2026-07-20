@@ -49,13 +49,16 @@ void cap_stop(Capture *cap);
 
 #define CAP_NAME_CAP   33    /* DART_NODE_NAME_MAX (32) + NUL  */
 #define CAP_TOPIC_CAP  65    /* DART_TOPIC_NAME_MAX (64) + NUL */
-#define CAP_MAX_EP     16000 /* pub or sub entries captured per node (>= the ~12995 announce ceiling) */
 #define CAP_SNAP_NODES 64    /* mirrors CAP_MAX_PEERS */
 #define CAP_LOG_LINE   160   /* bytes per observer log line */
 #define CAP_SNAP_LOG   256   /* most-recent observer log lines exposed, newest first */
 #define CAP_FEED_MAX   128   /* live messages retained per subscribed topic (ring) */
 #define CAP_MSG_PREVIEW 120  /* payload bytes kept per message for the feed preview */
-#define CAP_SNAP_SUBS  64    /* subscription-state entries exposed to the UI */
+#define CAP_SNAP_SUBS  16000 /* subscription-state entries exposed to the UI (== CAP_MAX_SUBS in
+                                net_capture.c, matching the ~13k announce topic ceiling): every
+                                subscribed topic shows live data in the table, no artificial limit.
+                                CapSubInfo is ~130 B, so the fixed array is ~2 MB (not the feed
+                                itself: the per-topic message ring is lazily allocated, see CapSub). */
 
 typedef enum { CAP_ST_ACTIVE = 0, CAP_ST_DROPPED = 1, CAP_ST_GONE = 2 } CapState;
 
@@ -86,8 +89,11 @@ typedef struct {
     uint16_t port;           /* advertised unicast data port (discovery) */
     uint16_t frag;           /* advertised UDP fragment size (announce metadata) */
     uint16_t meta_len;       /* size of the announce overlay we received (announce metadata) */
-    int      n_pub; CapEndpoint pub[CAP_MAX_EP];
-    int      n_sub; CapEndpoint sub[CAP_MAX_EP];
+    /* the peer's advertised entities, grown to its actual topic count (no fixed ceiling): a
+       high-water heap buffer owned by the snapshot, reused across frames. A typical node
+       advertises a handful; a many-topic node grows this once and it stays. */
+    int      n_pub, pub_cap; CapEndpoint *pub;
+    int      n_sub, sub_cap; CapEndpoint *sub;
     unsigned updates;        /* times its announce metadata changed (observer view) */
     double   observed_s;     /* seconds since first observed (observer view) */
     double   age_s;          /* seconds since its last announce change (observer view) */
@@ -124,6 +130,9 @@ typedef struct {
 } CapSnapshot;
 
 void cap_snapshot(const Capture *cap, CapSnapshot *out);
+/* Free the grown per-node entity buffers cap_snapshot allocated into `out` (net_capture
+   owns them; the caller owns the CapSnapshot struct). Call once at shutdown. */
+void cap_snapshot_free(CapSnapshot *out);
 
 /* ------------------------------------------------------------------- live feed
    The explorer can join a topic's data plane on demand: cap_subscribe creates (or

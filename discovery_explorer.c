@@ -124,7 +124,13 @@ int main(int argc, char **argv){
     rdata = (UiRenderer){ .renderer = ren, .fonts = g_fonts };
 
     SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
-    Clay_SetMaxElementCount(1024 * 1024);   /* default 64k is too small for the UI's flexbox tree */
+    /* Clay's arena is sized to this element ceiling (~840 B each), so it is a real memory
+       knob: 1M elements cost ~800 MB up front. The topic tree and feed are virtualized
+       (only visible rows emit elements), so the sole large consumer is a selected node's
+       endpoint list, which emits every row: at the 16000-topic ceiling that is ~32k rows x
+       ~5 elements ~= 160k. 256k covers that with generous headroom at ~215 MB instead of
+       ~800 MB. (Virtualizing node_endpoint_list would let this drop to ~64k / ~55 MB.) */
+    Clay_SetMaxElementCount(256 * 1024);
     clay_mem = Clay_MinMemorySize();
     arena = Clay_CreateArenaWithCapacityAndMemory(clay_mem, malloc(clay_mem));
     Clay_Initialize(arena, (Clay_Dimensions){ (float)ow, (float)oh },
@@ -279,6 +285,7 @@ int main(int argc, char **argv){
     }
 
     cap_stop(&cap);
+    cap_snapshot_free(&g_snap);   /* release the snapshot's grown per-node entity buffers */
     ui_icons_unload();
     ui_fonts_unload();
     TTF_Quit();

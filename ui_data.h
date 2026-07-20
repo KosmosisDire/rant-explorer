@@ -61,6 +61,20 @@ static int uid_machine_for(const char *ip, int *n_mach){
     return 0;
 }
 
+/* Look up a topic by path WITHOUT inserting (the read-only twin of uid_topic_for): the
+   same open-addressed probe, returning the g_topics index or -1. Lets the self pub/sub
+   passes match a subscription name to its topic in O(1), so raising the subscription cap
+   to the topic ceiling does not turn those passes into O(topics x subs) scans. */
+static int uid_topic_find(const char *path){
+    uint32_t h = uid_str_hash(path) & (UID_TOPIC_HASH - 1);
+    int idx;
+    while ((idx = g_topic_slot[h]) >= 0){
+        if (!strcmp(g_topics[idx].path, path)) return idx;
+        h = (h + 1) & (UID_TOPIC_HASH - 1);
+    }
+    return -1;
+}
+
 /* topics are the union of every node's pub/sub names; rate/last-age/jitter ride the
    data plane (real only once the explorer subscribes), not the discovery announce. */
 static int uid_topic_for(const char *path, int *n_top){
@@ -187,6 +201,23 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
            takes THEIR reliability instead, so a reliable subscriber-only topic still reads
            reliable. has_qos = any endpoint at all (else the badge is a dash).
        Gone/dropped peers are ignored unless they are the only ones on that axis. */
+    /* our own live subscription/publish state, matched by name in O(1) via the topic hash
+       (folded into ONE pass over the subscriptions, so it stays cheap at the topic-ceiling
+       cap): the topic light + self_sub/self_pub flags + live rate/age/jitter. Runs BEFORE
+       the reliability rollup so the rollup can count our own publish as a live publisher. */
+    for (k = 0; k < snap->n_subs; k++){
+        const CapSubInfo *si = &snap->subs[k];
+        int ti = uid_topic_find(si->name);
+        if (ti < 0) continue;
+        if (si->publishing){ g_topics[ti].self_pub = 1; g_topics[ti].self_pub_reliable = si->reliable; }
+        g_topics[ti].sub_state = si->active ? (si->error ? 2 : 1) : 0;
+        g_topics[ti].self_sub  = si->active;
+        g_topics[ti].self_sub_reliable = si->reliable;
+        g_topics[ti].rate_hz    = si->rate_hz;     /* live: publish rate over the stored window */
+        g_topics[ti].last_age_s = si->last_age_s;  /* live: age of the newest received message */
+        g_topics[ti].jitter_p90_ms = si->jitter_p90_ms;  /* live: p90 inter-arrival jitter, smoothed */
+    }
+
     for (k = 0; k < n_top; k++){
         Topic *t = &g_topics[k];
         int j;
@@ -207,14 +238,12 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
             if (!gone){ s_live++; if (!rel) s_live_all_rel = 0; }
         }
         /* the explorer publishing this topic counts as a live publisher too, so a topic we
-           publish reliably to reads RELIABLE (not the peer-only best-effort default) */
-        for (j = 0; j < snap->n_subs; j++)
-            if (snap->subs[j].publishing && !strcmp(snap->subs[j].name, t->path)){
-                t->self_pub = 1; t->self_pub_reliable = snap->subs[j].reliable;
-                any = 1; live++;
-                if (!snap->subs[j].reliable){ any_rel = 0; live_all_rel = 0; }
-                break;
-            }
+           publish reliably to reads RELIABLE (not the peer-only best-effort default). self_pub
+           was set in the O(1) subscription pass above. */
+        if (t->self_pub){
+            any = 1; live++;
+            if (!t->self_pub_reliable){ any_rel = 0; live_all_rel = 0; }
+        }
         t->reliable_recommend = !any ? -1 : (live ? live_all_rel : any_rel);
         if (any){                               /* publishers define the topic's QoS (unchanged) */
             t->has_qos = 1; t->reliable = (t->reliable_recommend == 1);
@@ -224,21 +253,6 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
             t->has_qos = 0; t->reliable = 0;
         }
         t->qos.reliability = t->reliable ? QOS_RELIABLE : QOS_BEST_EFFORT;
-    }
-
-    /* third pass: our own live subscription state (the topic light), matched by name.
-       active + clean = subscribed (green), active + error/drops = red, absent = grey. */
-    for (k = 0; k < snap->n_subs; k++){
-        const CapSubInfo *si = &snap->subs[k];
-        int ti;
-        for (ti = 0; ti < n_top; ti++) if (!strcmp(g_topics[ti].path, si->name)) break;
-        if (ti >= n_top) continue;
-        g_topics[ti].sub_state = si->active ? (si->error ? 2 : 1) : 0;
-        g_topics[ti].self_sub  = si->active;
-        g_topics[ti].self_sub_reliable = si->reliable;
-        g_topics[ti].rate_hz    = si->rate_hz;     /* live: publish rate over the stored window */
-        g_topics[ti].last_age_s = si->last_age_s;  /* live: age of the newest received message */
-        g_topics[ti].jitter_p90_ms = si->jitter_p90_ms;  /* live: p90 inter-arrival jitter, smoothed */
     }
 
     D->machines = g_machines; D->n_machines = n_mach;

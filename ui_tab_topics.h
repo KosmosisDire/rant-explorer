@@ -56,10 +56,23 @@ static const char *tt_send_verb(const Topic *t){
     }
 }
 
-/* topic status light: hollow grey not subscribed, green subscribed, red dropping/erroring */
-static void tt_status_dot(const Palette *P, int sub_state){
-    if (sub_state == 0) ui_dot(UISC(7), UI_NONE, P->faint);
-    else                ui_dot(UISC(7), sub_state == 2 ? P->red : P->green, UI_NONE);
+/* a freshly received message blinks the status light full green for this long (seconds);
+   between messages it settles back to the dim subscribed green. */
+#define TT_FLASH_S 0.12
+
+/* 1 if a subscribed topic received a message within the flash window (a live count-up, so
+   this dims frame by frame between messages and reads as a blink per sample). */
+static int tt_recent(const Topic *t){
+    return t && t->last_age_s >= 0.0 && t->last_age_s < TT_FLASH_S;
+}
+
+/* topic status light: hollow grey not subscribed, red dropping/erroring, and when subscribed
+   a DIM green that blinks full green on each freshly received message (flash). */
+static void tt_status_dot(const Palette *P, int sub_state, int flash){
+    if (sub_state == 0){ ui_dot(UISC(7), UI_NONE, P->faint); return; }
+    if (sub_state == 2){ ui_dot(UISC(7), P->red, UI_NONE); return; }
+    if (flash) ui_dot(UISC(7), P->green, UI_NONE);          /* a message just arrived */
+    else { Clay_Color g = P->green; g.a = 90; ui_dot(UISC(7), g, UI_NONE); }   /* subscribed, idle */
 }
 
 /* copy a payload preview as printable ASCII (non-printable bytes become '.') into dst */
@@ -136,6 +149,8 @@ static float tt_name_w(const char *s){
     if (f && s && *s) TTF_GetStringSize(f, s, strlen(s), &w, &h);
     return (float)w;
 }
+
+static Clay_String tt_fit(const char *s, int budget);   /* defined with the feed cells below */
 
 /* publish rate for the tree's Rate column; dash-ish handling is done by the caller */
 static Clay_String tt_rate(double hz){
@@ -297,7 +312,14 @@ static void tt_tree_menu(AppState *app, const Palette *P){
     }
 }
 
-static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, int idx){
+/* name_col = the reserved left-region width in px (caret zone + gap + name text, == the
+   panel's name_max); cw = the mono-small char advance. The name is content-sized with no
+   horizontal clip (a per-row clip would blow Clay's ~10 scroll-container slots, so we
+   truncate like the feed cells do), so it MUST be trimmed to what fits, else a name wider
+   than the clamped budget grows the GROW row past the fixed-width panel and spills the
+   stat columns + scrollbar off the sidebar's right edge. */
+static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, int idx,
+                           float name_col, float cw, float gap){
     const Dataset *D = app->data;
     int sel  = row->has_topic && app->sel_topic >= 0 && app->sel_topic < D->n_topics
                && row->topic == &D->topics[app->sel_topic];
@@ -334,7 +356,13 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
         CLAY({ .id = CLAY_IDI("tree_name", (uint32_t)idx),
                .layout = { .sizing = { .height = CLAY_SIZING_GROW(0) },
                            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-            CLAY_TEXT(ui_fmt("%s%s", row->name, row->is_branch ? "/" : ""),
+            /* px left for the text = the name region minus this row's caret zone, the gap,
+               and (for an entity) the kind glyph. Truncate to that many mono chars so the
+               row can never grow wider than the panel (see the header comment above). */
+            float text_px = name_col - UISC(10 + row->depth * 15 + 24) - gap
+                          - ((row->has_topic && row->topic->kind) ? UISC(18) + gap : 0.0f);
+            int budget = (cw > 0.0f && text_px > cw) ? (int)(text_px / cw) : 1;
+            CLAY_TEXT(tt_fit(ui_fmt("%s%s", row->name, row->is_branch ? "/" : "").chars, budget),
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
                                          .textColor = row->has_topic ? P->text : P->dim,
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
@@ -343,7 +371,7 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
         /* status dot: live subscription state (green subscribed, red dropping, grey not) */
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(TT_COL_DOT)) },
                            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
-            if (row->has_topic) tt_status_dot(P, row->topic->sub_state);
+            if (row->has_topic) tt_status_dot(P, row->topic->sub_state, tt_recent(row->topic));
         }
         /* Rate / Jitter / Last: ride the data plane, so real only while subscribed (dash
            otherwise); QoS rides discovery, so it shows whenever the topic has any endpoint. */
@@ -479,6 +507,7 @@ static void topics_tree(AppState *app, const Palette *P){
     if (name_max > UISC(300)) name_max = UISC(300);
     panel_w = name_max + gap + data_block + UISC(10) + UISC(16);   /* right pad + breathing room */
     if (panel_w < UISC(300)) panel_w = UISC(300);                  /* keep filter + add usable */
+    float name_cw = tt_name_w("0000000000") / 10.0f;   /* mono-small char advance, for the name trim */
     CLAY({ .id = CLAY_ID("topics_tree"),
            .layout = { .sizing = { .width = CLAY_SIZING_FIXED(panel_w), .height = CLAY_SIZING_GROW(0) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM },
@@ -516,7 +545,7 @@ static void topics_tree(AppState *app, const Palette *P){
                     CLAY({ .id = CLAY_ID("topics_tree_vtop"),
                            .layout = { .sizing = { .width  = CLAY_SIZING_GROW(0),
                                                    .height = CLAY_SIZING_FIXED((float)first * row_h) } } }) {}
-                for (i = first; i < last; i++) topic_tree_row(app, P, &ut_rows[i], i);
+                for (i = first; i < last; i++) topic_tree_row(app, P, &ut_rows[i], i, name_max, name_cw, gap);
                 if (last < n)
                     CLAY({ .id = CLAY_ID("topics_tree_vbot"),
                            .layout = { .sizing = { .width  = CLAY_SIZING_GROW(0),
@@ -1058,7 +1087,7 @@ static void topics_feed(AppState *app, const Palette *P){
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(12),
                                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
                 if (t->kind == CAP_KIND_FUNCTION){
-                    tt_status_dot(P, tt_feed_n > 0 ? (tt_sub_error ? 2 : 1) : 0);
+                    tt_status_dot(P, tt_feed_n > 0 ? (tt_sub_error ? 2 : 1) : 0, tt_recent(t));
                     CLAY_TEXT(tt_feed_n > 0 ? ui_fmt("call log  \xC2\xB7  %u replies", tt_msgs)
                                             : CLAY_STRING("call log (replies are directed: only your own calls appear)"),
                               CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
@@ -1073,7 +1102,7 @@ static void topics_feed(AppState *app, const Palette *P){
                                 P->dim, P->panel2, P->border2, UISC(28)) && app->cap)
                         cap_unsubscribe(app->cap, t->path);
                 }
-                tt_status_dot(P, feed_state);
+                tt_status_dot(P, feed_state, tt_recent(t));
                 CLAY_TEXT(tt_subscribed ? ui_fmt("subscribed %s  \xC2\xB7  %u msgs",
                                                  tt_sub_reliable ? "reliable" : "best-effort", tt_msgs)
                                         : CLAY_STRING("not subscribed"),

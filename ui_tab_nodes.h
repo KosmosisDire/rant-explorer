@@ -119,6 +119,7 @@ static void nodes_list(AppState *app, const Palette *P){
                 }
             }
         }
+        ui_scrollbar(P, CLAY_ID("nodes_list_scroll"));
     }
 }
 
@@ -244,6 +245,7 @@ static void nodes_detail(AppState *app, const Palette *P){
             ui_section_label(P, ui_fmt("SUBSCRIBES  %d", nd->n_subs));
             node_endpoint_list(P, D, nd->subs, nd->sub_rel, nd->n_subs);
         }
+        ui_scrollbar(P, CLAY_ID("nodes_detail_scroll"));
       }
     }
 }

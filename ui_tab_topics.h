@@ -523,6 +523,7 @@ static void topics_tree(AppState *app, const Palette *P){
                                                    .height = CLAY_SIZING_FIXED((float)(n - last) * row_h) } } }) {}
             }
         }
+        ui_scrollbar(P, CLAY_ID("topics_tree_scroll"));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(12)) },
                .border = { .width = { 0, 0, UISCI(1), 0, 0 }, .color = P->border } }) {
             ui_section_label(P, app->topic_filter_len
@@ -1175,6 +1176,7 @@ static void topics_feed(AppState *app, const Palette *P){
                             tt_table_row(app, P, t->path, &tt_feed[i], i, tt_vis, n_vis, field_w,
                                          field_budget, time_budget, from_budget, t->kind, raw);
                     }
+                    ui_scrollbar(P, CLAY_ID("topics_feed_scroll"));
                 }
                 tt_col_menu(app, P, tt_cols, n_cols);   /* the header's right-click column picker */
             }
@@ -1396,6 +1398,7 @@ static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
         if (t->self_sub) topic_self_chip(P, t->self_sub_reliable);
         for (i = 0; i < t->n_subs; i++) topic_node_chip(app, P, t->subs[i], "sub_chip", i);
     }
+    ui_scrollbar(P, CLAY_ID("topics_inspect_scroll"));
 }
 
 /* the Publish sidebar tab: the message composer (free-text, or the structured form for a
@@ -1413,6 +1416,7 @@ static void topics_publish(AppState *app, const Palette *P, const Topic *t){
                           :                                CLAY_STRING("COMPOSE MESSAGE"));
         topics_composer(app, P, t);
     }
+    ui_scrollbar(P, CLAY_ID("topics_publish_scroll"));
 }
 
 /* ====================================================== right: inspect a message */
@@ -1519,6 +1523,7 @@ static void topics_msg_inspect(AppState *app, const Palette *P){
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint }));
         }
     }
+    ui_scrollbar(P, CLAY_ID("topics_msg_scroll"));
 }
 
 static void topics_drawer(AppState *app, const Palette *P){

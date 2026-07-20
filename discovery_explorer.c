@@ -212,6 +212,7 @@ int main(int argc, char **argv){
         SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
         g_pointer_x = mx; g_pointer_y = my;              /* for cursor-anchored context menus */
         g_view_w = (float)ow; g_view_h = (float)oh;      /* for clamping menus to the window */
+        g_mouse_held = mouse_held;                       /* for scrollbar thumb dragging */
 
         now = SDL_GetTicks();
         dt = (float)(now - last_ticks) / 1000.0f;

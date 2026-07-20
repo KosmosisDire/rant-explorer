@@ -63,6 +63,7 @@ static void log_tab(AppState *app, const Palette *P){
             if (n == 0) ui_placeholder(P, CLAY_STRING("waiting for discovery traffic..."));
             for (i = 0; i < n; i++) log_row(P, s->log[i], i);
         }
+        ui_scrollbar(P, CLAY_ID("log_scroll"));
     }
 }
 

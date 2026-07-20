@@ -189,6 +189,146 @@ static int ui_menu(const Palette *P, const void *owner, const UiMenuItem *items,
     return clicked;
 }
 
+/* ---- generic vertical scrollbar for Clay clip/scroll containers ----
+
+   Clay itself has no scrollbar: it only exposes each clip container's live scroll
+   position + content/viewport sizes (Clay_GetScrollContainerData), leaving the bar
+   to the app. This draws one for ANY vertical scroll container by id, as a floating
+   overlay pinned to the container's right edge, and makes it draggable.
+
+   Two phases per frame, because a bar overlays the rows behind it and a press must
+   reach the bar first (Clay_Hovered has no z-order, so a floating bar can't steal a
+   press from a row underneath it). ui_scrollbars_pre() runs at the TOP of the frame
+   over LAST frame's set of bars: using last frame's geometry it handles thumb drag /
+   track paging and CONSUMES the press before any row sees it. Then ui_scrollbar()
+   at each container site both registers the id (for next frame's pre pass) and draws
+   the bar for the current scroll state. Wheel scrolling is Clay's already. */
+
+#define UI_SB_W    10.0f    /* bar width, css px */
+#define UI_SB_MIN  28.0f    /* minimum thumb length, css px */
+#define UI_SB_MAX  32       /* max distinct scroll containers tracked per frame */
+
+static int      g_mouse_held = 0;              /* left button currently down; main sets it each frame */
+static uint32_t g_sb_ids[UI_SB_MAX]; static int g_sb_n = 0;   /* ids drawn this frame (rolls to "last frame") */
+static uint32_t g_sb_drag = 0;                 /* id of the bar being dragged (0 = none) */
+static float    g_sb_grab = 0.0f;              /* pointer offset within the thumb at grab, physical px */
+
+/* thumb/track geometry derived from a container's scroll data (physical px) */
+typedef struct { int scrollable; float view_h, range, track_h, thumb_h, inset; } UiSbGeom;
+static UiSbGeom ui_sb_geom(const Clay_ScrollContainerData *sd){
+    UiSbGeom g; float content_h;
+    g.scrollable = 0; g.range = g.track_h = g.thumb_h = 0.0f;
+    g.inset  = UISC(2);
+    g.view_h = sd->scrollContainerDimensions.height;
+    content_h = sd->contentDimensions.height;
+    if (!sd->scrollPosition || content_h <= g.view_h + 0.5f) return g;   /* content fits: no bar */
+    g.range   = content_h - g.view_h;
+    g.track_h = g.view_h - 2.0f * g.inset;
+    g.thumb_h = g.track_h * (g.view_h / content_h);
+    if (g.thumb_h < UISC(UI_SB_MIN)) g.thumb_h = UISC(UI_SB_MIN);
+    if (g.thumb_h > g.track_h)       g.thumb_h = g.track_h;
+    g.scrollable = 1;
+    return g;
+}
+
+/* set a container's scroll offset from a thumb-top position (physical px within the track) */
+static void ui_sb_set_from_thumb(const Clay_ScrollContainerData *sd, const UiSbGeom *g, float thumb_top){
+    float denom = g->track_h - g->thumb_h;
+    float t = denom > 0.5f ? thumb_top / denom : 0.0f;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    sd->scrollPosition->y = -(t * g->range);
+}
+
+/* interaction pass: run once at the top of the frame, before any content. Drives drag
+   and track paging for whichever bar the pointer is on, using last frame's geometry,
+   and consumes the press so rows behind the bar don't also react. */
+static void ui_scrollbars_pre(void){
+    int i, n = g_sb_n;
+    uint32_t ids[UI_SB_MAX];
+    for (i = 0; i < n; i++) ids[i] = g_sb_ids[i];   /* snapshot last frame's set */
+    g_sb_n = 0;                                     /* this frame's containers refill it */
+
+    for (i = 0; i < n; i++){
+        Clay_ElementId id = { .id = ids[i] };
+        Clay_ScrollContainerData sd = Clay_GetScrollContainerData(id);
+        Clay_ElementData ed = Clay_GetElementData(id);
+        UiSbGeom g;
+        float bar_x, top;
+        if (!sd.found || !ed.found){ if (g_sb_drag == id.id) g_sb_drag = 0; continue; }
+        g = ui_sb_geom(&sd);
+        if (!g.scrollable){ if (g_sb_drag == id.id) g_sb_drag = 0; continue; }
+        bar_x = ed.boundingBox.x + ed.boundingBox.width - UISC(UI_SB_W);
+        top   = ed.boundingBox.y;
+
+        if (g_sb_drag == id.id){                    /* continue an in-progress drag */
+            if (g_mouse_held) ui_sb_set_from_thumb(&sd, &g, g_pointer_y - top - g.inset - g_sb_grab);
+            else              g_sb_drag = 0;
+            continue;
+        }
+        /* a fresh press inside the bar column starts a drag (on the thumb) or pages (on the track) */
+        if (g_pointer_pressed &&
+            g_pointer_x >= bar_x && g_pointer_x <= bar_x + UISC(UI_SB_W) &&
+            g_pointer_y >= top   && g_pointer_y <= top + g.view_h){
+            float pos = -sd.scrollPosition->y;
+            float thumb_sy;
+            if (pos < 0.0f) pos = 0.0f;
+            if (pos > g.range) pos = g.range;
+            thumb_sy = top + g.inset + (g.track_h - g.thumb_h) * (g.range > 0.0f ? pos / g.range : 0.0f);
+            if (g_pointer_y >= thumb_sy && g_pointer_y <= thumb_sy + g.thumb_h){
+                g_sb_grab = g_pointer_y - thumb_sy;          /* grabbed the thumb where it sits */
+            } else {
+                g_sb_grab = g.thumb_h * 0.5f;                /* clicked the track: center thumb on cursor */
+                ui_sb_set_from_thumb(&sd, &g, g_pointer_y - top - g.inset - g_sb_grab);
+            }
+            g_sb_drag = id.id;
+            g_pointer_pressed = false;                        /* consume: rows under the bar must not fire */
+        }
+    }
+}
+
+/* draw the bar for one scroll container and register it for next frame's pre pass.
+   Call immediately after the container's CLAY{} block closes, with the same id.
+   A no-op bar (just the registration) when the content fits. */
+static void ui_scrollbar(const Palette *P, Clay_ElementId id){
+    Clay_ScrollContainerData sd = Clay_GetScrollContainerData(id);
+    Clay_ElementData ed;
+    UiSbGeom g;
+    float pos, thumb_y;
+    int hot;
+    if (g_sb_n < UI_SB_MAX) g_sb_ids[g_sb_n++] = id.id;   /* register (even when it fits, so drags end cleanly) */
+    if (!sd.found) return;
+    g = ui_sb_geom(&sd);
+    if (!g.scrollable) return;
+    pos = -sd.scrollPosition->y;
+    if (pos < 0.0f) pos = 0.0f;
+    if (pos > g.range) pos = g.range;
+    thumb_y = g.inset + (g.track_h - g.thumb_h) * (g.range > 0.0f ? pos / g.range : 0.0f);
+
+    ed = Clay_GetElementData(id);                          /* hover: pointer within the bar column */
+    hot = g_sb_drag == id.id ||
+          (ed.found &&
+           g_pointer_x >= ed.boundingBox.x + ed.boundingBox.width - UISC(UI_SB_W) &&
+           g_pointer_x <= ed.boundingBox.x + ed.boundingBox.width &&
+           g_pointer_y >= ed.boundingBox.y &&
+           g_pointer_y <= ed.boundingBox.y + g.view_h);
+
+    /* floating track pinned to the container's right edge; the thumb sits at thumb_y */
+    CLAY({ .floating = { .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID, .parentId = id.id,
+                         .attachPoints = { .element = CLAY_ATTACH_POINT_RIGHT_TOP,
+                                           .parent  = CLAY_ATTACH_POINT_RIGHT_TOP },
+                         .zIndex = 600 },
+           .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(UI_SB_W)),
+                                   .height = CLAY_SIZING_FIXED(g.view_h) },
+                       .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                       .padding = { .left = UISCI(2), .right = UISCI(2), .top = (uint16_t)thumb_y } } }) {
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0),
+                                       .height = CLAY_SIZING_FIXED(g.thumb_h) } },
+               .backgroundColor = hot ? P->dim : P->border2,
+               .cornerRadius = CLAY_CORNER_RADIUS(UISC(3)) }) {}
+    }
+}
+
 /* faint centered text filling the remaining space; marks an empty region */
 static void ui_placeholder(const Palette *P, Clay_String txt){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },

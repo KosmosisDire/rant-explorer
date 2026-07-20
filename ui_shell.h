@@ -60,6 +60,7 @@ static void ui_topbar(AppState *app, const Palette *P){
 /* build the whole UI tree for this frame */
 static void ui_frame(AppState *app){
     const Palette *P = app->theme_dark ? &UI_DARK : &UI_LIGHT;
+    ui_scrollbars_pre();   /* drag/page any scrollbar, consuming the press before rows see it */
     CLAY({ .id = CLAY_ID("root"),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM },

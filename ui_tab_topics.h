@@ -180,6 +180,123 @@ static void tt_tree_header(const Palette *P){
     }
 }
 
+/* ------- the tree's right-click subscribe menu (a lone topic, or a branch's whole subtree) */
+
+/* a real DATA topic: functions have no passive subscribe (replies are directed), so they are
+   never a subscribe target here nor counted in a branch's "Subscribe All". */
+static int tt_subscribable(const Topic *t){ return t->kind != CAP_KIND_FUNCTION; }
+
+/* pull one path segment (split on '/' OR '.', either separator) starting at p */
+static const char *tt_seg(const char *p, char *out, int cap){
+    int n = 0;
+    while (*p == '/' || *p == '.') p++;
+    while (*p && *p != '/' && *p != '.'){ if (n < cap - 1) out[n++] = *p; p++; }
+    out[n] = '\0';
+    return p;
+}
+/* 1 if `topic` is a strict descendant of `branch` in segment terms; separator-agnostic, so a
+   "a.b" topic matches under the tree's "a/b" branch path (the tree splits on both). */
+static int tt_under(const char *topic, const char *branch){
+    char bs[CAP_TOPIC_CAP], ts[CAP_TOPIC_CAP];
+    const char *bp = branch, *tp = topic;
+    for (;;){
+        bp = tt_seg(bp, bs, sizeof bs);
+        if (!bs[0]) break;                       /* branch fully consumed */
+        tp = tt_seg(tp, ts, sizeof ts);
+        if (!ts[0] || strcmp(bs, ts)) return 0;  /* diverged, or branch is longer */
+    }
+    tp = tt_seg(tp, ts, sizeof ts);              /* a descendant has at least one more segment */
+    return ts[0] != '\0';
+}
+static int tt_find_topic(const Dataset *D, const char *path){
+    int i;
+    for (i = 0; i < D->n_topics; i++) if (!strcmp(D->topics[i].path, path)) return i;
+    return -1;
+}
+static int tt_count_descendants(const Dataset *D, const char *branch){
+    int i, n = 0;
+    for (i = 0; i < D->n_topics; i++)
+        if (tt_subscribable(&D->topics[i]) && tt_under(D->topics[i].path, branch)) n++;
+    return n;
+}
+/* (un)subscribe every subscribable topic in a branch's subtree: the branch's own topic (if it
+   has one) plus all descendants. Subscribe joins at each topic's recommended reliability. */
+static void tt_subtree_apply(AppState *app, const char *self, const char *branch, int subscribe){
+    const Dataset *D = app->data;
+    int i, si;
+    if (!app->cap) return;
+    if (self[0] && (si = tt_find_topic(D, self)) >= 0){
+        if (subscribe) cap_subscribe(app->cap, self, D->topics[si].reliable_recommend > 0);
+        else           cap_unsubscribe(app->cap, self);
+    }
+    for (i = 0; i < D->n_topics; i++){
+        const Topic *t = &D->topics[i];
+        if (!tt_subscribable(t) || !tt_under(t->path, branch)) continue;
+        if (subscribe) cap_subscribe(app->cap, t->path, t->reliable_recommend > 0);
+        else           cap_unsubscribe(app->cap, t->path);
+    }
+}
+
+/* live tally of a subtree (the branch's own topic + descendants): how many subscribable topics
+   it holds, and how many of those the explorer is currently subscribed to */
+static void tt_subtree_counts(const Dataset *D, const char *self, const char *branch,
+                              int *total, int *subscribed){
+    int i, si;
+    *total = *subscribed = 0;
+    if (self[0] && (si = tt_find_topic(D, self)) >= 0){
+        (*total)++;
+        if (D->topics[si].sub_state) (*subscribed)++;
+    }
+    for (i = 0; i < D->n_topics; i++){
+        const Topic *t = &D->topics[i];
+        if (!tt_subscribable(t) || !tt_under(t->path, branch)) continue;
+        (*total)++;
+        if (t->sub_state) (*subscribed)++;
+    }
+}
+
+static const char tt_tree_menu_tok;   /* &this = the tree menu's owner token */
+static char tt_menu_branch[96];        /* the right-clicked node's tree path (subtree scan key) */
+static char tt_menu_self[96];          /* its own topic path, or "" if a pure namespace / function */
+static int  tt_menu_desc_count;        /* subscribable descendant topics (excludes the self topic) */
+
+/* the tree's per-row menu: "Subscribe"/"Unsubscribe" for the row's own topic, and (for a branch)
+   "Subscribe All (N)" / "Unsubscribe All (N)" over its whole subtree. Each item is shown only
+   when it would act on something, so it is never a no-op. Drawn each frame; idle unless open. */
+static void tt_tree_menu(AppState *app, const Palette *P){
+    const Dataset *D = app->data;
+    UiMenuItem items[3];
+    char       act[3];               /* 's' self toggle, 'a' subscribe subtree, 'u' unsubscribe subtree */
+    int n = 0, hit, self_idx, subscribed, total = 0, sub_cnt = 0;
+    if (!ui_menu_is_open(&tt_tree_menu_tok)) return;
+    self_idx   = tt_menu_self[0] ? tt_find_topic(D, tt_menu_self) : -1;
+    subscribed = self_idx >= 0 && D->topics[self_idx].sub_state != 0;
+    if (tt_menu_desc_count > 0) tt_subtree_counts(D, tt_menu_self, tt_menu_branch, &total, &sub_cnt);
+    if (tt_menu_self[0]){
+        items[n] = (UiMenuItem){ .label = subscribed ? CLAY_STRING("Unsubscribe")
+                                                      : CLAY_STRING("Subscribe"), .enabled = 1 };
+        act[n++] = 's';
+    }
+    if (tt_menu_desc_count > 0 && sub_cnt < total){    /* something left to join */
+        items[n] = (UiMenuItem){ .label = ui_fmt("Subscribe All (%d)", total), .enabled = 1 };
+        act[n++] = 'a';
+    }
+    if (tt_menu_desc_count > 0 && sub_cnt > 0){        /* something to drop */
+        items[n] = (UiMenuItem){ .label = ui_fmt("Unsubscribe All (%d)", total), .enabled = 1 };
+        act[n++] = 'u';
+    }
+    if (n == 0){ ui_menu_close(); return; }
+    hit = ui_menu(P, &tt_tree_menu_tok, items, n, 200);
+    if (hit < 0 || !app->cap) return;
+    if (act[hit] == 's'){
+        if (subscribed) cap_unsubscribe(app->cap, tt_menu_self);
+        else if (self_idx >= 0) cap_subscribe(app->cap, tt_menu_self,
+                                              D->topics[self_idx].reliable_recommend > 0);
+    } else {
+        tt_subtree_apply(app, tt_menu_self, tt_menu_branch, act[hit] == 'a');
+    }
+}
+
 static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, int idx){
     const Dataset *D = app->data;
     int sel  = row->has_topic && app->sel_topic >= 0 && app->sel_topic < D->n_topics
@@ -238,6 +355,20 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
                      live && row->topic->last_age_s >= 0.0 ? P->dim : P->faint);
         tt_stat_cell(P, UISC(TT_COL_QOS),  qos ? tt_qos_short(row->topic->reliable) : ui_str(ND_DASH),
                      qos ? ui_qos_color(P, row->topic->reliable) : P->faint);
+        /* right-click opens the subscribe menu: "Subscribe" for the row's own topic, and/or
+           "Subscribe All (N)" when the subtree holds subscribable descendants. Nothing to
+           offer (a lone function, an empty namespace) means no menu. */
+        if (Clay_Hovered() && g_right_pressed){
+            int has_self = row->has_topic && tt_subscribable(row->topic);
+            int desc     = tt_count_descendants(D, row->path);
+            if (has_self || desc > 0){
+                snprintf(tt_menu_branch, sizeof tt_menu_branch, "%s", row->path);
+                snprintf(tt_menu_self, sizeof tt_menu_self, "%s", has_self ? row->topic->path : "");
+                tt_menu_desc_count = desc;
+                ui_menu_open(&tt_tree_menu_tok, g_pointer_x, g_pointer_y);
+            }
+            g_right_pressed = false;
+        }
         /* whole-row click selects the topic (the caret already consumed its own click);
            a pure namespace has nothing to select, so a click toggles its collapse */
         if (Clay_Hovered() && g_pointer_pressed){
@@ -1415,6 +1546,7 @@ static void topics_tab(AppState *app, const Palette *P){
     topics_tree(app, P);
     topics_feed(app, P);
     if (app->drawer_open) topics_drawer(app, P);
+    tt_tree_menu(app, P);   /* the tree's right-click subscribe menu (floats above everything) */
 }
 
 /* Keep the feed glued to the newest message while the user is parked at the bottom. Runs

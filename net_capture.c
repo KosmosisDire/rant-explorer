@@ -115,7 +115,7 @@ static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic);/* 
    (send), or PUBSUB (both) -- one topic does both directions, since two live topics of
    the same identity would misroute. cap_sub_reconcile keeps it in sync. The message/event
    callbacks find the topic by either topic's local index. */
-#define CAP_MAX_SUBS 32              /* distinct topics in use (each may own 2 topics) */
+#define CAP_MAX_SUBS 512              /* distinct topics in use (each may own 2 topics) */
 
 typedef struct {
     double   t_s;

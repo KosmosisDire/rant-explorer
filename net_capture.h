@@ -73,6 +73,7 @@ typedef struct {
     int      reliable;       /* offered (pub) / requested (sub) reliability */
     uint8_t  kind;           /* CAP_KIND_*: what this entity is */
     uint8_t  writable;       /* CAP_KIND_VARIABLE: a set channel is advertised */
+    uint8_t  forceable;      /* CAP_KIND_VARIABLE: the owner permits force/unforce (allow_force) */
     uint8_t  incomplete;     /* a pattern half-pair (partner channel missing/unresolved) */
 } CapEndpoint;
 

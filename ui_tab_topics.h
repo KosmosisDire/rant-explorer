@@ -808,12 +808,14 @@ static void topics_form(AppState *app, const Palette *P, const Topic *t, const C
         }
         if (send) tt_form_send(app, t, n);
         /* Send: its own row under the fields (right-aligned), not boxed in a card. A
-           writable variable also gets the debug override pair: Force pins the form's
-           value at the owner (writes absorb until Unforce releases it). */
+           writable, forceable variable also gets the debug override pair: Force pins the
+           form's value at the owner (writes absorb until Unforce releases it). */
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = { .top = UISCI(4) },
                            .childGap = UISCI(8) } }) {
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
-            if (t->kind == CAP_KIND_VARIABLE && t->writable){
+            /* the owner must also permit force (allow_force, advertised in the announce next
+               to writable): a writable-but-not-forceable variable silently absorbs force ops. */
+            if (t->kind == CAP_KIND_VARIABLE && t->writable && t->forceable){
                 if (ui_pill(P, CLAY_STRING("Force"), FAM_SANS, WT_SEMI, FS_SMALL,
                             P->amber, P->panel2, P->border2, UISC(34)))
                     tt_form_force(app, t, n);

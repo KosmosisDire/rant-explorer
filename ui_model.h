@@ -67,6 +67,7 @@ typedef struct {
                                      segments split on '/' OR '.' */
     int  kind;                   /* CAP_KIND_*: plain topic, or a function/variable/signal ENTITY */
     int  writable;               /* variable: an owner advertises a set channel */
+    int  forceable;              /* variable: an owner advertises allow_force (force/unforce permitted) */
     int  incomplete;             /* pattern half-pair (a diagnosable misadvertisement) */
     Qos  qos;
     int  pubs[UI_MAX_ENDPOINTS]; int n_pubs;   /* node indices */

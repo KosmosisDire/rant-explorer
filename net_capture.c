@@ -48,6 +48,7 @@ typedef struct {
     int      reliable;       /* offered (pub) / requested (sub) */
     uint8_t  kind;           /* DartEntityKind: 0 topic, else function/variable/signal */
     uint8_t  writable;       /* variable: a set channel is advertised */
+    uint8_t  forceable;      /* variable: the owner permits force/unforce (allow_force) */
     uint8_t  incomplete;     /* pattern half-pair */
 } CapTopic;
 
@@ -870,7 +871,7 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
                      &(DartTopicOpts){ .qos = { .reliability = DART_RELIABLE,
                                                 .catch_up = (uint16_t)(variable ? 1 : 0) } },
                      variable ? DART_KIND_VARIABLE : DART_KIND_SIGNAL,
-                     variable ? CAP_VAR_PREFIX : 0, 0, NULL, NULL);
+                     variable ? CAP_VAR_PREFIX : 0, 0, 0 /*forceable: observer never owns*/, NULL, NULL);
             if (sch) dart_schema_free(sch, cap_schema_alloc, NULL);
             if (!ch) return 0;
             dart_topic_dispatch(ch, 0, 0);            /* queued: deliveries drain on the UI thread */
@@ -892,7 +893,7 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
                (flushed by cap_poll the moment matching resolves; see cap_send_routed). */
             s->set_ch = i_dart_node_create_pattern_topic(node, sn, DART_PUB_ONLY, sch,
                      &(DartTopicOpts){ .qos = { .reliability = DART_RELIABLE } },
-                     DART_KIND_VAR_SET, CAP_SET_PREFIX, 0, NULL, NULL);
+                     DART_KIND_VAR_SET, CAP_SET_PREFIX, 0, 0, NULL, NULL);
             if (sch) dart_schema_free(sch, cap_schema_alloc, NULL);
             if (!s->set_ch) return 0;
         }
@@ -1302,6 +1303,7 @@ static void cap_endpoint_fill(CapTopic *e, const DartEntityInfo *ei, int *names_
     e->reliable   = ei->reliable;
     e->kind       = (uint8_t)ei->kind;
     e->writable   = ei->writable;
+    e->forceable  = ei->forceable;
     e->incomplete = ei->incomplete;
 }
 
@@ -1476,6 +1478,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
             n->pub[k].reliable   = p->pub[k].reliable;
             n->pub[k].kind       = p->pub[k].kind;
             n->pub[k].writable   = p->pub[k].writable;
+            n->pub[k].forceable  = p->pub[k].forceable;
             n->pub[k].incomplete = p->pub[k].incomplete;
         }
         n->n_pub = k;
@@ -1485,6 +1488,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
             n->sub[k].reliable   = p->sub[k].reliable;
             n->sub[k].kind       = p->sub[k].kind;
             n->sub[k].writable   = p->sub[k].writable;
+            n->sub[k].forceable  = p->sub[k].forceable;
             n->sub[k].incomplete = p->sub[k].incomplete;
         }
         n->n_sub = k;

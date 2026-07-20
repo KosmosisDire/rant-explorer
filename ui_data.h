@@ -139,6 +139,7 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
             if (cn->pub[k].kind){   /* entity kind (agrees across peers) */
                 g_topics[ti].kind = cn->pub[k].kind;
                 if (cn->pub[k].writable)   g_topics[ti].writable = 1;
+                if (cn->pub[k].forceable)  g_topics[ti].forceable = 1;
                 if (cn->pub[k].incomplete) g_topics[ti].incomplete = 1;
             }
         }
@@ -151,6 +152,7 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
             if (cn->sub[k].kind){
                 g_topics[ti].kind = cn->sub[k].kind;
                 if (cn->sub[k].writable)   g_topics[ti].writable = 1;
+                if (cn->sub[k].forceable)  g_topics[ti].forceable = 1;
                 if (cn->sub[k].incomplete) g_topics[ti].incomplete = 1;
             }
         }

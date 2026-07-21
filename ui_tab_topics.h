@@ -131,6 +131,49 @@ static Clay_String tt_rel_word(int reliable){
     return reliable ? CLAY_STRING("RELIABLE") : CLAY_STRING("BEST_EFFORT");
 }
 
+/* ------- the topic-tree category filter (the funnel button by the filter box) */
+
+static const char tt_filter_menu_tok;   /* &this = the category-filter menu's owner token */
+
+/* the category-filter checklist: grouped Kind / Reliability / State checkboxes (a disabled
+   row heads each group), plus a "Clear filters" row when anything is set. Toggling a box
+   keeps the menu open (ui_menu's checklist behaviour); the tree rebuild picks up the change
+   next frame. Drawn each frame; idle unless open. */
+static void tt_filter_menu(AppState *app, const Palette *P){
+    UiMenuItem items[16];
+    unsigned   bit[16];              /* the bit each row toggles; 0 = a non-toggle row (header / clear) */
+    int n = 0, hit;
+    if (!ui_menu_is_open(&tt_filter_menu_tok)) return;
+    /* a group header: a dimmed, non-clickable label */
+    #define TT_FM_HDR(s) do{ items[n] = (UiMenuItem){ .label = CLAY_STRING(s), .enabled = 0 }; \
+                             bit[n] = 0; n++; }while(0)
+    /* a checkbox row bound to category bit b */
+    #define TT_FM_CHK(s, b) do{ items[n] = (UiMenuItem){ .label = CLAY_STRING(s), .enabled = 1, \
+                                  .check = (app->topic_cats & (b)) ? UI_MENU_ON : UI_MENU_OFF }; \
+                                bit[n] = (b); n++; }while(0)
+    TT_FM_HDR("Kind");
+    TT_FM_CHK("Topics",      TT_CAT_TOPIC);
+    TT_FM_CHK("Functions",   TT_CAT_FUNCTION);
+    TT_FM_CHK("Variables",   TT_CAT_VARIABLE);
+    TT_FM_CHK("Signals",     TT_CAT_SIGNAL);
+    TT_FM_HDR("Reliability");
+    TT_FM_CHK("Reliable",    TT_CAT_RELIABLE);
+    TT_FM_CHK("Best-effort", TT_CAT_BEST_EFF);
+    TT_FM_HDR("State");
+    TT_FM_CHK("Subscribed",  TT_CAT_SUBSCRIBED);
+    TT_FM_CHK("Publishing",  TT_CAT_ACTIVE);
+    if (app->topic_cats){           /* a plain (menu-closing) row to reset everything */
+        items[n] = (UiMenuItem){ .label = CLAY_STRING("Clear filters"), .enabled = 1 };
+        bit[n] = 0; n++;
+    }
+    #undef TT_FM_HDR
+    #undef TT_FM_CHK
+    hit = ui_menu(P, &tt_filter_menu_tok, items, n, 190);
+    if (hit < 0) return;
+    if (bit[hit]) app->topic_cats ^= bit[hit];   /* toggle the checkbox (menu stays open) */
+    else          app->topic_cats = 0;           /* the "Clear filters" row (menu closes) */
+}
+
 /* ============================================================= left: topic tree */
 
 /* the tree is a table: the name column (indented) plus fixed stat columns. These are the
@@ -519,6 +562,14 @@ static void topics_tree(AppState *app, const Palette *P){
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8),
                                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
                 ui_filter_box(app, P, CLAY_STRING("Filter topics..."));
+                /* category filter: a funnel button that toggles the checklist menu; accented
+                   while any category filter is active so it reads as "on" */
+                if (ui_icon_button(P, ICON_FILTER, 15, 30,
+                                   (app->topic_cats || ui_menu_is_open(&tt_filter_menu_tok)) ? P->accent : P->dim,
+                                   P->text)){
+                    if (ui_menu_is_open(&tt_filter_menu_tok)) ui_menu_close();
+                    else ui_menu_open(&tt_filter_menu_tok, g_pointer_x, g_pointer_y);
+                }
                 if (ui_icon_button(P, ICON_PLUS, 16, 30, app->adding_topic ? P->accent : P->dim, P->text)){
                     app->adding_topic = !app->adding_topic;
                     app->new_topic_len = 0; app->new_topic[0] = '\0';
@@ -535,8 +586,9 @@ static void topics_tree(AppState *app, const Palette *P){
                            .layoutDirection = CLAY_TOP_TO_BOTTOM },
                .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
             if (n == 0)
-                ui_placeholder(P, app->topic_filter_len ? CLAY_STRING("no topics match")
-                                                        : CLAY_STRING("no topics discovered"));
+                ui_placeholder(P, (app->topic_filter_len || app->topic_cats)
+                                      ? CLAY_STRING("no topics match")
+                                      : CLAY_STRING("no topics discovered"));
             else {
                 /* virtualized: emit only rows [first,last); fixed-height spacers stand in
                    for the rest, so the total content height and the scrollbar are unchanged.
@@ -555,7 +607,7 @@ static void topics_tree(AppState *app, const Palette *P){
         ui_scrollbar(P, CLAY_ID("topics_tree_scroll"));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = CLAY_PADDING_ALL(UISC(12)) },
                .border = { .width = { 0, 0, UISCI(1), 0, 0 }, .color = P->border } }) {
-            ui_section_label(P, app->topic_filter_len
+            ui_section_label(P, (app->topic_filter_len || app->topic_cats)
                 ? ui_fmt("%d / %d TOPICS", ut_n_matched, D ? D->n_topics : 0)
                 : ui_fmt("%d TOPICS", D ? D->n_topics : 0));
         }
@@ -1580,7 +1632,8 @@ static void topics_tab(AppState *app, const Palette *P){
     topics_tree(app, P);
     topics_feed(app, P);
     if (app->drawer_open) topics_drawer(app, P);
-    tt_tree_menu(app, P);   /* the tree's right-click subscribe menu (floats above everything) */
+    tt_tree_menu(app, P);     /* the tree's right-click subscribe menu (floats above everything) */
+    tt_filter_menu(app, P);   /* the category-filter checklist (floats above everything) */
 }
 
 /* Keep the feed glued to the newest message while the user is parked at the bottom. Runs

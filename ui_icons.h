@@ -31,6 +31,7 @@ typedef enum {
     ICON_FUNCTION,       /* patterns: a function channel (req/resp) */
     ICON_VARIABLE,       /* patterns: a variable channel (value/set) */
     ICON_SIGNAL,         /* patterns: a signal channel (fire-and-forget event) */
+    ICON_FILTER,         /* topic-tree category filter (funnel) */
     ICON_COUNT
 } IconId;
 
@@ -85,6 +86,7 @@ static const char *const UI_ICON_SVG[ICON_COUNT] = {
     /* FUNCTION */ UI_ICON("<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\"/><path d=\"M9 17c2 0 2.8-1 2.8-2.8V10c0-2 1-3.3 3.2-3\"/><path d=\"M9 11.2h5.7\"/>"),
     /* VARIABLE */ UI_ICON("<path d=\"M8 21s-4-3-4-9 4-9 4-9\"/><path d=\"M16 3s4 3 4 9-4 9-4 9\"/><line x1=\"15\" x2=\"9\" y1=\"9\" y2=\"15\"/><line x1=\"9\" x2=\"15\" y1=\"9\" y2=\"15\"/>"),
     /* SIGNAL  */ UI_ICON("<path d=\"M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z\"/>"),
+    /* FILTER */ UI_ICON("<polygon points=\"22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3\"/>"),
 };
 
 /* Icons rasterize at a supersample of their on-screen size, then SDL linear-shrinks

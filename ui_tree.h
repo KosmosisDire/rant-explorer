@@ -85,20 +85,29 @@ static int ut_strcasestr(const char *hay, const char *needle){
     return 0;
 }
 
-/* a topic passes the filter if its path OR any endpoint node's name contains the text */
-static int ut_topic_match(const Dataset *D, const Topic *tp, const char *filter){
+/* a topic passes the text filter if its path, any endpoint node's name, or its advertised
+   schema type name contains the text. The schema lookup is a live peer scan, so it is done
+   last (only when the cheaper checks miss) and only when a capture is available. */
+static int ut_topic_match(const Dataset *D, const Topic *tp, const char *filter, const Capture *cap){
     int i;
     if (ut_strcasestr(tp->path, filter)) return 1;
     for (i = 0; i < tp->n_pubs; i++)
         if (ut_strcasestr(D->nodes[tp->pubs[i]].name, filter)) return 1;
     for (i = 0; i < tp->n_subs; i++)
         if (ut_strcasestr(D->nodes[tp->subs[i]].name, filter)) return 1;
+    if (cap){
+        CapSchema sch;
+        if (cap_topic_schema(cap, tp->path, &sch) && sch.type_name[0]
+            && ut_strcasestr(sch.type_name, filter)) return 1;
+    }
     return 0;
 }
 
 static int ut_n_matched;   /* topics that passed the filter this build */
 
-static void ut_build(const Dataset *D, const char *filter){
+/* filter = the text filter (NULL = none); cats = the category-filter bitmask (0 = none);
+   cap backs the schema-name text match (NULL = skip it). */
+static void ut_build(const Dataset *D, const char *filter, const Capture *cap, unsigned cats){
     int t, no = 0;
     ut_n = 1;                                  /* node 0 = implicit root */
     memset(ut_slot, 0xFF, sizeof ut_slot);     /* 0xFF bytes = -1 ints: empty the (parent,seg) map */
@@ -106,8 +115,12 @@ static void ut_build(const Dataset *D, const char *filter){
     ut_pool[0].topic = -1; ut_pool[0].parent = -1; ut_pool[0].depth = -1;
     ut_pool[0].first_child = ut_pool[0].last_child = ut_pool[0].next_sibling = -1;
 
-    for (t = 0; t < D->n_topics && no < UT_MAX_NODES; t++)
-        if (!filter || ut_topic_match(D, &D->topics[t], filter)) ut_order[no++] = t;
+    for (t = 0; t < D->n_topics && no < UT_MAX_NODES; t++){
+        const Topic *tp = &D->topics[t];
+        if (cats && !app_topic_cat_match(tp, cats)) continue;         /* category filter (cheap) */
+        if (filter && !ut_topic_match(D, tp, filter, cap)) continue;  /* text filter (may scan schemas) */
+        ut_order[no++] = t;
+    }
     ut_n_matched = no;
     ut_sort_D = D;
     qsort(ut_order, (size_t)no, sizeof ut_order[0], ut_path_cmp);
@@ -137,7 +150,8 @@ static void ut_flatten(const AppState *app, const Dataset *D, int node, int dept
     int c;
     for (c = ut_pool[node].first_child; c != -1; c = ut_pool[c].next_sibling){
         int is_branch = ut_pool[c].n_children > 0;
-        int collapsed = is_branch && app->topic_filter_len == 0 && app_is_collapsed(app, ut_pool[c].path);
+        int filtering = app->topic_filter_len != 0 || app->topic_cats != 0;   /* any filter forces branches open */
+        int collapsed = is_branch && !filtering && app_is_collapsed(app, ut_pool[c].path);
         TreeRow *r;
         if (ut_n_rows >= UT_MAX_NODES) return;
         r = &ut_rows[ut_n_rows++];
@@ -158,7 +172,7 @@ static int ui_tree_build(const AppState *app){
     ut_n_rows = 0;
     ut_n_matched = 0;
     if (!D || D->n_topics == 0) return 0;
-    ut_build(D, app->topic_filter_len ? app->topic_filter : NULL);
+    ut_build(D, app->topic_filter_len ? app->topic_filter : NULL, app->cap, app->topic_cats);
     ut_flatten(app, D, 0, 0);
     return ut_n_rows;
 }

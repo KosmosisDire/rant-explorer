@@ -45,10 +45,18 @@ typedef struct {
     int         has_inspect_msg;
     char        inspect_msg_topic[CAP_TOPIC_CAP];   /* topic the copied message came from */
 
-    /* topic-tree filter (the search box above the tree): rows whose topic path or any
-       endpoint node name doesn't contain this substring (case-insensitive) are hidden */
+    /* topic-tree filter (the search box above the tree): rows whose topic path, any
+       endpoint node name, or schema type name doesn't contain this substring
+       (case-insensitive) are hidden */
     char     topic_filter[CAP_TOPIC_CAP];
     int      topic_filter_len;
+
+    /* topic-tree CATEGORY filter (the funnel button by the filter box): a bitmask of
+       TT_CAT_* checkboxes. 0 = show every topic. The bits fall into three groups
+       (kind / QoS / state); within the kind and QoS groups checked bits are OR'd
+       (a topic can't be two kinds at once), and every other predicate is AND'd, so
+       e.g. Functions+Variables+Reliable shows (function OR variable) AND reliable. */
+    unsigned topic_cats;
 
     /* "add a topic" input (the + by the filter): type a name to publish to a new topic */
     int      adding_topic;    /* 1 = the new-topic name field is showing */
@@ -80,6 +88,42 @@ typedef struct {
     const CapSnapshot *snap;  /* the raw snapshot (Log tab reads its event lines) */
 } AppState;
 
+/* topic-tree category-filter bits (AppState.topic_cats). Three groups: KIND (which
+   entity), QOS (reliability), STATE (live subscription / traffic). */
+enum {
+    TT_CAT_TOPIC      = 1u << 0,   /* plain pub/sub topics */
+    TT_CAT_FUNCTION   = 1u << 1,   /* function entities */
+    TT_CAT_VARIABLE   = 1u << 2,   /* variable entities */
+    TT_CAT_SIGNAL     = 1u << 3,   /* signal (event) entities */
+    TT_CAT_RELIABLE   = 1u << 4,   /* reliable QoS */
+    TT_CAT_BEST_EFF   = 1u << 5,   /* best-effort QoS */
+    TT_CAT_SUBSCRIBED = 1u << 6,   /* the explorer is subscribed */
+    TT_CAT_ACTIVE     = 1u << 7    /* actively publishing (a measurable rate) */
+};
+#define TT_CAT_GROUP_KIND (TT_CAT_TOPIC | TT_CAT_FUNCTION | TT_CAT_VARIABLE | TT_CAT_SIGNAL)
+#define TT_CAT_GROUP_QOS  (TT_CAT_RELIABLE | TT_CAT_BEST_EFF)
+
+/* 1 if a topic passes the category filter (see AppState.topic_cats). cats == 0 = all pass. */
+static int app_topic_cat_match(const Topic *t, unsigned cats){
+    unsigned kind = cats & TT_CAT_GROUP_KIND, qos = cats & TT_CAT_GROUP_QOS;
+    if (kind){                                   /* OR within the kind group */
+        unsigned bit = t->kind == CAP_KIND_FUNCTION ? TT_CAT_FUNCTION
+                     : t->kind == CAP_KIND_VARIABLE ? TT_CAT_VARIABLE
+                     : t->kind == CAP_KIND_SIGNAL   ? TT_CAT_SIGNAL
+                     :                                TT_CAT_TOPIC;
+        if (!(kind & bit)) return 0;
+    }
+    if (qos){                                    /* OR within the QoS group (needs a known QoS) */
+        unsigned bit;
+        if (!t->has_qos) return 0;
+        bit = t->reliable ? TT_CAT_RELIABLE : TT_CAT_BEST_EFF;
+        if (!(qos & bit)) return 0;
+    }
+    if ((cats & TT_CAT_SUBSCRIBED) && !t->sub_state)     return 0;   /* AND: additional predicates */
+    if ((cats & TT_CAT_ACTIVE)     && !(t->rate_hz > 0.0)) return 0;
+    return 1;
+}
+
 static void app_init(AppState *a, const Dataset *data){
     int fk;
     a->theme_dark  = 1;
@@ -99,6 +143,7 @@ static void app_init(AppState *a, const Dataset *data){
     a->inspect_msg_topic[0] = '\0';
     a->topic_filter_len   = 0;
     a->topic_filter[0]    = '\0';
+    a->topic_cats       = 0;
     a->adding_topic     = 0;
     a->new_topic_len    = 0;
     a->new_topic[0]     = '\0';

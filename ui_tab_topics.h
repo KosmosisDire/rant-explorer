@@ -544,6 +544,9 @@ static void topics_tree(AppState *app, const Palette *P){
             float w;
             snprintf(lbl, sizeof lbl, "%s%s", u->name, u->n_children > 0 ? "/" : "");
             w = UISC(10 + u->depth * 15 + 24) + gap + tt_name_w(lbl);
+            /* an entity row (function/variable/signal) prefixes a kind glyph, so reserve the
+               same width the row subtracts from its text budget, else its name gets trimmed */
+            if (u->topic >= 0 && D->topics[u->topic].kind) w += UISC(18) + gap;
             if (w > name_max) name_max = w;
         }
     }

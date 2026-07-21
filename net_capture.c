@@ -93,8 +93,10 @@ typedef struct {
     int      n_sub, sub_cap;
     CapTopic *pub;
     CapTopic *sub;
-    uint32_t topics_ver;     /* dp->meta_version the pub/sub lists were last built from */
-    int      names_pending;  /* 1 = a topic name was still an unfetched placeholder last build */
+    uint32_t topics_epoch;   /* dart_node_peer_interest_epoch the pub/sub lists were last built
+                                from: the node bumps it on ANY reflected change (interest apply,
+                                external-interest assembly, names paging in), so it is the one
+                                cache key -- no event handling, no version watching */
 
     /* observer-derived */
     unsigned           updates;
@@ -1357,9 +1359,10 @@ int cap_topic_send_pending(const Capture *cap, const char *topic){
 }
 
 /* fill one observer endpoint from an entity yielded by the canonical reflection walk */
-static void cap_endpoint_fill(CapTopic *e, const DartEntityInfo *ei, int *names_pending){
+static void cap_endpoint_fill(CapTopic *e, const DartEntityInfo *ei){
     if (ei->name.data) snprintf(e->name, sizeof e->name, "%.*s", (int)ei->name.len, ei->name.data);
-    else             { snprintf(e->name, sizeof e->name, "0x%08x", (unsigned)ei->hash); *names_pending = 1; }
+    else               snprintf(e->name, sizeof e->name, "0x%08x", (unsigned)ei->hash);
+    /* a placeholder name resolves itself: the arriving details bump the interest epoch */
     e->index      = ei->index;
     e->reliable   = ei->reliable;
     e->kind       = (uint8_t)ei->kind;
@@ -1389,14 +1392,17 @@ static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer
     snprintf(p->name, sizeof p->name, "%.*s", (int)dp->name.len, dp->name.data ? dp->name.data : "");
 
     /* Rebuilding the interest list re-fetches every topic name from the node's detail cache,
-       which is O(topics) per peer PER FRAME -- crippling at many-thousand-topic scale. The list
-       only changes when the peer re-advertises (meta_version bumps) or while its names are still
-       paging in from the detail exchange (names_pending), so skip the walk otherwise and keep the
-       cached lists. cap_snapshot still copies them out each frame; only this fetch is throttled. */
-    if (dp->meta_version == p->topics_ver && !p->names_pending) return;
+       which is O(topics) per peer PER FRAME -- crippling at many-thousand-topic scale. The
+       node's interest EPOCH is the one cache key: it bumps on every reflected change (a
+       re-advertise, an external interest assembling, names paging in from the detail
+       exchange), so skip the walk while it is unchanged and keep the cached lists.
+       cap_snapshot still copies them out each frame; only this fetch is throttled. */
+    {   uint32_t epoch = dart_node_peer_interest_epoch(dp);
+        if (epoch == p->topics_epoch) return;
+        p->topics_epoch = epoch;
+    }
 
     p->n_pub = p->n_sub = 0;
-    p->names_pending = 0;
     memset(&it, 0, sizeof it);
     while (dart_node_peer_entity_next(node, dp->id, &it, &ei)){
         /* provides = the entity's source side (publisher / provider / owner / emitter);
@@ -1404,11 +1410,10 @@ static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer
            come from the detail cache (fetch_details fills it within an RTT); the hash is
            the placeholder until then. */
         if (ei.provides && cap_grow(&p->pub, &p->pub_cap, p->n_pub, sizeof *p->pub))
-            cap_endpoint_fill(&p->pub[p->n_pub++], &ei, &p->names_pending);
+            cap_endpoint_fill(&p->pub[p->n_pub++], &ei);
         if (ei.consumes && cap_grow(&p->sub, &p->sub_cap, p->n_sub, sizeof *p->sub))
-            cap_endpoint_fill(&p->sub[p->n_sub++], &ei, &p->names_pending);
+            cap_endpoint_fill(&p->sub[p->n_sub++], &ei);
     }
-    p->topics_ver = dp->meta_version;   /* cache is now in sync with this announce version */
 }
 
 void cap_snapshot(const Capture *cap, CapSnapshot *out){

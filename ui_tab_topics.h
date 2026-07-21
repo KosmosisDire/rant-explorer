@@ -28,6 +28,7 @@ static CapSchema   tt_feed_schema;   /* the topic's main schema, for picking the
 static int tt_kind_icon(const Palette *P, int kind){
     IconId id; Clay_Color c;
     switch (kind){
+        case CAP_KIND_TOPIC:    id = ICON_RSS;      c = P->dim;    break;
         case CAP_KIND_FUNCTION: id = ICON_FUNCTION; c = P->accent; break;
         case CAP_KIND_VARIABLE: id = ICON_VARIABLE; c = P->amber;  break;
         case CAP_KIND_SIGNAL:   id = ICON_SIGNAL;   c = P->green;  break;
@@ -386,9 +387,10 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
                 ui_icon(row->open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12, P->dim);
             }
         }
-        /* entity glyph: a function/variable/signal channel shows its type icon; a plain topic
-           shows nothing here (its subscription light rides the right-hand columns) */
-        if (row->has_topic && row->topic->kind){
+        /* topic glyph: a plain topic shows the hash (a named channel); a function/variable/
+           signal shows its type icon instead (tt_kind_icon maps the kind). A namespace branch
+           has no topic and shows nothing here. */
+        if (row->has_topic){
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(18)), .height = CLAY_SIZING_GROW(0) },
                                .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
                 tt_kind_icon(P, row->topic->kind);
@@ -400,10 +402,10 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
                .layout = { .sizing = { .height = CLAY_SIZING_GROW(0) },
                            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
             /* px left for the text = the name region minus this row's caret zone, the gap,
-               and (for an entity) the kind glyph. Truncate to that many mono chars so the
+               and (for a topic) the kind glyph. Truncate to that many mono chars so the
                row can never grow wider than the panel (see the header comment above). */
             float text_px = name_col - UISC(10 + row->depth * 15 + 24) - gap
-                          - ((row->has_topic && row->topic->kind) ? UISC(18) + gap : 0.0f);
+                          - (row->has_topic ? UISC(18) + gap : 0.0f);
             int budget = (cw > 0.0f && text_px > cw) ? (int)(text_px / cw) : 1;
             CLAY_TEXT(tt_fit(ui_fmt("%s%s", row->name, row->is_branch ? "/" : "").chars, budget),
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
@@ -544,9 +546,10 @@ static void topics_tree(AppState *app, const Palette *P){
             float w;
             snprintf(lbl, sizeof lbl, "%s%s", u->name, u->n_children > 0 ? "/" : "");
             w = UISC(10 + u->depth * 15 + 24) + gap + tt_name_w(lbl);
-            /* an entity row (function/variable/signal) prefixes a kind glyph, so reserve the
-               same width the row subtracts from its text budget, else its name gets trimmed */
-            if (u->topic >= 0 && D->topics[u->topic].kind) w += UISC(18) + gap;
+            /* a topic row prefixes a kind glyph (hash for a plain topic, the type icon for a
+               function/variable/signal), so reserve the same width the row subtracts from its
+               text budget, else its name gets trimmed. A namespace branch has none. */
+            if (u->topic >= 0) w += UISC(18) + gap;
             if (w > name_max) name_max = w;
         }
     }
@@ -1450,7 +1453,7 @@ static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(6),
                            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-            if (t->kind) tt_kind_icon(P, t->kind);
+            tt_kind_icon(P, t->kind);   /* hash for a plain topic, the type icon for an entity */
             CLAY_TEXT(ui_str(t->path), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_BODY), .textColor = P->text }));
         }
         if (t->kind)   /* patterns layer: name the entity + channel role this topic plays */

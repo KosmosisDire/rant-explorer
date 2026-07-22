@@ -619,11 +619,67 @@ static CapPeer *cap_peer_get(uint32_t id){
     return p;
 }
 
+/* ---- node logs: the mesh-wide @dart/log/{error,warn,info} intake ------------------------
+   The explorer widens its OWN built-in log handles to PUBSUB at start (one shared topic
+   per level, so this subscribes to every node's lines at once) and switches them to
+   consumer queues: lines drain on the UI thread with the other feeds, so the ring below
+   is UI-thread-owned and lock-free. */
+static CapNodeLogLine cap_nodelog[CAP_NODELOG_MAX];
+static int      cap_nodelog_head, cap_nodelog_count;
+static uint16_t cap_nodelog_index[3] = { 0xFFFF, 0xFFFF, 0xFFFF };  /* our log topics' indices */
+
+/* @dart/meta watch state (the poll/decode functions live below with the pattern interop;
+   declared here so cap_stop can reset them) */
+static char               cap_meta_node[CAP_NAME_CAP];   /* watched node's name; empty = off */
+static CapMetaStats       cap_meta;                      /* latest decode (lock-bracketed) */
+static uint32_t           cap_meta_gen;                  /* bumped per watch change */
+static uint32_t           cap_meta_req_gen;              /* generation the in-flight call belongs to */
+static int                cap_meta_inflight;
+static unsigned long long cap_meta_last_ms;              /* last request time */
+static unsigned long long cap_meta_recv_ms;              /* when the snapshot arrived (0 = never) */
+static uint64_t           cap_meta_prev_cpu, cap_meta_prev_wall;   /* CPU%% deltas */
+
+/* a delivered @dart/log line -> the node-log ring; 1 = consumed (not a topic feed) */
+static int cap_nodelog_intake(const DartMsg *msg){
+    int lvl;
+    for (lvl = 0; lvl < 3; lvl++) if (cap_nodelog_index[lvl] == msg->topic_index) break;
+    if (lvl == 3) return 0;
+    {   CapNodeLogLine *L = &cap_nodelog[cap_nodelog_head];
+        DartString txt = msg->schema ? dart_get_string(msg->data, msg->schema, "text")
+                                     : dart_string(NULL, 0);
+        size_t tl = txt.len < CAP_NODELOG_TEXT - 1 ? txt.len : CAP_NODELOG_TEXT - 1;
+        L->level   = (uint8_t)lvl;
+        L->wall_us = msg->schema ? dart_get_uint(msg->data, msg->schema, "wall_us") : 0;
+        snprintf(L->node, sizeof L->node, "%.*s", (int)msg->publisher_name.len, msg->publisher_name.data);
+        if (tl) memcpy(L->text, txt.data, tl);
+        L->text[tl] = '\0';
+        cap_nodelog_head = (cap_nodelog_head + 1) % CAP_NODELOG_MAX;
+        if (cap_nodelog_count < CAP_NODELOG_MAX) cap_nodelog_count++;
+    }
+    return 1;
+}
+
+int cap_node_log(const Capture *cap, const char *node_name, unsigned level_mask,
+                 CapNodeLogLine *out, int max){
+    int i, n = 0;
+    (void)cap;   /* the ring is UI-thread-owned (queued dispatch fills it on this thread) */
+    for (i = 0; i < cap_nodelog_count && n < max; i++){
+        int idx = (cap_nodelog_head - 1 - i + 2 * CAP_NODELOG_MAX) % CAP_NODELOG_MAX;   /* newest first */
+        const CapNodeLogLine *L = &cap_nodelog[idx];
+        if (!(level_mask & (1u << L->level))) continue;
+        if (node_name && strcmp(node_name, L->node) != 0) continue;
+        out[n++] = *L;
+    }
+    return n;
+}
+
 /* the node's message sink: append a delivered message to its topic ring. Every explorer
    topic is queued, so this only ever runs on the UI thread (cap_poll's dispatch) --
    the rings and their metrics need no locking. We keep only a short payload preview. */
 static void cap_on_message(const DartMsg *msg){
-    CapSub *s = cap_sub_by_index(msg->topic_index);
+    CapSub *s;
+    if (cap_nodelog_intake(msg)) return;      /* a @dart/log line, not a topic feed */
+    s = cap_sub_by_index(msg->topic_index);
     if (!s) return;
     /* jitter from the POLL-side arrival stamp, not from when this frame got around to
        dispatching: a frame-paced consumer must never quantize inter-arrival times */
@@ -750,6 +806,20 @@ int cap_start(Capture *cap, const Config *cfg){
     cap->rt  = node;
     cap->mem = NULL;         /* the node owns its memory now; close frees it */
     cap_node = node;         /* the log/table serializer handle (see the THREADING note) */
+    {   /* join the mesh-wide @dart/log topics: widen our own built-in handles to PUBSUB
+           (one shared topic per level subscribes to EVERY node's lines, with each node's
+           recent history replaying on join) and switch them to consumer queues so the
+           lines drain on the UI thread with the other feeds. */
+        int lvl;
+        for (lvl = 0; lvl < 3; lvl++){
+            DartTopic *lc = dart_node_log_topic(node, (DartLogLevel)lvl);
+            DartMsg m;
+            if (!lc) continue;
+            dart_topic_set_role(lc, DART_PUBSUB);
+            cap_nodelog_index[lvl] = dart_topic_index(lc);
+            (void)dart_topic_take(lc, &m, 0);   /* first take switches it to queued delivery */
+        }
+    }
     /* the service thread owns discovery/RX/timers from here: the poll cadence no longer
        rides the UI frame rate. DART_ERR_NOSYS (threads compiled out) falls back to the
        old single-threaded drive inside cap_poll. */
@@ -765,6 +835,7 @@ int cap_start(Capture *cap, const Config *cfg){
    (DART_NO_THREADS) it also drives the loop, exactly the old behavior. */
 static void cap_drain_replies(DartNode *node);   /* defined with the pattern interop below */
 static void cap_pend_poll(void);                 /* flush/expire parked sends (same block) */
+static void cap_meta_poll(DartNode *node);       /* the 1 Hz @dart/meta poll (below) */
 
 int cap_poll(Capture *cap){
     DartNode *node = (DartNode *)cap->rt;
@@ -775,6 +846,7 @@ int cap_poll(Capture *cap){
     n = dart_node_dispatch(node, 0, 0);
     cap_drain_replies(node);   /* parked function replies -> their feeds (UI thread) */
     cap_pend_poll();           /* parked sends -> the wire once matching resolves */
+    cap_meta_poll(node);       /* keep the watched node's runtime stats fresh */
     return n;
 }
 
@@ -795,6 +867,10 @@ void cap_stop(Capture *cap){
         free(cap_peers[i].sub); cap_peers[i].sub = NULL; cap_peers[i].sub_cap = cap_peers[i].n_sub = 0;
         cap_peers[i].used = 0;
     }
+    cap_nodelog_head = cap_nodelog_count = 0;
+    cap_nodelog_index[0] = cap_nodelog_index[1] = cap_nodelog_index[2] = 0xFFFF;
+    cap_meta_node[0] = '\0'; cap_meta_inflight = 0;
+    memset(&cap_meta, 0, sizeof cap_meta);
 }
 /* Free a CapSnapshot's grown per-node entity buffers (the caller owns the CapSnapshot
    struct; net_capture owns the buffers it malloc'd into it). Call once at shutdown. */
@@ -805,6 +881,147 @@ void cap_snapshot_free(CapSnapshot *snap){
         free(snap->nodes[i].pub); snap->nodes[i].pub = NULL; snap->nodes[i].pub_cap = 0;
         free(snap->nodes[i].sub); snap->nodes[i].sub = NULL; snap->nodes[i].sub_cap = 0;
     }
+}
+
+/* ---- node runtime stats: the 1 Hz @dart/meta poll ---------------------------------------
+   A directed call at the watched node's peer id, once per second, decoded straight in the
+   response callback (SERVICE thread, node lock held: the same discipline as cap_on_event;
+   the UI copies cap_meta out under a dart_node_lock bracket). A generation counter ties a
+   reply to the watch that requested it, so a late reply for a previous node is dropped.
+   The state itself is declared with the node-log ring above (cap_stop resets it). */
+
+static uint64_t cap_map_u64(DartBytes body, const char *key){
+    DartValue v;
+    return dart_map_get(body, key, &v) ? v.v.u : 0;   /* the snapshot stores unsigned kinds */
+}
+
+static void cap_meta_on_reply(const DartResponse *r){
+    cap_meta_inflight = 0;
+    if (cap_meta_req_gen != cap_meta_gen) return;        /* a reply for a previous watch */
+    if (r->status != DART_CALL_OK || !r->schema){ cap_meta.failing++; return; }
+    {   DartBytes info = dart_get_map(r->data, r->schema, "info");
+        DartValue v;
+        uint64_t wall = 0;
+        if (!info.data){ cap_meta.failing++; return; }
+        cap_meta.failing = 0;
+        cap_meta.valid = 1;
+        cap_meta_recv_ms = cap_now_ms();
+        if (dart_map_get(info, "node", &v)){
+            DartBytes nm = v.bytes;
+            DartValue le;
+            wall = cap_map_u64(nm, "wall_us");
+            cap_meta.uptime_s       = (double)cap_map_u64(nm, "uptime_us") / 1e6;
+            cap_meta.mem_in_use     = cap_map_u64(nm, "mem_in_use");
+            cap_meta.mem_peak       = cap_map_u64(nm, "mem_peak");
+            cap_meta.alloc_calls    = cap_map_u64(nm, "alloc_calls");
+            cap_meta.bp_waited_us   = cap_map_u64(nm, "bp_waited_us");
+            cap_meta.bp_waits       = (uint32_t)cap_map_u64(nm, "bp_waits");
+            cap_meta.evicted_unsent = (uint32_t)cap_map_u64(nm, "evicted_unsent");
+            cap_meta.peers          = (uint32_t)cap_map_u64(nm, "peers");
+            cap_meta.max_peers      = (uint32_t)cap_map_u64(nm, "max_peers");
+            cap_meta.topics         = (uint32_t)cap_map_u64(nm, "topics");
+            cap_meta.max_topics     = (uint32_t)cap_map_u64(nm, "max_topics");
+            cap_meta.shm_tx         = (uint32_t)cap_map_u64(nm, "shm_tx");
+            cap_meta.shm_rx         = (uint32_t)cap_map_u64(nm, "shm_rx");
+            cap_meta.last_error     = (uint32_t)cap_map_u64(nm, "last_error");
+            cap_meta.last_error_text[0] = '\0';
+            if (dart_map_get(nm, "last_error_text", &le) && le.bytes.data){
+                size_t tl = le.bytes.len < sizeof cap_meta.last_error_text - 1
+                          ? le.bytes.len : sizeof cap_meta.last_error_text - 1;
+                memcpy(cap_meta.last_error_text, le.bytes.data, tl);
+                cap_meta.last_error_text[tl] = '\0';
+            }
+        }
+        cap_meta.have_proc = 0;
+        cap_meta.cpu_pct = -1.0;
+        if (dart_map_get(info, "proc", &v)){
+            DartBytes pr = v.bytes;
+            cap_meta.have_proc = 1;
+            cap_meta.pid      = cap_map_u64(pr, "pid");
+            cap_meta.cpu_us   = cap_map_u64(pr, "cpu_us");
+            cap_meta.rss      = cap_map_u64(pr, "rss");
+            cap_meta.peak_rss = cap_map_u64(pr, "peak_rss");
+            /* CPU%% from consecutive snapshots, over the node's own wall clock */
+            if (cap_meta_prev_wall && wall > cap_meta_prev_wall && cap_meta.cpu_us >= cap_meta_prev_cpu)
+                cap_meta.cpu_pct = 100.0 * (double)(cap_meta.cpu_us - cap_meta_prev_cpu)
+                                         / (double)(wall - cap_meta_prev_wall);
+            cap_meta_prev_cpu  = cap_meta.cpu_us;
+            cap_meta_prev_wall = wall;
+        }
+        cap_meta.n_topic_rows = 0;
+        if (dart_map_get(info, "topics", &v)){
+            uint16_t cnt = dart_map_array_count(v.bytes), i;
+            for (i = 0; i < cnt && cap_meta.n_topic_rows < CAP_META_TOPICS; i++){
+                DartValue e, nv;
+                CapMetaTopic *tr;
+                if (!dart_map_array_at(v.bytes, i, &e) || e.kind != DART_MAP) continue;
+                tr = &cap_meta.topic_rows[cap_meta.n_topic_rows++];
+                tr->name[0] = '\0';
+                if (dart_map_get(e.bytes, "name", &nv) && nv.bytes.data){
+                    size_t tl = nv.bytes.len < sizeof tr->name - 1 ? nv.bytes.len : sizeof tr->name - 1;
+                    memcpy(tr->name, nv.bytes.data, tl); tr->name[tl] = '\0';
+                }
+                tr->tx_msgs  = cap_map_u64(e.bytes, "tx_msgs");
+                tr->tx_bytes = cap_map_u64(e.bytes, "tx_bytes");
+                tr->rx_msgs  = cap_map_u64(e.bytes, "rx_msgs");
+                tr->rx_bytes = cap_map_u64(e.bytes, "rx_bytes");
+                tr->subs     = (uint32_t)cap_map_u64(e.bytes, "subs");
+                tr->pubs     = (uint32_t)cap_map_u64(e.bytes, "pubs");
+                tr->drops    = (uint32_t)cap_map_u64(e.bytes, "q_dropped");
+            }
+        }
+    }
+}
+
+static void cap_meta_poll(DartNode *node){
+    unsigned long long now = cap_now_ms();
+    uint32_t pid = 0; int i;
+    DartFunction *fn;
+    if (!node || !cap_meta_node[0]) return;
+    if (cap_meta_inflight || now - cap_meta_last_ms < 1000) return;
+    fn = dart_node_meta_function(node);
+    if (!fn) return;
+    /* resolve the watched node's peer id from the cached peer table (written on the
+       service thread under the node lock: bracket the read) */
+    dart_node_lock(node);
+    for (i = 0; i < CAP_MAX_PEERS; i++)
+        if (cap_peers[i].used && cap_peers[i].state == CAP_ACTIVE
+            && !strcmp(cap_peers[i].name, cap_meta_node)){ pid = cap_peers[i].local_id; break; }
+    dart_node_unlock(node);
+    if (!pid) return;                     /* not discovered / dropped: idle until it is */
+    cap_meta_last_ms = now;
+    cap_meta_inflight = 1;
+    cap_meta_req_gen = cap_meta_gen;
+    if (dart_function_call_async(fn, dart_bytes(NULL, 0), cap_meta_on_reply, NULL,
+                                 &(DartCallOpts){ .provider = pid }) != DART_OK)
+        cap_meta_inflight = 0;
+}
+
+void cap_meta_watch(Capture *cap, const char *node_name){
+    DartNode *node = cap ? (DartNode *)cap->rt : NULL;
+    if (!node) return;
+    if (!node_name && !cap_meta_node[0]) return;                       /* already off */
+    if (node_name && !strcmp(cap_meta_node, node_name)) return;        /* unchanged */
+    dart_node_lock(node);
+    memset(&cap_meta, 0, sizeof cap_meta);
+    cap_meta.cpu_pct = -1.0;
+    cap_meta_gen++;                       /* orphan any in-flight reply */
+    cap_meta_prev_cpu = cap_meta_prev_wall = 0;
+    cap_meta_recv_ms = 0; cap_meta_last_ms = 0;
+    snprintf(cap_meta_node, sizeof cap_meta_node, "%s", node_name ? node_name : "");
+    dart_node_unlock(node);
+}
+
+int cap_meta_stats(const Capture *cap, CapMetaStats *out){
+    DartNode *node = cap ? (DartNode *)cap->rt : NULL;
+    if (!out) return 0;
+    if (!node || !cap_meta_node[0]){ memset(out, 0, sizeof *out); return 0; }
+    dart_node_lock(node);
+    *out = cap_meta;
+    dart_node_unlock(node);
+    out->age_s = cap_meta_recv_ms ? (double)(cap_now_ms() - cap_meta_recv_ms) / 1000.0 : -1.0;
+    snprintf(out->node, sizeof out->node, "%s", cap_meta_node);
+    return 1;
 }
 
 /* ---- pattern-entity interop -----------------------------------------------------------

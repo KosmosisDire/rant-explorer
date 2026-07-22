@@ -18,6 +18,9 @@ typedef struct {
     int  sel_node;            /* index into data->nodes  */
     int  sel_topic;           /* index into data->topics */
 
+    unsigned nodelog_mask;    /* Nodes-tab log sidebar level filter: bits (1 << DartLogLevel)
+                                 for error/warn/info; all three on by default */
+
     int        drawer_open;   /* Topics right sidebar (Inspect / Publish) */
     DrawerTab  drawer_tab;    /* which sidebar tab is showing */
 
@@ -130,6 +133,7 @@ static void app_init(AppState *a, const Dataset *data){
     a->tab         = TAB_NODES;
     a->sel_node    = 0;
     a->sel_topic   = 0;
+    a->nodelog_mask = 0x7;   /* error + warn + info visible */
     a->drawer_open = 1;
     a->drawer_tab  = DRAWER_INSPECT;
     a->n_collapsed = 0;

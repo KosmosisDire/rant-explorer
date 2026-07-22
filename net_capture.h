@@ -292,4 +292,58 @@ int  cap_variable_unforce(Capture *cap, const char *topic);
    drops it loudly after a few seconds; the UI shows a sending indicator meanwhile. */
 int  cap_topic_send_pending(const Capture *cap, const char *topic);
 
+/* ------------------------------------------------------------------- node logs
+   Every DART node hosts the built-in @dart/log/{error,warn,info} topics. The explorer
+   subscribes to all three at start (widening its own built-in handles to PUBSUB), so
+   each node's lines collect here -- including the KEEP_LAST history a node logged
+   before the explorer joined (catch_up replay is per writer lane). */
+#define CAP_NODELOG_TEXT 192          /* bytes kept per line (longer lines truncate) */
+#define CAP_NODELOG_MAX  512          /* lines retained across all nodes (ring) */
+typedef struct {
+    char     node[CAP_NAME_CAP];      /* the publishing node's name */
+    uint8_t  level;                   /* 0 error, 1 warn, 2 info (DartLogLevel) */
+    uint64_t wall_us;                 /* the sender's wall clock, us since the Unix epoch */
+    char     text[CAP_NODELOG_TEXT];
+} CapNodeLogLine;
+/* Copy up to max lines (NEWEST FIRST) into out[]: lines from `node_name` (NULL = every
+   node) whose level bit (1 << level) is set in level_mask. Returns the count. */
+int  cap_node_log(const Capture *cap, const char *node_name, unsigned level_mask,
+                  CapNodeLogLine *out, int max);
+
+/* ------------------------------------------------------------ node runtime stats
+   The @dart/meta introspection endpoint every node hosts. cap_meta_watch names the node
+   to poll (a directed call once per second; NULL or a vanished node stops/idles it);
+   cap_meta_stats copies out the latest decoded snapshot for the UI. */
+#define CAP_META_TOPICS 64            /* per-topic counter rows kept from the snapshot */
+typedef struct {
+    char     name[CAP_TOPIC_CAP];
+    uint64_t tx_msgs, tx_bytes, rx_msgs, rx_bytes;
+    uint32_t subs, pubs;              /* matched subscribers / publishers at the node */
+    uint32_t drops;                   /* its consumer-queue drops */
+} CapMetaTopic;
+typedef struct {
+    int      valid;                   /* >= 1 snapshot decoded for the watched node */
+    int      failing;                 /* consecutive unanswered polls (endpoint absent/slow) */
+    double   age_s;                   /* seconds since the snapshot arrived; < 0 = never */
+    char     node[CAP_NAME_CAP];      /* the watched node's name */
+    /* node section */
+    double   uptime_s;
+    uint64_t mem_in_use, mem_peak, alloc_calls;
+    uint64_t bp_waited_us;
+    uint32_t bp_waits, evicted_unsent;
+    uint32_t peers, max_peers, topics, max_topics;
+    uint32_t shm_tx, shm_rx;
+    uint32_t last_error;              /* DartErrorKind (0 = none) */
+    char     last_error_text[128];
+    /* proc section: absent where the node's platform cannot measure (DART_PROC_STATS off) */
+    int      have_proc;
+    uint64_t pid, cpu_us, rss, peak_rss;
+    double   cpu_pct;                 /* CPU%% between the last two polls; < 0 until two arrived */
+    /* topics section */
+    int      n_topic_rows;
+    CapMetaTopic topic_rows[CAP_META_TOPICS];
+} CapMetaStats;
+void cap_meta_watch(Capture *cap, const char *node_name);
+int  cap_meta_stats(const Capture *cap, CapMetaStats *out);   /* 1 = watching (read out->valid) */
+
 #endif /* NET_CAPTURE_H */

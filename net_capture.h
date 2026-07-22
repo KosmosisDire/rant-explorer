@@ -220,28 +220,33 @@ int  cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int
    schemas are subset-compatible (dart_schema_subset, the C matcher's rule) agree; only a
    structurally incompatible schema sets hash_conflict. */
 #define CAP_SCHEMA_FIELDS 24    /* top-level fields captured per schema */
+#define CAP_ENUM_VARIANTS 16    /* enum option names carried per field (for the publish-form dropdown) */
+#define CAP_ENUM_NAME     28    /* bytes per enum option name (truncated) */
 
 /* A field's type kind, numeric values mirroring DartSchemaTypeKind so the UI (which sees
    no DART types) can branch a field onto a type-aware input control. .elem uses the same
-   values for an array's element kind. */
+   values for an array's element kind, or an ENUM's backing integer kind. */
 enum {
     CAP_K_U8 = 0, CAP_K_U16, CAP_K_U32, CAP_K_U64,
     CAP_K_I8, CAP_K_I16, CAP_K_I32, CAP_K_I64,
     CAP_K_F32, CAP_K_F64, CAP_K_BOOL,
     CAP_K_ARR, CAP_K_STRUCT, CAP_K_STR,
-    CAP_K_VSTR, CAP_K_VARR, CAP_K_MAP   /* variable kinds: live-sized, ride the message tail */
+    CAP_K_VSTR, CAP_K_VARR, CAP_K_MAP,   /* variable kinds: live-sized, ride the message tail */
+    CAP_K_ENUM                           /* named integer (mirrors DART_ENUM): a dropdown of variants */
 };
 
 typedef struct {
     char     name[CAP_TOPIC_CAP];  /* field's own name */
-    char     type[24];             /* display type: "u64", "u8[256]", "f32[]", "map", "struct" */
+    char     type[24];             /* display type: "u64", "u8[256]", "f32[]", "map", "enum<u8>", "struct" */
     uint8_t  kind;                 /* CAP_K_* of the field itself */
-    uint8_t  elem;                 /* CAP_K_* of an array's element (ARR/VARR), else 0 */
+    uint8_t  elem;                 /* CAP_K_* of an array's element (ARR/VARR) or an ENUM's backing, else 0 */
     uint16_t count;                /* array element count (kind == CAP_K_ARR), else 0 */
     uint16_t str_cap;              /* string capacity (STR field or STR-element array), else 0 */
     uint8_t  depth;                /* 0 = top level; nested members are one deeper */
     uint32_t offset;               /* absolute byte offset in a message; 0 for variable kinds */
     uint32_t size;                 /* byte size of the field; 0 for variable kinds */
+    uint8_t  n_variants;           /* ENUM: option count (capped to CAP_ENUM_VARIANTS), else 0 */
+    char     variants[CAP_ENUM_VARIANTS][CAP_ENUM_NAME];  /* ENUM: option names (the dropdown choices) */
 } CapSchemaField;
 
 typedef struct {

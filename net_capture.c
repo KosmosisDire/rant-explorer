@@ -344,10 +344,19 @@ static void cap_fmt_dyn_value(char *dst, int cap, int *at, const DartValue *v,
     }
 }
 
-/* one field's value text, from its reflected DartValue */
-static void cap_fmt_value(char *dst, int cap, const DartSchemaFieldInfo *fi, const DartValue *v){
+/* one field's value text, from its reflected DartValue. s + field resolve an ENUM's stored
+   number to its option NAME (so the feed/inspector shows the name, not the raw integer);
+   an unknown/out-of-table number falls back to the number itself. */
+static void cap_fmt_value(char *dst, int cap, const DartSchema *s, uint16_t field,
+                          const DartSchemaFieldInfo *fi, const DartValue *v){
     int at = 0;
     switch ((DartSchemaTypeKind)fi->kind){
+        case DART_ENUM: {
+            DartString nm = dart_enum_name_of(s, field, v->v.i);   /* the option name for this value */
+            if (nm.len) snprintf(dst, (size_t)cap, "%.*s", (int)nm.len, nm.data);
+            else        snprintf(dst, (size_t)cap, "%lld", (long long)v->v.i);   /* unknown value: the number */
+            break;
+        }
         case DART_BOOL: snprintf(dst, (size_t)cap, "%s", v->v.u ? "true" : "false"); break;
         case DART_U8: case DART_U16: case DART_U32: case DART_U64:
             snprintf(dst, (size_t)cap, "%llu", (unsigned long long)v->v.u); break;
@@ -433,7 +442,7 @@ static void cap_fmt_value_preview(char *dst, int cap, int *at, const DartSchema 
         cap_fmt_float(dst, cap, at, v->v.f);
     } else {
         char one[32];
-        cap_fmt_value(one, (int)sizeof one, fi, v);
+        cap_fmt_value(one, (int)sizeof one, s, field_index, fi, v);
         *at = cap_val_append(dst, cap, *at, "%s", one);
     }
 }
@@ -452,7 +461,7 @@ static void cap_decode_fields(CapMsgRec *m, DartBytes data, const DartSchema *s)
             CapMsgField *f = &m->fields[m->n_fields++];
             snprintf(f->name, sizeof f->name, "%.*s", (int)fi.name.len, fi.name.data ? fi.name.data : "");
             f->depth = (uint8_t)(fi.depth > 255 ? 255 : fi.depth);
-            cap_fmt_value(f->value, (int)sizeof f->value, &fi, &v);
+            cap_fmt_value(f->value, (int)sizeof f->value, s, i, &fi, &v);
         }
         if (fi.depth == 0){                                /* the collapsed summary line */
             at = cap_val_append(m->preview, CAP_MSG_PREVIEW, at, at ? "  %.*s=" : "%.*s=",
@@ -1212,6 +1221,16 @@ static int cap_form_set(const DartSchema *sch, uint16_t i, const char *v, uint8_
             while (*end == ' ') end++;
             if (*end != '\0') return 0;
             break;
+        case DART_ENUM: {                                 /* an option NAME (the dropdown), or a raw number */
+            int64_t ev;
+            if (dart_enum_value_of(sch, i, v, &ev)) val.v.i = ev;
+            else {
+                val.v.i = strtoll(v, &end, 0);
+                while (*end == ' ') end++;
+                if (*end != '\0') return 0;               /* not a known name and not a number */
+            }
+            break;
+        }
         case DART_STR: case DART_VSTR:                    /* the form text IS the content */
             val.bytes = dart_bytes(v, strlen(v));
             break;
@@ -1632,10 +1651,13 @@ static const char *cap_kind_str(uint8_t kind){
     }
 }
 
-/* a field's DSL type spelling: "u64", "string<33>", "f32[8]", "string<16>[]", "map".
-   A struct is NOT spelled here: in the DSL it is `name: { members }`, handled by the caller. */
+/* a field's DSL type spelling: "u64", "string<33>", "f32[8]", "string<16>[]", "map",
+   "enum<u8>". A struct is NOT spelled here: in the DSL it is `name: { members }`, handled
+   by the caller. An enum's backing integer kind is reported in fi->elem. */
 static void cap_field_type_str(char *dst, size_t cap, const DartSchemaFieldInfo *fi){
-    if (fi->kind == DART_STR)
+    if (fi->kind == DART_ENUM)
+        snprintf(dst, cap, "enum<%s>", cap_kind_str(fi->elem));
+    else if (fi->kind == DART_STR)
         snprintf(dst, cap, "string<%u>", fi->str_cap);
     else if (fi->kind == DART_ARR && fi->elem == DART_STR)
         snprintf(dst, cap, "string<%u>[%u]", fi->str_cap, fi->count);
@@ -1663,12 +1685,24 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
         snprintf(f->name, sizeof f->name, "%.*s", (int)fi.name.len, fi.name.data ? fi.name.data : "");
         cap_field_type_str(f->type, sizeof f->type, &fi);
         f->kind    = fi.kind;                                        /* CAP_K_* == DartSchemaTypeKind */
-        f->elem    = (uint8_t)((fi.kind == DART_ARR || fi.kind == DART_VARR) ? fi.elem : 0);
+        f->elem    = (uint8_t)((fi.kind == DART_ARR || fi.kind == DART_VARR
+                                || fi.kind == DART_ENUM) ? fi.elem : 0);   /* ENUM: the backing kind */
         f->count   = (uint16_t)(fi.kind == DART_ARR ? fi.count : 0);
         f->str_cap = fi.str_cap;                                     /* set for STR + STR-element arrays */
         f->depth  = (uint8_t)(fi.depth > 255 ? 255 : fi.depth);
         f->offset = fi.offset;
         f->size   = fi.size;
+        f->n_variants = 0;
+        if (fi.kind == DART_ENUM){   /* copy the option NAMES so the UI can offer a dropdown (no DART here) */
+            uint16_t nv = dart_schema_enum_count(sch, i), k;
+            for (k = 0; k < nv && f->n_variants < CAP_ENUM_VARIANTS; k++){
+                DartString vn;
+                if (!dart_schema_enum_variant(sch, i, k, NULL, &vn)) break;
+                snprintf(f->variants[f->n_variants], CAP_ENUM_NAME, "%.*s",
+                         (int)vn.len, vn.data ? vn.data : "");
+                f->n_variants++;
+            }
+        }
         out->n_fields++;
     }
 }

@@ -801,6 +801,8 @@ static void tt_do_send(AppState *app, const char *topic){
 static const char *tt_form_default(const CapSchemaField *f){
     switch (f->kind){
         case CAP_K_BOOL:                 return "false";
+        case CAP_K_ENUM:                 /* the first option name (the dropdown's initial pick) */
+            return f->n_variants ? f->variants[0] : "0";
         case CAP_K_STRUCT:               /* no setter yet: stays default */
         case CAP_K_STR:                  /* empty string(s) */
         case CAP_K_ARR:                  /* array: empty = all zero */
@@ -887,6 +889,7 @@ static void tt_form_reset(AppState *app, const CapSchema *sc, int n){
     }
     app->form_focus = 0;
     if (g_tb_focus == NULL && n > 0 && sc->fields[0].kind != CAP_K_BOOL &&
+        sc->fields[0].kind != CAP_K_ENUM &&
         sc->fields[0].kind != CAP_K_STRUCT && sc->fields[0].kind != CAP_K_MAP){
         ui_tb_focus(&app->tb_form[0]);           /* type straight into the first field... */
         app->tb_form[0].anchor = 0;              /* ...replacing its prefilled default */
@@ -916,8 +919,9 @@ static void tt_form_force(AppState *app, const Topic *t, int n){
 static int tt_form_field_row(AppState *app, const Palette *P, const CapSchemaField *f, int i, int valid){
     int is_struct = (f->kind == CAP_K_STRUCT || f->kind == CAP_K_MAP);   /* read-only rows */
     int is_bool   = (f->kind == CAP_K_BOOL);
+    int is_enum   = (f->kind == CAP_K_ENUM);
     int has_val   = app->form_val[i][0] != '\0';
-    int bad       = !is_struct && !is_bool && has_val && !valid;   /* typed, but won't parse */
+    int bad       = !is_struct && !is_bool && !is_enum && has_val && !valid;   /* typed, but won't parse */
     int show_count = (f->kind == CAP_K_STR || f->kind == CAP_K_ARR
                    || f->kind == CAP_K_VSTR || f->kind == CAP_K_VARR);
     int act = 0;
@@ -932,6 +936,22 @@ static int tt_form_field_row(AppState *app, const Palette *P, const CapSchemaFie
         }
         if (is_bool){
             tt_form_bool(app, P, i, app->form_focus == i && g_tb_focus == NULL);
+        } else if (is_enum){
+            /* the enum's options -> a dropdown; the current pick is whichever variant name
+               the field's value holds (form_val is a variant name, set here or by default) */
+            const char *opts[CAP_ENUM_VARIANTS];
+            int k, sel = -1, picked;
+            for (k = 0; k < f->n_variants; k++){
+                opts[k] = f->variants[k];
+                if (!strcmp(app->form_val[i], f->variants[k])) sel = k;
+            }
+            picked = ui_dropdown(P, &app->form_val[i], CLAY_IDI("form_dd", (uint32_t)i),
+                                 opts, f->n_variants, sel, 0);
+            if (picked >= 0){
+                tt_form_set_val(app, i, f->variants[picked]);
+                app->form_focus = i; app->adding_topic = 0;
+                ui_tb_blur_all();               /* keyboard "focus" is this enum row now, no text box */
+            }
         } else if (!is_struct){
             act = ui_textbox(P, CLAY_IDI("form_tb", (uint32_t)i), &app->tb_form[i],
                              app->form_val[i], UI_FORM_VAL, &app->form_len[i],
@@ -999,11 +1019,12 @@ static void topics_form(AppState *app, const Palette *P, const Topic *t, const C
             if (a & UI_TB_SUBMIT) send = 1;
             if (a & (UI_TB_TAB | UI_TB_BACKTAB)){ tab = (a & UI_TB_TAB) ? 1 : -1; tab_from = i; }
         }
-        /* a focused bool row has no text box, so its keys stay in the frame queue:
-           Space toggles, Enter sends, Tab cycles on */
+        /* a focused bool/enum row has no text box, so its keys stay in the frame queue:
+           Space toggles a bool, Enter sends, Tab cycles on */
         if (g_tb_focus == NULL && app->form_focus >= 0 && app->form_focus < n &&
-            sc->fields[app->form_focus].kind == CAP_K_BOOL){
-            if (ui_tb_take_key(SDLK_SPACE, 0))
+            (sc->fields[app->form_focus].kind == CAP_K_BOOL
+             || sc->fields[app->form_focus].kind == CAP_K_ENUM)){
+            if (sc->fields[app->form_focus].kind == CAP_K_BOOL && ui_tb_take_key(SDLK_SPACE, 0))
                 tt_form_set_val(app, app->form_focus,
                                 strcmp(app->form_val[app->form_focus], "true") ? "true" : "false");
             if (ui_tb_take_key(SDLK_RETURN, 0) || ui_tb_take_key(SDLK_KP_ENTER, 0)) send = 1;
@@ -1017,7 +1038,7 @@ static void topics_form(AppState *app, const Palette *P, const Topic *t, const C
                 if (sc->fields[j].kind != CAP_K_STRUCT && sc->fields[j].kind != CAP_K_MAP) break;
             }
             app->form_focus = j;
-            if (sc->fields[j].kind == CAP_K_BOOL) ui_tb_blur_all();
+            if (sc->fields[j].kind == CAP_K_BOOL || sc->fields[j].kind == CAP_K_ENUM) ui_tb_blur_all();
             else {
                 ui_tb_focus(&app->tb_form[j]);
                 app->tb_form[j].anchor = 0;       /* select the value, so typing replaces it */

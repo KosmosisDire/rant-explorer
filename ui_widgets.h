@@ -189,6 +189,55 @@ static int ui_menu(const Palette *P, const void *owner, const UiMenuItem *items,
     return clicked;
 }
 
+/* ---- generic dropdown (a select box + a floating option list) ----
+
+   A closed select box shows options[sel] (or "..." when sel is out of range) with a
+   chevron; a click opens a floating option list anchored under the box, keyed by `owner`
+   and built on ui_menu (so at most one dropdown/menu is open at a time, and any press
+   outside dismisses it). Returns the option index picked THIS frame, or -1; the caller
+   applies it. Draw every frame; the list renders only while open. `width` sizes both the
+   box and the list in css px (0 = grow to the parent). Options past UI_DROPDOWN_MAX are
+   not shown. */
+#define UI_DROPDOWN_MAX 64
+static int ui_dropdown(const Palette *P, const void *owner, Clay_ElementId id,
+                       const char *const *options, int n, int sel, float width){
+    int picked = -1, open = ui_menu_is_open(owner);
+    if (n > UI_DROPDOWN_MAX) n = UI_DROPDOWN_MAX;
+    CLAY({ .id = id,
+           .layout = { .sizing = { .width = width > 0 ? CLAY_SIZING_FIXED(UISC(width)) : CLAY_SIZING_GROW(0),
+                                   .height = CLAY_SIZING_FIXED(UISC(24)) },
+                       .padding = { .left = UISCI(8), .right = UISCI(6) }, .childGap = UISCI(6),
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+           .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(4)),
+           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = open ? P->accent : P->border } }) {
+        if (Clay_Hovered() && g_pointer_pressed){
+            g_pointer_pressed = false;                    /* consumed: the box owns this click */
+            if (open) ui_menu_close();
+            else {
+                Clay_ElementData ed = Clay_GetElementData(id);   /* anchor the list under the box */
+                if (ed.found) ui_menu_open(owner, ed.boundingBox.x,
+                                           ed.boundingBox.y + ed.boundingBox.height + UISC(2));
+                else          ui_menu_open(owner, g_pointer_x, g_pointer_y);
+            }
+        }
+        CLAY_TEXT((sel >= 0 && sel < n) ? ui_str(options[sel]) : CLAY_STRING("..."),
+                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
+                                     .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer: chevron to the right */
+        ui_icon(ICON_CHEVRON_DOWN, 11, open ? P->accent : P->dim);
+    }
+    if (ui_menu_is_open(owner)){                          /* the option list, only while open */
+        UiMenuItem items[UI_DROPDOWN_MAX];
+        int i;
+        for (i = 0; i < n; i++){
+            items[i] = (UiMenuItem){ .label = ui_str(options[i]), .enabled = 1 };
+            if (i == sel) items[i].keys = CLAY_STRING("\xE2\x97\x8f");   /* a dot marks the current pick */
+        }
+        picked = ui_menu(P, owner, items, n, width > 0 ? width : 140);
+    }
+    return picked;
+}
+
 /* ---- generic vertical scrollbar for Clay clip/scroll containers ----
 
    Clay itself has no scrollbar: it only exposes each clip container's live scroll

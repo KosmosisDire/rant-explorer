@@ -167,8 +167,20 @@ static void node_kv_single(const Palette *P, Clay_String label, Clay_String valu
     }
 }
 
-/* one Publishes/Subscribes entry: reliability dot + topic path + qos word */
-static void node_endpoint_row(const Palette *P, Clay_String path, int reliable){
+/* the @dart/meta counter row for a topic name, or NULL if this snapshot lacks it */
+static const CapMetaTopic *node_meta_find(const CapMetaStats *ms, const char *path){
+    int i;
+    if (!ms) return NULL;
+    for (i = 0; i < ms->n_topic_rows; i++)
+        if (!strcmp(ms->topic_rows[i].name, path)) return &ms->topic_rows[i];
+    return NULL;
+}
+
+/* one Publishes/Subscribes entry: reliability dot + topic path + qos word, with the
+   node's own @dart/meta counters folded in when a snapshot is fresh (tx on a publish
+   row, rx on a subscribe row; consumer-queue drops in red). tr is NULL with no snapshot. */
+static void node_endpoint_row(const Palette *P, Clay_String path, int reliable,
+                              const CapMetaTopic *tr, int is_pub){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(28)) },
                        .padding = { .left = UISCI(10), .right = UISCI(12) },
                        .childGap = UISCI(9), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
@@ -178,6 +190,16 @@ static void node_endpoint_row(const Palette *P, Clay_String path, int reliable){
         CLAY_TEXT(path, CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
                                            .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer */
+        if (tr){
+            if (tr->drops)
+                CLAY_TEXT(ui_fmt("drops %u", tr->drops),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                             .textColor = P->red, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+            CLAY_TEXT(is_pub ? ui_fmt("tx %llu", (unsigned long long)tr->tx_msgs)
+                             : ui_fmt("rx %llu", (unsigned long long)tr->rx_msgs),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                         .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        }
         CLAY_TEXT(reliable ? CLAY_STRING("reliable") : CLAY_STRING("best-effort"),
                   CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
                                      .textColor = ui_qos_color(P, reliable), .wrapMode = CLAY_TEXT_WRAP_NONE }));
@@ -185,7 +207,8 @@ static void node_endpoint_row(const Palette *P, Clay_String path, int reliable){
 }
 
 static void node_endpoint_list(const Palette *P, const Dataset *D,
-                               const int *topic_indices, const unsigned char *rel, int n){
+                               const int *topic_indices, const unsigned char *rel, int n,
+                               const CapMetaStats *ms, int is_pub){
     int i;
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM, .childGap = UISCI(5) } }) {
@@ -195,104 +218,69 @@ static void node_endpoint_list(const Palette *P, const Dataset *D,
         }
         for (i = 0; i < n; i++){
             const Topic *t = &D->topics[topic_indices[i]];
-            node_endpoint_row(P, ui_str(t->path), rel[i]);
+            node_endpoint_row(P, ui_str(t->path), rel[i], node_meta_find(ms, t->path), is_pub);
         }
     }
 }
 
-/* one per-topic counter row from the @dart/meta snapshot: name + tx/rx + queue drops */
-static void node_meta_topic_row(const Palette *P, const CapMetaTopic *tr, int idx){
-    CLAY({ .id = CLAY_IDI("meta_topic_row", (uint32_t)idx),
-           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(26)) },
-                       .padding = { .left = UISCI(10), .right = UISCI(12) },
-                       .childGap = UISCI(9), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
-           .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)),
-           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-        /* tr points into the caller's per-frame stack copy of the snapshot, which is
-           gone by the time Clay renders (it holds the pointer, never copies): route the
-           name through ui_fmt so it lives in the frame pool, not on a freed stack frame. */
-        CLAY_TEXT(tr->name[0] ? ui_fmt("%s", tr->name) : CLAY_STRING("(unnamed)"),
-                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
-                                     .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer */
-        if (tr->drops)
-            CLAY_TEXT(ui_fmt("drops %u", tr->drops),
-                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
-                                         .textColor = P->red, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-        CLAY_TEXT(ui_fmt("tx %llu  rx %llu",
-                         (unsigned long long)tr->tx_msgs, (unsigned long long)tr->rx_msgs),
-                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
-                                     .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-    }
-}
-
-/* the RUNTIME / PROCESS / TOPIC COUNTERS sections of the detail pane, fed by the 1 Hz
-   @dart/meta poll. Everything here is the NODE'S OWN report (its allocator, its counters,
-   its process), unlike the wire-derived sections above. */
-static void nodes_runtime_sections(AppState *app, const Palette *P, const Node *nd){
-    CapMetaStats ms;
-    int watching = app->cap ? cap_meta_stats(app->cap, &ms) : 0;
-    int fresh = watching && ms.valid && strcmp(ms.node, nd->name) == 0;
+/* the RUNTIME / PROCESS sections of the detail pane, fed by the 1 Hz @dart/meta poll.
+   Everything here is the NODE'S OWN report (its allocator, its counters, its process),
+   unlike the wire-derived sections above. The poll's per-topic counters are folded into
+   the PUBLISHES / SUBSCRIBES lists instead of shown here. ms is the shared snapshot;
+   watching = a poll is aimed here, fresh = it answered for this node. */
+static void nodes_runtime_sections(const Palette *P, const Node *nd,
+                                   const CapMetaStats *ms, int watching, int fresh){
     ui_section_label(P, CLAY_STRING("RUNTIME  (@dart/meta)"));
     if (!fresh){
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
                .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
                .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
             node_kv_single(P, CLAY_STRING("Status"),
-                           (watching && ms.failing >= 2) ? CLAY_STRING("no @dart/meta response")
-                         : nd->state == NODE_GONE         ? CLAY_STRING("node gone")
-                                                          : CLAY_STRING("querying..."));
+                           (watching && ms->failing >= 2) ? CLAY_STRING("no @dart/meta response")
+                         : nd->state == NODE_GONE          ? CLAY_STRING("node gone")
+                                                           : CLAY_STRING("querying..."));
         }
     } else {
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
                .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
                .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-            node_kv_row(P, CLAY_STRING("Uptime"),        nf_dur(ms.uptime_s),
-                           CLAY_STRING("Snapshot age"),  nf_age(ms.age_s));
-            node_kv_row(P, CLAY_STRING("Peers"),         ui_fmt("%u / %u", ms.peers, ms.max_peers),
-                           CLAY_STRING("Topics"),        ui_fmt("%u / %u", ms.topics, ms.max_topics));
-            node_kv_row(P, CLAY_STRING("Mem in use"),    nf_bytesu(ms.mem_in_use),
-                           CLAY_STRING("Mem peak"),      nf_bytesu(ms.mem_peak));
-            node_kv_row(P, CLAY_STRING("Alloc calls"),   nf_grp((long)ms.alloc_calls),
-                           CLAY_STRING("Evicted unsent"),nf_grp((long)ms.evicted_unsent));
-            node_kv_row(P, CLAY_STRING("BP waits"),      nf_grp((long)ms.bp_waits),
-                           CLAY_STRING("BP waited"),     ui_fmt("%.1f s", (double)ms.bp_waited_us / 1e6));
-            node_kv_row(P, CLAY_STRING("SHM sent"),      nf_grp((long)ms.shm_tx),
-                           CLAY_STRING("SHM received"),  nf_grp((long)ms.shm_rx));
+            node_kv_row(P, CLAY_STRING("Uptime"),        nf_dur(ms->uptime_s),
+                           CLAY_STRING("Snapshot age"),  nf_age(ms->age_s));
+            node_kv_row(P, CLAY_STRING("Peers"),         ui_fmt("%u / %u", ms->peers, ms->max_peers),
+                           CLAY_STRING("Topics"),        ui_fmt("%u / %u", ms->topics, ms->max_topics));
+            node_kv_row(P, CLAY_STRING("Mem in use"),    nf_bytesu(ms->mem_in_use),
+                           CLAY_STRING("Mem peak"),      nf_bytesu(ms->mem_peak));
+            node_kv_row(P, CLAY_STRING("Alloc calls"),   nf_grp((long)ms->alloc_calls),
+                           CLAY_STRING("Evicted unsent"),nf_grp((long)ms->evicted_unsent));
+            node_kv_row(P, CLAY_STRING("BP waits"),      nf_grp((long)ms->bp_waits),
+                           CLAY_STRING("BP waited"),     ui_fmt("%.1f s", (double)ms->bp_waited_us / 1e6));
+            node_kv_row(P, CLAY_STRING("SHM sent"),      nf_grp((long)ms->shm_tx),
+                           CLAY_STRING("SHM received"),  nf_grp((long)ms->shm_rx));
             node_kv_single(P, CLAY_STRING("Last error"),
-                           ms.last_error ? ui_fmt("%s", ms.last_error_text[0] ? ms.last_error_text
-                                                                              : "(no text)")
-                                         : ui_str(ND_DASH));
+                           ms->last_error ? ui_fmt("%s", ms->last_error_text[0] ? ms->last_error_text
+                                                                                : "(no text)")
+                                          : ui_str(ND_DASH));
         }
         ui_section_label(P, CLAY_STRING("PROCESS"));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
                .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
                .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-            if (!ms.have_proc){
+            if (!ms->have_proc){
                 node_kv_single(P, CLAY_STRING("Process stats"),
                                CLAY_STRING("not measured on that platform"));
             } else {
-                node_kv_row(P, CLAY_STRING("CPU"),  ms.have_cpu && ms.cpu_pct >= 0.0 ? ui_fmt("%.1f %%", ms.cpu_pct)
+                node_kv_row(P, CLAY_STRING("CPU"),  ms->have_cpu && ms->cpu_pct >= 0.0 ? ui_fmt("%.1f %%", ms->cpu_pct)
                                                                       : ui_str(ND_DASH),
-                               CLAY_STRING("PID"),  ui_fmt("%llu", (unsigned long long)ms.pid));
-                node_kv_row(P, CLAY_STRING("Memory (RSS)"), nf_bytesu(ms.rss),
-                               CLAY_STRING("Peak RSS"),     nf_bytesu(ms.peak_rss));
-                if (ms.heap_total){
-                    node_kv_row(P, CLAY_STRING("Default heap"), nf_bytesu(ms.heap_total),
-                                   CLAY_STRING("Free now"),     nf_bytesu(ms.heap_free));
-                    node_kv_row(P, CLAY_STRING("Minimum free"), nf_bytesu(ms.heap_min_free),
-                                   CLAY_STRING("Largest block"), nf_bytesu(ms.heap_largest_free_block));
+                               CLAY_STRING("PID"),  ui_fmt("%llu", (unsigned long long)ms->pid));
+                node_kv_row(P, CLAY_STRING("Memory (RSS)"), nf_bytesu(ms->rss),
+                               CLAY_STRING("Peak RSS"),     nf_bytesu(ms->peak_rss));
+                if (ms->heap_total){
+                    node_kv_row(P, CLAY_STRING("Default heap"), nf_bytesu(ms->heap_total),
+                                   CLAY_STRING("Free now"),     nf_bytesu(ms->heap_free));
+                    node_kv_row(P, CLAY_STRING("Minimum free"), nf_bytesu(ms->heap_min_free),
+                                   CLAY_STRING("Largest block"), nf_bytesu(ms->heap_largest_free_block));
                 }
             }
-        }
-        ui_section_label(P, ui_fmt("TOPIC COUNTERS  %d", ms.n_topic_rows));
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) },
-                           .layoutDirection = CLAY_TOP_TO_BOTTOM, .childGap = UISCI(5) } }) {
-            int i;
-            if (ms.n_topic_rows == 0)
-                CLAY_TEXT(CLAY_STRING("none"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL),
-                                                                 .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-            for (i = 0; i < ms.n_topic_rows; i++) node_meta_topic_row(P, &ms.topic_rows[i], i);
         }
     }
 }
@@ -310,6 +298,13 @@ static void nodes_detail(AppState *app, const Palette *P){
         ui_placeholder(P, CLAY_STRING("select a node"));
       } else {
         const Node *nd = &D->nodes[app->sel_node];
+
+        /* the node's own @dart/meta snapshot, fetched once and shared by the RUNTIME /
+           PROCESS sections and the per-topic counters folded into PUBLISHES / SUBSCRIBES.
+           Read only during this layout pass (never handed to Clay as a pointer). */
+        CapMetaStats ms;
+        int watching = app->cap ? cap_meta_stats(app->cap, &ms) : 0;
+        int fresh    = watching && ms.valid && strcmp(ms.node, nd->name) == 0;
 
         CLAY({ .id = CLAY_ID("nodes_detail_scroll"),
                .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
@@ -354,12 +349,12 @@ static void nodes_detail(AppState *app, const Palette *P){
 
             /* ===== RUNTIME: the node's own internals, served by its @dart/meta endpoint
                (a directed call once per second; see net_capture's cap_meta_poll) ===== */
-            nodes_runtime_sections(app, P, nd);
+            nodes_runtime_sections(P, nd, &ms, watching, fresh);
 
             ui_section_label(P, ui_fmt("PUBLISHES  %d", nd->n_pubs));
-            node_endpoint_list(P, D, nd->pubs, nd->pub_rel, nd->n_pubs);
+            node_endpoint_list(P, D, nd->pubs, nd->pub_rel, nd->n_pubs, fresh ? &ms : NULL, 1);
             ui_section_label(P, ui_fmt("SUBSCRIBES  %d", nd->n_subs));
-            node_endpoint_list(P, D, nd->subs, nd->sub_rel, nd->n_subs);
+            node_endpoint_list(P, D, nd->subs, nd->sub_rel, nd->n_subs, fresh ? &ms : NULL, 0);
         }
         ui_scrollbar(P, CLAY_ID("nodes_detail_scroll"));
       }

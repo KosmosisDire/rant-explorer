@@ -208,7 +208,10 @@ static void node_meta_topic_row(const Palette *P, const CapMetaTopic *tr, int id
                        .childGap = UISCI(9), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
            .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)),
            .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-        CLAY_TEXT(ui_str(tr->name[0] ? tr->name : "(unnamed)"),
+        /* tr points into the caller's per-frame stack copy of the snapshot, which is
+           gone by the time Clay renders (it holds the pointer, never copies): route the
+           name through ui_fmt so it lives in the frame pool, not on a freed stack frame. */
+        CLAY_TEXT(tr->name[0] ? ui_fmt("%s", tr->name) : CLAY_STRING("(unnamed)"),
                   CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
                                      .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer */

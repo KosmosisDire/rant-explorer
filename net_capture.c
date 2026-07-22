@@ -1152,7 +1152,7 @@ static int cap_send_routed(CapSub *s, const void *data, size_t len, uint8_t var_
     DartTopic *ch;
     *echo_sch = NULL;
     if (s->kind == CAP_KIND_FUNCTION){
-        if (!s->fn || dart_function_call_async(s->fn, dart_bytes(data, len), cap_fn_on_reply, s) != DART_OK)
+        if (!s->fn || dart_function_call_async(s->fn, dart_bytes(data, len), cap_fn_on_reply, s, NULL) != DART_OK)
             return 0;   /* a call racing the provider match queues in the patterns layer */
         *echo_sch = s->req_schema;
         return 1;

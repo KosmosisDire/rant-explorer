@@ -933,6 +933,7 @@ static void cap_meta_on_reply(const DartResponse *r){
             }
         }
         cap_meta.have_proc = 0;
+        cap_meta.have_cpu = 0;
         cap_meta.cpu_pct = -1.0;
         if (dart_map_get(info, "proc", &v)){
             DartBytes pr = v.bytes;
@@ -941,6 +942,11 @@ static void cap_meta_on_reply(const DartResponse *r){
             cap_meta.cpu_us   = cap_map_u64(pr, "cpu_us");
             cap_meta.rss      = cap_map_u64(pr, "rss");
             cap_meta.peak_rss = cap_map_u64(pr, "peak_rss");
+            { DartValue cv; cap_meta.have_cpu = dart_map_get(pr, "cpu_us", &cv); }
+            cap_meta.heap_total = cap_map_u64(pr, "heap_total");
+            cap_meta.heap_free  = cap_map_u64(pr, "heap_free");
+            cap_meta.heap_min_free = cap_map_u64(pr, "heap_min_free");
+            cap_meta.heap_largest_free_block = cap_map_u64(pr, "heap_largest_free_block");
             /* CPU%% from consecutive snapshots, over the node's own wall clock */
             if (cap_meta_prev_wall && wall > cap_meta_prev_wall && cap_meta.cpu_us >= cap_meta_prev_cpu)
                 cap_meta.cpu_pct = 100.0 * (double)(cap_meta.cpu_us - cap_meta_prev_cpu)

@@ -269,11 +269,17 @@ static void nodes_runtime_sections(AppState *app, const Palette *P, const Node *
                 node_kv_single(P, CLAY_STRING("Process stats"),
                                CLAY_STRING("not measured on that platform"));
             } else {
-                node_kv_row(P, CLAY_STRING("CPU"),  ms.cpu_pct >= 0.0 ? ui_fmt("%.1f %%", ms.cpu_pct)
+                node_kv_row(P, CLAY_STRING("CPU"),  ms.have_cpu && ms.cpu_pct >= 0.0 ? ui_fmt("%.1f %%", ms.cpu_pct)
                                                                       : ui_str(ND_DASH),
                                CLAY_STRING("PID"),  ui_fmt("%llu", (unsigned long long)ms.pid));
                 node_kv_row(P, CLAY_STRING("Memory (RSS)"), nf_bytesu(ms.rss),
                                CLAY_STRING("Peak RSS"),     nf_bytesu(ms.peak_rss));
+                if (ms.heap_total){
+                    node_kv_row(P, CLAY_STRING("Default heap"), nf_bytesu(ms.heap_total),
+                                   CLAY_STRING("Free now"),     nf_bytesu(ms.heap_free));
+                    node_kv_row(P, CLAY_STRING("Minimum free"), nf_bytesu(ms.heap_min_free),
+                                   CLAY_STRING("Largest block"), nf_bytesu(ms.heap_largest_free_block));
+                }
             }
         }
         ui_section_label(P, ui_fmt("TOPIC COUNTERS  %d", ms.n_topic_rows));

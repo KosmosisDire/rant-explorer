@@ -337,7 +337,10 @@ typedef struct {
     char     last_error_text[128];
     /* proc section: absent where the node's platform cannot measure (DART_PROC_STATS off) */
     int      have_proc;
+    int      have_cpu;
     uint64_t pid, cpu_us, rss, peak_rss;
+    /* ESP MALLOC_CAP_DEFAULT heap; zero when the platform does not report heap geometry. */
+    uint64_t heap_total, heap_free, heap_min_free, heap_largest_free_block;
     double   cpu_pct;                 /* CPU%% between the last two polls; < 0 until two arrived */
     /* topics section */
     int      n_topic_rows;

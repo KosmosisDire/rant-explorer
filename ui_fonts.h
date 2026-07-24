@@ -122,6 +122,21 @@ static Clay_Dimensions ui_measure_text(Clay_StringSlice text, Clay_TextElementCo
 #define UI_FONT(fam, wt, sz) .fontId = (uint16_t)ui_font_id(fam, wt, sz), \
     .fontSize = (uint16_t)g_font_size[ui_font_id(fam, wt, sz)]
 
+/* width in physical px of the first n bytes of s, rendered in (fam, wt, sz) */
+static float ui_text_width(const char *s, int n, FontFamily fam, FontWeight wt, FontSize sz){
+    TTF_Font *f = g_fonts[ui_font_id(fam, wt, sz)];
+    int w = 0, h = 0;
+    if (f && n > 0) TTF_GetStringSize(f, s, (size_t)n, &w, &h);
+    return (float)w;
+}
+
+/* the same, expressed back in the layout's css px (undoes the atlas density), so it
+   composes with UISC() the way the layout literals do */
+static float ui_text_w_css(const char *s, int n, FontFamily fam, FontWeight wt, FontSize sz){
+    float d = ui_scale * ui_dpi, p = ui_text_width(s, n, fam, wt, sz);
+    return d > 0.0f ? p / d : p;
+}
+
 /* ---- per-frame string pool (Clay does not copy strings) ---- */
 static char   g_strpool[128 * 1024];
 static size_t g_strpool_used;

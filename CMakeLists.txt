@@ -47,6 +47,38 @@ endfunction()
 set(CLAY_RAW "https://raw.githubusercontent.com/nicbarker/clay/v0.14")
 fetch("${CLAY_RAW}/clay.h" "${DEPS}/include/clay.h")
 
+# Clay v0.14 hardcodes its scroll-container table to 10 entries with no runtime setter.
+# Every clip container counts (every text box is one), so a topic form with a handful of
+# fields plus the tab's own scroll panels overflows the table and spams "out of bounds"
+# errors every frame. Bump the cap. Idempotent: a no-op once the file is already patched.
+file(READ "${DEPS}/include/clay.h" _clay_src)
+string(REPLACE
+  "context->scrollContainerDatas = Clay__ScrollContainerDataInternalArray_Allocate_Arena(10, arena)"
+  "context->scrollContainerDatas = Clay__ScrollContainerDataInternalArray_Allocate_Arena(256, arena)"
+  _clay_patched "${_clay_src}")
+if(NOT _clay_patched STREQUAL _clay_src)
+  file(WRITE "${DEPS}/include/clay.h" "${_clay_patched}")
+  message(STATUS "patched clay.h: scroll-container capacity 10 -> 256")
+endif()
+
+# Clay_UpdateScrollContainers dereferences clipConfig without a NULL check when the
+# pointer-over scroll container has no clip config, which happens for a stale record of a
+# TRANSIENT clip that vanished this frame (a dropdown menu's scroll area, a text box) whose
+# layoutElement slot got reused. Guard it (a non-clip element simply cannot scroll).
+file(READ "${DEPS}/include/clay.h" _clay_src)
+string(REPLACE
+  "bool canScrollVertically = clipConfig->vertical"
+  "bool canScrollVertically = clipConfig && clipConfig->vertical"
+  _clay_patched "${_clay_src}")
+string(REPLACE
+  "bool canScrollHorizontally = clipConfig->horizontal"
+  "bool canScrollHorizontally = clipConfig && clipConfig->horizontal"
+  _clay_patched "${_clay_patched}")
+if(NOT _clay_patched STREQUAL _clay_src)
+  file(WRITE "${DEPS}/include/clay.h" "${_clay_patched}")
+  message(STATUS "patched clay.h: NULL-guard clipConfig in Clay_UpdateScrollContainers")
+endif()
+
 # nanosvg: rasterizes the Lucide SVG icons to RGBA textures (SDL3 has no native SVG).
 set(NSVG_RAW "https://raw.githubusercontent.com/memononen/nanosvg/master/src")
 fetch("${NSVG_RAW}/nanosvg.h"     "${DEPS}/include/nanosvg.h")

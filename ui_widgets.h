@@ -121,13 +121,49 @@ typedef struct {
 static const void *g_menu_owner = NULL;   /* whose menu is open (NULL = none) */
 static float g_menu_x, g_menu_y;          /* anchor, physical px */
 static int   g_menu_fresh = 0;            /* opened this frame: skip the dismiss checks once */
+static uint32_t g_menu_anchor = 0;        /* an element that also counts as "inside" for the
+                                             dismiss check (0 = none): its owning control (e.g. a
+                                             dropdown's box, which becomes a search field) so a
+                                             press on it does not close the menu it drives */
+
+static void ui_scrollbar_z(const Palette *P, Clay_ElementId id, int16_t z);   /* defined below */
 
 static void ui_menu_open(const void *owner, float x, float y){
-    g_menu_owner = owner; g_menu_x = x; g_menu_y = y; g_menu_fresh = 1;
+    g_menu_owner = owner; g_menu_x = x; g_menu_y = y; g_menu_fresh = 1; g_menu_anchor = 0;
 }
-static void ui_menu_close(void){ g_menu_owner = NULL; }
+/* open, and treat presses on `anchor` (a hashed element id) as inside the menu too */
+static void ui_menu_open_at(const void *owner, float x, float y, uint32_t anchor){
+    ui_menu_open(owner, x, y); g_menu_anchor = anchor;
+}
+static void ui_menu_close(void){ g_menu_owner = NULL; g_menu_anchor = 0; }
 static int  ui_menu_is_open(const void *owner){ return g_menu_owner == owner; }
-static int  ui_menu_pointer_over(void){ return g_menu_owner && Clay_PointerOver(CLAY_ID("ui_ctx_menu")); }
+static int  ui_menu_pointer_over(void){
+    if (g_menu_owner && Clay_PointerOver(CLAY_ID("ui_ctx_menu"))) return 1;
+    if (g_menu_anchor){ Clay_ElementId a = { .id = g_menu_anchor }; if (Clay_PointerOver(a)) return 1; }
+    return 0;
+}
+
+/* natural width (css px) of a menu sized to its widest item: L/R padding, an
+   optional leading checkbox, the label, and any right-aligned shortcut past a
+   grow spacer (two child gaps). Used when ui_menu is asked to auto-size (w <= 0),
+   and by callers (the dropdown) that need the same width for their own control. */
+static float ui_menu_fit_w(const UiMenuItem *items, int n){
+    float maxw = 0.0f;
+    int i, any_check = 0;
+    for (i = 0; i < n; i++) if (items[i].check){ any_check = 1; break; }
+    for (i = 0; i < n; i++){
+        const UiMenuItem *it = &items[i];
+        float w = ui_text_w_css(it->label.chars, it->label.length, FAM_SANS, WT_REG, FS_SMALL);
+        if (it->keys.length)
+            w += 36.0f + ui_text_w_css(it->keys.chars, it->keys.length, FAM_SANS, WT_REG, FS_CAPTION);
+        if (w > maxw) maxw = w;
+    }
+    maxw += 20.0f;                          /* left + right padding (10 each) */
+    if (any_check) maxw += 15.0f + 18.0f;   /* checkbox + its gap */
+    if (maxw < 80.0f)  maxw = 80.0f;
+    if (maxw > 460.0f) maxw = 460.0f;
+    return maxw;
+}
 
 /* one menu row; returns true on click */
 static bool ui_menu_item(const Palette *P, const UiMenuItem *it){
@@ -164,79 +200,56 @@ static bool ui_menu_item(const Palette *P, const UiMenuItem *it){
    the menu, a check item leaves it open so the caller's toggle shows next
    frame. Any press outside it dismisses it. Call every frame while open; a
    no-op (-1) when this owner's menu isn't. */
+#define UI_MENU_ITEM_H 24    /* css px per row (matches ui_menu_item's fixed height) */
+#define UI_MENU_MAX_H  300   /* css px; a taller list is clipped to this and scrolls */
+
 static int ui_menu(const Palette *P, const void *owner, const UiMenuItem *items, int n, float w){
     int clicked = -1, i;
-    float mxp = g_menu_x, myp = g_menu_y, mh = (float)n * UISC(24) + UISC(8);
+    float wpx    = w > 0.0f ? UISC(w) : UISC(ui_menu_fit_w(items, n));   /* w <= 0 = fit content */
+    float full_h = (float)n * UISC(UI_MENU_ITEM_H) + UISC(8);
+    int   scroll = full_h > UISC(UI_MENU_MAX_H) + 0.5f;                  /* too tall: clip + scroll */
+    float mh     = scroll ? UISC(UI_MENU_MAX_H) : full_h;
+    float mxp = g_menu_x, myp = g_menu_y;
     if (!ui_menu_is_open(owner)) return -1;
     if (g_menu_fresh) g_menu_fresh = 0;      /* the opening press must not also dismiss */
     else if ((g_pointer_pressed_raw || g_right_pressed_raw) && !ui_menu_pointer_over()){
         ui_menu_close();
         return -1;
     }
-    if (g_view_w > 0 && mxp > g_view_w - UISC(w) - UISC(10)) mxp = g_view_w - UISC(w) - UISC(10);
-    if (g_view_h > 0 && myp > g_view_h - mh - UISC(10))      myp = g_view_h - mh - UISC(10);
+    if (g_view_w > 0 && mxp > g_view_w - wpx - UISC(10)) mxp = g_view_w - wpx - UISC(10);
+    if (g_view_h > 0 && myp > g_view_h - mh - UISC(10))  myp = g_view_h - mh - UISC(10);
+    if (mxp < UISC(4)) mxp = UISC(4);
+    if (myp < UISC(4)) myp = UISC(4);
     CLAY({ .id = CLAY_ID("ui_ctx_menu"),
-           .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(w)) },
+           .layout = { .sizing = { .width = CLAY_SIZING_FIXED(wpx) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(UISC(4)) },
            .backgroundColor = P->panel, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
            .border = { .width = { 1, 1, 1, 1, 0 }, .color = P->border2 },
            .floating = { .offset = { mxp, myp }, .zIndex = 1000,
                          .attachTo = CLAY_ATTACH_TO_ROOT } }) {
-        for (i = 0; i < n; i++)
-            if (ui_menu_item(P, &items[i])) clicked = i;
+        if (scroll){       /* rows live in a fixed-height clip child; wheel + bar drive it */
+            CLAY({ .id = CLAY_ID("ui_ctx_menu_scroll"),
+                   .layout = { .sizing = { .width = CLAY_SIZING_GROW(0),
+                                           .height = CLAY_SIZING_FIXED(mh - UISC(8)) },
+                               .layoutDirection = CLAY_TOP_TO_BOTTOM },
+                   .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+                for (i = 0; i < n; i++)
+                    if (ui_menu_item(P, &items[i])) clicked = i;
+            }
+            ui_scrollbar_z(P, CLAY_ID("ui_ctx_menu_scroll"), 1001);   /* above the z=1000 panel */
+        } else {
+            for (i = 0; i < n; i++)
+                if (ui_menu_item(P, &items[i])) clicked = i;
+        }
     }
     if (clicked >= 0 && !items[clicked].check) ui_menu_close();
     return clicked;
 }
 
-/* ---- generic dropdown (a select box + a floating option list) ----
-
-   A closed select box shows options[sel] (or "..." when sel is out of range) with a
-   chevron; a click opens a floating option list anchored under the box, keyed by `owner`
-   and built on ui_menu (so at most one dropdown/menu is open at a time, and any press
-   outside dismisses it). Returns the option index picked THIS frame, or -1; the caller
-   applies it. Draw every frame; the list renders only while open. `width` sizes both the
-   box and the list in css px (0 = grow to the parent). Options past UI_DROPDOWN_MAX are
-   not shown. */
-#define UI_DROPDOWN_MAX 64
-static int ui_dropdown(const Palette *P, const void *owner, Clay_ElementId id,
-                       const char *const *options, int n, int sel, float width){
-    int picked = -1, open = ui_menu_is_open(owner);
-    if (n > UI_DROPDOWN_MAX) n = UI_DROPDOWN_MAX;
-    CLAY({ .id = id,
-           .layout = { .sizing = { .width = width > 0 ? CLAY_SIZING_FIXED(UISC(width)) : CLAY_SIZING_GROW(0),
-                                   .height = CLAY_SIZING_FIXED(UISC(24)) },
-                       .padding = { .left = UISCI(8), .right = UISCI(6) }, .childGap = UISCI(6),
-                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
-           .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(4)),
-           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = open ? P->accent : P->border } }) {
-        if (Clay_Hovered() && g_pointer_pressed){
-            g_pointer_pressed = false;                    /* consumed: the box owns this click */
-            if (open) ui_menu_close();
-            else {
-                Clay_ElementData ed = Clay_GetElementData(id);   /* anchor the list under the box */
-                if (ed.found) ui_menu_open(owner, ed.boundingBox.x,
-                                           ed.boundingBox.y + ed.boundingBox.height + UISC(2));
-                else          ui_menu_open(owner, g_pointer_x, g_pointer_y);
-            }
-        }
-        CLAY_TEXT((sel >= 0 && sel < n) ? ui_str(options[sel]) : CLAY_STRING("..."),
-                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
-                                     .wrapMode = CLAY_TEXT_WRAP_NONE }));
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer: chevron to the right */
-        ui_icon(ICON_CHEVRON_DOWN, 11, open ? P->accent : P->dim);
-    }
-    if (ui_menu_is_open(owner)){                          /* the option list, only while open */
-        UiMenuItem items[UI_DROPDOWN_MAX];
-        int i;
-        for (i = 0; i < n; i++){
-            items[i] = (UiMenuItem){ .label = ui_str(options[i]), .enabled = 1 };
-            if (i == sel) items[i].keys = CLAY_STRING("\xE2\x97\x8f");   /* a dot marks the current pick */
-        }
-        picked = ui_menu(P, owner, items, n, width > 0 ? width : 140);
-    }
-    return picked;
-}
+/* The generic dropdown (ui_dropdown) lives in ui_textbox.h: it now turns its box
+   into a search field when open, so it depends on the text box. Its generic parts
+   (auto-fit width via ui_menu_fit_w, height cap + scroll, the anchor-aware dismiss)
+   are all here in ui_menu. */
 
 /* ---- generic vertical scrollbar for Clay clip/scroll containers ----
 
@@ -338,8 +351,10 @@ static void ui_scrollbars_pre(void){
 
 /* draw the bar for one scroll container and register it for next frame's pre pass.
    Call immediately after the container's CLAY{} block closes, with the same id.
-   A no-op bar (just the registration) when the content fits. */
-static void ui_scrollbar(const Palette *P, Clay_ElementId id){
+   A no-op bar (just the registration) when the content fits. `z` is the floating
+   z-index: the default (ui_scrollbar) sits above page content; a bar inside a
+   floating overlay (a menu) passes a higher z so it draws over the panel. */
+static void ui_scrollbar_z(const Palette *P, Clay_ElementId id, int16_t z){
     Clay_ScrollContainerData sd = Clay_GetScrollContainerData(id);
     Clay_ElementData ed;
     UiSbGeom g;
@@ -366,7 +381,7 @@ static void ui_scrollbar(const Palette *P, Clay_ElementId id){
     CLAY({ .floating = { .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID, .parentId = id.id,
                          .attachPoints = { .element = CLAY_ATTACH_POINT_RIGHT_TOP,
                                            .parent  = CLAY_ATTACH_POINT_RIGHT_TOP },
-                         .zIndex = 600 },
+                         .zIndex = z },
            .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(UI_SB_W)),
                                    .height = CLAY_SIZING_FIXED(g.view_h) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM,
@@ -377,6 +392,9 @@ static void ui_scrollbar(const Palette *P, Clay_ElementId id){
                .cornerRadius = CLAY_CORNER_RADIUS(UISC(3)) }) {}
     }
 }
+
+/* the common bar: above page content, below floating overlays */
+static void ui_scrollbar(const Palette *P, Clay_ElementId id){ ui_scrollbar_z(P, id, 600); }
 
 /* faint centered text filling the remaining space; marks an empty region */
 static void ui_placeholder(const Palette *P, Clay_String txt){

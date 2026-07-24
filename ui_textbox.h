@@ -850,4 +850,122 @@ static int ui_textbox(const Palette *P, Clay_ElementId id, UiTbState *st,
     return act;
 }
 
+/* ---- generic dropdown with type-to-search (a select box + a floating option list) ----
+
+   Closed: a select box shows options[sel] (or "..." when out of range) with a chevron.
+   It is sized to the WIDEST option, and the open list is given that same width, so the
+   box and the list line up. A click opens the list; the box then becomes a SEARCH FIELD
+   and the list shows only the options whose name contains the query (case-insensitive).
+   The list (ui_menu) caps its height and scrolls when there are many options. Returns the
+   option index picked THIS frame, or -1; the caller applies it. Draw every frame; the box
+   is always drawn, the list only while open. `width` (css px) pins the width; 0 = fit the
+   widest option. Options past UI_DROPDOWN_MAX are not shown.
+
+   The generic parts (width fit, height cap/scroll, anchor-aware dismiss) live in ui_menu;
+   only the search field itself is here, since it needs the text box. One dropdown is open
+   at a time, so a single shared search buffer + text-box state serve them all. */
+#define UI_DROPDOWN_MAX 256
+static char        g_dd_query[128];
+static int         g_dd_query_len = 0;
+static UiTbState   g_dd_query_tb;
+static const void *g_dd_query_owner = NULL;   /* whose search box g_dd_query holds */
+
+/* does `hay` contain `needle` (case-insensitive, ASCII)? empty needle = yes */
+static int ui_dd_lower(int c){ return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+static int ui_dd_match(const char *hay, const char *needle){
+    size_t nl = strlen(needle);
+    if (nl == 0) return 1;
+    for (; *hay; hay++){
+        size_t k = 0;
+        while (k < nl && hay[k] &&
+               ui_dd_lower((unsigned char)hay[k]) == ui_dd_lower((unsigned char)needle[k])) k++;
+        if (k == nl) return 1;
+    }
+    return 0;
+}
+
+static int ui_dropdown(const Palette *P, const void *owner, Clay_ElementId id,
+                       const char *const *options, int n, int sel, float width){
+    int picked = -1, open = ui_menu_is_open(owner), i;
+    float w_css = width;
+    if (n > UI_DROPDOWN_MAX) n = UI_DROPDOWN_MAX;
+
+    /* just closed since last frame: drop the search state and blur its box */
+    if (!open && g_dd_query_owner == owner){
+        g_dd_query_owner = NULL; g_dd_query[0] = '\0'; g_dd_query_len = 0;
+        if (g_tb_focus == &g_dd_query_tb) ui_tb_blur(&g_dd_query_tb);
+    }
+
+    /* box/list width: the widest option as the box shows it (mono) + chevron + padding */
+    if (w_css <= 0.0f){
+        float mx = 0.0f;
+        for (i = 0; i < n; i++){
+            float ow = ui_text_w_css(options[i], (int)strlen(options[i]), FAM_MONO, WT_REG, FS_SMALL);
+            if (ow > mx) mx = ow;
+        }
+        w_css = mx + 8.0f + 6.0f + 6.0f + 11.0f + 6.0f;   /* pad_l + gap + spacer gap + chevron + pad_r */
+        if (w_css < 90.0f) w_css = 90.0f;
+    }
+
+    CLAY({ .id = id,
+           .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(w_css)),
+                                   .height = CLAY_SIZING_FIXED(UISC(24)) },
+                       .padding = { .left = UISCI(8), .right = UISCI(6) }, .childGap = UISCI(6),
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+           .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(4)),
+           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = open ? P->accent : P->border } }) {
+        if (open){                 /* the box is a search field: icon + bare text box + chevron */
+            int act;
+            ui_icon(ICON_SEARCH, 11, P->dim);
+            act = ui_textbox(P, CLAY_IDI("dd_search", id.offset), &g_dd_query_tb,
+                             g_dd_query, (int)sizeof g_dd_query, &g_dd_query_len,
+                             &(UiTextBoxOpts){ .bare = 1, .fill_w = 1, .placeholder = CLAY_STRING("Search"),
+                                               .fam = FAM_MONO, .wt = WT_REG, .sz = FS_SMALL });
+            if (act & UI_TB_CANCEL) ui_menu_close();   /* Escape closes the list */
+            ui_icon(ICON_CHEVRON_DOWN, 11, P->accent);
+        } else {
+            CLAY_TEXT((sel >= 0 && sel < n) ? ui_str(options[sel]) : CLAY_STRING("..."),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
+                                         .wrapMode = CLAY_TEXT_WRAP_NONE }));
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* chevron to the right */
+            ui_icon(ICON_CHEVRON_DOWN, 11, P->dim);
+        }
+        /* box-level click (after the children, so the search box consumes its own press
+           first): closed -> open + arm the search; open (a press that missed the field,
+           e.g. the chevron) -> close */
+        if (Clay_Hovered() && g_pointer_pressed){
+            g_pointer_pressed = false;
+            if (open) ui_menu_close();
+            else {
+                Clay_ElementData ed = Clay_GetElementData(id);
+                float ax = ed.found ? ed.boundingBox.x : g_pointer_x;
+                float ay = ed.found ? ed.boundingBox.y + ed.boundingBox.height + UISC(2) : g_pointer_y;
+                g_dd_query[0] = '\0'; g_dd_query_len = 0;
+                ui_tb_reset(&g_dd_query_tb);
+                g_dd_query_owner = owner;
+                ui_tb_focus(&g_dd_query_tb);
+                ui_menu_open_at(owner, ax, ay, id.id);   /* the box counts as inside the menu */
+            }
+        }
+    }
+
+    if (ui_menu_is_open(owner)){        /* the option list: filtered, mapped back to real indices */
+        UiMenuItem items[UI_DROPDOWN_MAX];
+        int map[UI_DROPDOWN_MAX], m = 0, hit;
+        for (i = 0; i < n; i++){
+            if (!ui_dd_match(options[i], g_dd_query)) continue;
+            items[m] = (UiMenuItem){ .label = ui_str(options[i]), .enabled = 1 };
+            if (i == sel) items[m].keys = CLAY_STRING("\xE2\x97\x8f");   /* a dot marks the current pick */
+            map[m] = i; m++;
+        }
+        if (m == 0){                    /* keep the panel a stable width with a disabled hint */
+            items[0] = (UiMenuItem){ .label = CLAY_STRING("No matches"), .enabled = 0 };
+            map[0] = -1; m = 1;
+        }
+        hit = ui_menu(P, owner, items, m, w_css);
+        if (hit >= 0 && map[hit] >= 0){ picked = map[hit]; ui_menu_close(); }
+    }
+    return picked;
+}
+
 #endif /* UI_TEXTBOX_H */

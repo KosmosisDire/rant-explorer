@@ -1850,6 +1850,29 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
     return n;
 }
 
+/* Discard everything accumulated for `topic`: the stored message ring, the message/drop
+   counters, the error mark, and the derived rate/jitter estimators (which are lifetime
+   state, not ring state, so they must reset with it). The live subscription and publish
+   interest are untouched, so the feed simply restarts from the next message. uid_next is
+   kept: recycling uids would let a fresh message match a pinned inspect copy. */
+int cap_topic_clear(Capture *cap, const char *topic){
+    DartNode *node = (cap && cap->rt) ? (DartNode *)cap->rt : NULL;
+    CapSub   *s    = (node && topic) ? cap_sub_find(topic) : NULL;
+    if (!s) return 0;
+    /* the ring is UI-thread-owned (so is this call), but error/n_drops are written by the
+       service thread's event callback: bracket the reset like cap_topic_feed brackets its read */
+    dart_node_lock(node);
+    free(s->ring); s->ring = NULL;          /* the next message reallocates it lazily */
+    s->head = s->count = 0;
+    s->n_msgs = s->n_drops = 0;
+    s->error = 0;
+    s->rate_hz = 0.0; s->rate_prev_hr = 0.0; s->rate_prev_msgs = 0;
+    s->jitter_last_hr = 0.0; s->jitter_mean_ms = 0.0; s->jitter_p90_ms = 0.0; s->jitter_n = 0;
+    dart_node_unlock(node);
+    cap_logf("CLEAR %s (feed + counters)", topic);
+    return 1;
+}
+
 /* ------------------------------------------------------------------ topic schema */
 
 /* schema decode scratch: a realloc hook for the short-lived parsed copy */

@@ -1203,6 +1203,21 @@ static void topics_feed(AppState *app, const Palette *P){
                     CLAY_TEXT(CLAY_STRING("SENDING..."),
                               CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_SEMI, FS_CAPTION),
                                                  .textColor = P->amber, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                /* Clear (right edge): drop this topic's stored messages and every count
+                   derived from them. The subscription stays live, so the feed refills from
+                   the next message. Only offered while there is something to clear. */
+                if (tt_feed_n > 0 || tt_msgs > 0 || tt_drops > 0){
+                    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+                    if (ui_pill(P, CLAY_STRING("Clear"), FAM_SANS, WT_SEMI, FS_SMALL,
+                                P->dim, P->panel2, P->border2, UISC(28)) && app->cap){
+                        cap_topic_clear(app->cap, t->path);
+                        if (app->has_inspect_msg && !strcmp(app->inspect_msg_topic, t->path))
+                            app->has_inspect_msg = 0;    /* the pinned sample was one of them */
+                        /* this frame already copied the feed out: drop it here too, so the
+                           table empties on the click rather than one frame later */
+                        tt_feed_n = 0; tt_msgs = tt_drops = 0; tt_sub_error = 0;
+                    }
+                }
             }
             if (tt_feed_n == 0){
                 ui_placeholder(P, t->kind == CAP_KIND_FUNCTION

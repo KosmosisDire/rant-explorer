@@ -211,6 +211,11 @@ typedef struct {
 int  cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int max,
                     int *subscribed, int *error, int *reliable, uint32_t *n_msgs, uint32_t *n_drops);
 
+/* Drop every message stored for `topic` plus the history derived from them: the msg/drop
+   counts, the error mark, and the rate/jitter estimates. The subscription itself stays
+   live (the feed restarts from the next message). Returns 1 if the topic was known. */
+int  cap_topic_clear(Capture *cap, const char *topic);
+
 /* --------------------------------------------------------------- topic schema
    A topic's advertised message schema, decoded to plain types for the UI. Any endpoint
    is authoritative about its own schema: publishers advertise the shape they send, and a

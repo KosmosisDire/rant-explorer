@@ -755,7 +755,7 @@ static void cap_usage(const char *argv0){
            "  --domain N   discovery domain to observe (default 0; must match the nodes)\n"
            "  --group IP   discovery multicast group   (default 239.255.0.7)\n"
            "  --port  N    discovery port              (default 7400)\n"
-           "  --if    IP   multicast interface IP      (default auto; 127.0.0.1 = single-host)\n"
+           "  --if    IP   pin to one interface IP     (default all; 127.0.0.1 = single-host)\n"
            "  --name  STR  this observer node's name   (default dart-explorer)\n", argv0);
 }
 

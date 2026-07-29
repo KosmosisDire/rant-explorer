@@ -14,7 +14,7 @@ typedef struct {
     uint16_t    domain;
     const char *group;
     uint16_t    port;
-    const char *ifc;     /* multicast interface IP, or NULL for auto */
+    const char *ifc;     /* pin to this interface IP, or NULL for every interface */
     const char *name;
 } Config;
 

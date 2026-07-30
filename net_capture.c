@@ -446,6 +446,28 @@ static void cap_fmt_value_preview(char *dst, int cap, int *at, const DartSchema 
         *at = cap_val_append(dst, cap, *at, "%s", one);
     }
 }
+
+static void cap_field_type_str(char *dst, size_t cap, const DartSchemaFieldInfo *fi);
+
+/* A field's UI label: its name, or, for the anonymous field of a BARE-TYPE schema
+   (`bool`, `f32[]`, ...), the type itself, so no row ever renders blank. */
+static void cap_field_label(char *dst, size_t cap, const DartSchemaFieldInfo *fi){
+    if (fi->name.len) snprintf(dst, cap, "%.*s", (int)fi->name.len, fi->name.data);
+    else              cap_field_type_str(dst, cap, fi);
+}
+
+/* A schema's display type: its root type name, or, for a bare type (an anonymous root),
+   the type itself. Never empty for a decodable schema. */
+static void cap_schema_type_name(char *dst, size_t cap, const DartSchema *sch){
+    DartString tn = dart_schema_name(sch);
+    DartSchemaFieldInfo fi;
+    if (tn.len) snprintf(dst, cap, "%.*s", (int)tn.len, tn.data);
+    else if (dart_schema_field_count(sch) == 1 && dart_schema_field_at(sch, 0, &fi)
+             && fi.name.len == 0 && fi.kind != DART_STRUCT)
+        cap_field_type_str(dst, cap, &fi);
+    else if (cap) dst[0] = '\0';
+}
+
 /* reflect a message into per-field rows (every depth) + a one-line summary (top-level
    fields only; arrays/structs are expanded inline via cap_fmt_value_preview) */
 static void cap_decode_fields(CapMsgRec *m, DartBytes data, const DartSchema *s){
@@ -459,13 +481,14 @@ static void cap_decode_fields(CapMsgRec *m, DartBytes data, const DartSchema *s)
         if (!dart_schema_field_at(s, i, &fi) || !dart_get_value(data, s, i, &v)) break;
         if (m->n_fields < CAP_MSG_FIELDS){
             CapMsgField *f = &m->fields[m->n_fields++];
-            snprintf(f->name, sizeof f->name, "%.*s", (int)fi.name.len, fi.name.data ? fi.name.data : "");
+            cap_field_label(f->name, sizeof f->name, &fi);
             f->depth = (uint8_t)(fi.depth > 255 ? 255 : fi.depth);
             cap_fmt_value(f->value, (int)sizeof f->value, s, i, &fi, &v);
         }
         if (fi.depth == 0){                                /* the collapsed summary line */
-            at = cap_val_append(m->preview, CAP_MSG_PREVIEW, at, at ? "  %.*s=" : "%.*s=",
-                                (int)fi.name.len, fi.name.data ? fi.name.data : "");
+            if (fi.name.len)                               /* a bare type prints just its value */
+                at = cap_val_append(m->preview, CAP_MSG_PREVIEW, at, at ? "  %.*s=" : "%.*s=",
+                                    (int)fi.name.len, fi.name.data);
             cap_fmt_value_preview(m->preview, CAP_MSG_PREVIEW, &at, s, data, nf, i, &fi, &v);
         }
     }
@@ -489,10 +512,9 @@ static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t
     m->n_fields = m->total_fields = 0;
     m->preview_len = 0;
     if (schema){
-        DartString tn = dart_schema_name(schema);
         cap_decode_fields(m, dart_bytes(data, len), schema);
         m->decoded = 1;
-        snprintf(m->type_name, sizeof m->type_name, "%.*s", (int)tn.len, tn.data ? tn.data : "");
+        cap_schema_type_name(m->type_name, sizeof m->type_name, schema);
     } else {
         uint16_t c = len < CAP_MSG_PREVIEW ? (uint16_t)len : CAP_MSG_PREVIEW;
         if (c) memcpy(m->preview, data, c);
@@ -1920,15 +1942,14 @@ static void cap_field_type_str(char *dst, size_t cap, const DartSchemaFieldInfo 
 /* fill out->fields from a parsed schema (top-level fields, capped to the UI's bound) */
 static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
     DartSchemaFieldInfo fi; uint16_t i, nf = dart_schema_field_count(sch);
-    DartString tn = dart_schema_name(sch);
     out->inlined      = 1;
     out->msg_size     = dart_schema_msg_min(sch);   /* exact size, or the minimum with variable fields */
     out->total_fields = nf;
-    snprintf(out->type_name, sizeof out->type_name, "%.*s", (int)tn.len, tn.data ? tn.data : "");
+    cap_schema_type_name(out->type_name, sizeof out->type_name, sch);
     for (i = 0; i < nf && out->n_fields < CAP_SCHEMA_FIELDS; i++){
         CapSchemaField *f = &out->fields[out->n_fields];
         if (!dart_schema_field_at(sch, i, &fi)) break;
-        snprintf(f->name, sizeof f->name, "%.*s", (int)fi.name.len, fi.name.data ? fi.name.data : "");
+        cap_field_label(f->name, sizeof f->name, &fi);
         cap_field_type_str(f->type, sizeof f->type, &fi);
         f->kind    = fi.kind;                                        /* CAP_K_* == DartSchemaTypeKind */
         f->elem    = (uint8_t)((fi.kind == DART_ARR || fi.kind == DART_VARR

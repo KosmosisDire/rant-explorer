@@ -636,7 +636,7 @@ static void topics_tree(AppState *app, const Palette *P){
    the (later-drawn, opaque) drawer or clipped at the window edge. */
 
 #define TT_TABLE_COLS 6    /* fields shown by default (right-click the header to change) */
-#define TT_TIME_W    60    /* time column width, unscaled px */
+#define TT_TIME_W   105    /* time column width, unscaled px (fits "12:34:56.789") */
 #define TT_FROM_W   110    /* sender column width, unscaled px ("> " call / "< " reply + name) */
 #define TT_FIELD_W   94    /* field column width, unscaled px (fallback before layout is known) */
 #define TT_CELL_PADL  8    /* cell left padding, unscaled px */
@@ -718,7 +718,7 @@ static void tt_table_header(AppState *app, const Palette *P, const TblCol *cols,
             ui_menu_open(tt_cols, g_pointer_x, g_pointer_y);
             g_right_pressed = false;
         }
-        if (app->col_show_time) tt_cell(P, UISC(TT_TIME_W), "t (s)", time_budget, P->faint);
+        if (app->col_show_time) tt_cell(P, UISC(TT_TIME_W), "sent", time_budget, P->faint);
         if (app->col_show_from) tt_cell(P, UISC(TT_FROM_W), "from", from_budget, P->faint);
         if (raw) tt_cell_grow(P, "payload", P->faint);
         else for (c = 0; c < n_show; c++) tt_cell(P, field_w, cols[c].name, field_budget, P->faint);
@@ -736,7 +736,11 @@ static void tt_table_row(AppState *app, const Palette *P, const char *topic, con
                     && !strcmp(topic, app->inspect_msg_topic);
     char tbuf[16], fbuf[CAP_NAME_CAP + 12];
     int  c;
-    snprintf(tbuf, sizeof tbuf, "%.2f", m->t_s);
+    {   /* the SENDER's clock, local time of day: see cap_stamp on what it means when a row
+           reads far from now (a replayed message, or a publisher whose host clock is off) */
+        Clay_String cs = nf_clock_ms(m->wall_us);
+        snprintf(tbuf, sizeof tbuf, "%.*s", (int)cs.length, cs.chars);
+    }
     /* the sender, direction-marked on a function feed ("> " = our call, "< " = the reply);
        a FORCED variable value carries its pin marker with the writer */
     snprintf(fbuf, sizeof fbuf, "%s%s%s",
@@ -772,7 +776,7 @@ static void tt_col_menu(AppState *app, const Palette *P, const TblCol *cols, int
     UiMenuItem items[CAP_MSG_FIELDS + 2];
     int c, n = 0, hit;
     if (!ui_menu_is_open(tt_cols)) return;
-    items[n++] = (UiMenuItem){ .label = CLAY_STRING("t (s)"), .enabled = 1,
+    items[n++] = (UiMenuItem){ .label = CLAY_STRING("sent"), .enabled = 1,
                                .check = app->col_show_time ? UI_MENU_ON : UI_MENU_OFF };
     items[n++] = (UiMenuItem){ .label = CLAY_STRING("from"), .enabled = 1,
                                .check = app->col_show_from ? UI_MENU_ON : UI_MENU_OFF };
@@ -1612,7 +1616,8 @@ static void topics_msg_inspect(AppState *app, const Palette *P){
             tt_msg_meta_row(P, CLAY_STRING("From"),
                             m->mine ? ui_fmt("%s (you)", m->sender) : ui_str(m->sender),
                             m->mine ? P->accent : P->text);
-            tt_msg_meta_row(P, CLAY_STRING("Time"), ui_fmt("%.2f s", m->t_s), P->dim);
+            tt_msg_meta_row(P, m->stamped ? CLAY_STRING("Sent") : CLAY_STRING("Arrived"),
+                            nf_clock_ms(m->wall_us), P->dim);
             tt_msg_meta_row(P, CLAY_STRING("Size"), ui_fmt("%u B", m->len), P->dim);
             tt_msg_meta_row(P, CLAY_STRING("Type"),
                             m->decoded && m->type_name[0] ? ui_str(m->type_name) : CLAY_STRING("raw bytes"),

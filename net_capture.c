@@ -109,6 +109,11 @@ static CapPeer cap_peers[CAP_MAX_PEERS];
 static char    cap_log[CAP_LOG_LINES][CAP_LOG_LINE];
 static int     cap_log_head, cap_log_count;
 static unsigned long long cap_start_ms;
+/* Clock origins for the feed's per-message stamps, both taken from the NODE's own clocks at
+   cap_start: the monotonic one rebases DartMsg.recv_us (arrival), the wall one rebases
+   DartMsg.sent_us (the sender's send time). A feed stamp is seconds since the observer
+   started, off one of these two, never off a clock the explorer reads itself. */
+static uint64_t cap_base_mono_us, cap_base_wall_us;
 static Config  cap_cfg;          /* echoed into the snapshot for display */
 
 /* THREADING. The node's SERVICE THREAD (dart_node_start) owns discovery/RX/timers, so
@@ -124,7 +129,6 @@ static Config  cap_cfg;          /* echoed into the snapshot for display */
    another bracketing helper and never logs. */
 static DartNode *cap_node;
 
-static unsigned long long cap_now_ms(void);   /* defined below; used by cap_ring_push */
 static void *cap_schema_alloc(void *user, void *ptr, size_t size);          /* defined below */
 static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic);/* defined below */
 
@@ -144,7 +148,9 @@ static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic);/* 
                                         or never-used slot costs nothing beyond that. */
 
 typedef struct {
-    double   t_s;
+    uint64_t wall_us;                     /* SEND time: the sender's wall clock, us since the epoch */
+    double   recv_s;                      /* arrival time (monotonic), s since we started */
+    int      stamped;                     /* 1 = wall_us is the sender's stamp; 0 = it opted out, ours */
     uint32_t uid;                         /* per-topic message id (UI expand/collapse key) */
     uint32_t len;
     uint16_t preview_len;
@@ -495,17 +501,37 @@ static void cap_decode_fields(CapMsgRec *m, DartBytes data, const DartSchema *s)
     m->preview_len = (uint16_t)strlen(m->preview);
 }
 
+/* Stamp a feed entry from the message's OWN times. wall_us is what the feed shows: the
+   SENDER's wall clock (UTC us) at the moment its send committed (DartMsg.sent_us), so a
+   repaired, replayed or queued message reads as when it was actually sent, never as when
+   this frame got around to it. Two things follow from it being the sender's clock, and the
+   feed shows it as a plain time of day so both are visible rather than hidden in an offset:
+   a replayed message (a retained variable value handed to a late joiner) legitimately reads
+   OLDER than this observer, and a message from another host is only as good as that host's
+   clock sync, so a skewed publisher's whole stream reads shifted.
+   recv_s is arrival on the node's monotonic clock: it can never run backwards whatever a
+   publisher's clock says, so recency measures from it, not from wall_us. sent_us == 0 means
+   the publisher opted out (qos.no_timestamp) or the entry was synthesized locally (a failed
+   call); wall_us then holds our own arrival, mapped onto our wall clock through the two
+   origins, and stamped = 0 so the UI says "arrived" rather than passing it off as a sent time. */
+static void cap_stamp(CapMsgRec *m, uint64_t recv_us, uint64_t sent_us){
+    double dt  = (double)((int64_t)recv_us - (int64_t)cap_base_mono_us) / 1e6;
+    m->recv_s  = dt > 0.0 ? dt : 0.0;
+    m->stamped = sent_us != 0;
+    m->wall_us = m->stamped ? sent_us : cap_base_wall_us + (uint64_t)(m->recv_s * 1e6);
+}
+
 /* append one message to a topic's ring (received or our own echo). Does not touch
    n_msgs. With a schema the message is reflected into field rows; raw bytes else. */
 static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t len, int mine,
-                          const DartSchema *schema){
+                          const DartSchema *schema, uint64_t recv_us, uint64_t sent_us){
     CapMsgRec *m;
     if (!s->ring){                       /* lazy: first message on this topic allocates the ring */
         s->ring = (CapMsgRec *)calloc(CAP_FEED_MAX, sizeof *s->ring);
         if (!s->ring) return;            /* out of memory: drop the message rather than crash */
     }
     m = &s->ring[s->head];
-    m->t_s = (double)(cap_now_ms() - cap_start_ms) / 1000.0;
+    cap_stamp(m, recv_us, sent_us);
     m->uid = ++s->uid_next;
     m->len = (uint32_t)len;
     m->decoded = 0; m->type_name[0] = '\0';
@@ -703,10 +729,12 @@ static void cap_on_message(const DartMsg *msg){
     if (cap_nodelog_intake(msg)) return;      /* a @dart/log line, not a topic feed */
     s = cap_sub_by_index(msg->topic_index);
     if (!s) return;
-    /* jitter from the POLL-side arrival stamp, not from when this frame got around to
-       dispatching: a frame-paced consumer must never quantize inter-arrival times */
+    /* jitter is INTER-ARRIVAL, so it stays on recv_us (the poll-side arrival stamp, not when
+       this frame got around to dispatching: a frame-paced consumer must never quantize it).
+       The feed's own timestamp is the sender's sent_us instead: see cap_stamp. */
     cap_jitter_update(s, (double)msg->recv_us / 1e6);
-    cap_ring_push(s, msg->publisher_name, msg->data.data, msg->data.len, 0, msg->schema);
+    cap_ring_push(s, msg->publisher_name, msg->data.data, msg->data.len, 0, msg->schema,
+                  msg->recv_us, msg->sent_us);
     if (msg->header.len >= 5){   /* a variable value's prefix: [u8 flags][u32 write_seq] */
         int newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
         s->forced    = (msg->header.data[0] & 0x01) ? 1 : 0;
@@ -827,6 +855,8 @@ int cap_start(Capture *cap, const Config *cfg){
     }
     cap->rt  = node;
     cap->mem = NULL;         /* the node owns its memory now; close frees it */
+    cap_base_mono_us = i_dart_node_now_us(node);    /* the two feed-stamp origins, from the */
+    cap_base_wall_us = i_dart_node_wall_us(node);   /* node's own clocks (see cap_stamp) */
     cap_node = node;         /* the log/table serializer handle (see the THREADING note) */
     {   /* join the mesh-wide @dart/log topics: widen our own built-in handles to PUBSUB
            (one shared topic per level subscribes to EVERY node's lines, with each node's
@@ -1104,6 +1134,8 @@ typedef struct {
     uint32_t provider;            /* peer id (0 = synthesized) */
     uint32_t len;                 /* true reply length */
     uint32_t kept;                /* bytes kept in data[] */
+    uint64_t recv_us;             /* arrival (node monotonic): taken here, not at the drain */
+    uint64_t sent_us;             /* the provider's send stamp (0 = synthesized outcome) */
     uint8_t  data[CAP_REPLY_MAX];
 } CapReplyPending;
 static CapReplyPending cap_replies[CAP_REPLY_PENDING];
@@ -1115,6 +1147,8 @@ static void cap_fn_on_reply(const DartResponse *r){
         CapReplyPending *pr = &cap_replies[i];
         if (pr->used) continue;
         pr->s = s; pr->status = (int)r->status; pr->provider = r->provider;
+        pr->recv_us = i_dart_node_now_us(cap_node);   /* now: the drain is a frame away */
+        pr->sent_us = r->sent_us;
         pr->len  = (uint32_t)r->data.len;
         pr->kept = r->data.len > CAP_REPLY_MAX ? CAP_REPLY_MAX : (uint32_t)r->data.len;
         if (pr->kept) memcpy(pr->data, r->data.data, pr->kept);
@@ -1153,12 +1187,13 @@ static void cap_drain_replies(DartNode *node){
             snprintf(text, sizeof text, "call failed: %s",
                      (pr->status > 0 && pr->status <= 4) ? st[pr->status] : "?");
             cap_ring_push(s, dart_cstr(pr->provider ? sender : "(no reply)"),
-                          text, strlen(text), 0, NULL);
+                          text, strlen(text), 0, NULL, pr->recv_us, pr->sent_us);
         } else {
             /* decode with our response-schema copy when the reply arrived whole */
             const DartSchema *sch = (pr->kept == pr->len) ? s->rsp_schema : NULL;
             if (sch && !dart_schema_validate(sch, dart_bytes(pr->data, pr->kept))) sch = NULL;
-            cap_ring_push(s, dart_cstr(sender), pr->data, pr->kept, 0, sch);
+            cap_ring_push(s, dart_cstr(sender), pr->data, pr->kept, 0, sch,
+                          pr->recv_us, pr->sent_us);
         }
     }
 }
@@ -1419,13 +1454,18 @@ static int cap_send_routed(CapSub *s, const void *data, size_t len, uint8_t var_
 
 int cap_publish(Capture *cap, const char *topic, const void *data, size_t len){
     CapSub *s; const DartSchema *echo;
+    DartNode *node = (DartNode *)cap->rt;
     if (!topic || (!data && len)) return 0;
     if (!cap_declare_publish(cap, topic)) return 0;   /* ensure the publisher topic is live */
     s = cap_sub_find(topic);
     if (!s) return 0;
     if (!cap_send_routed(s, data, len, 0, &echo)){ cap_logf("PUBLISH %s send failed", topic); return 0; }
     if (echo && !dart_schema_validate(echo, dart_bytes(data, len))) echo = NULL;
-    cap_ring_push(s, dart_cstr(cap_cfg.name), data, len, 1, echo);
+    /* our own echo never rides the wire, so stamp it from the node's clocks here: the same
+       wall clock the transport would have stamped this send with (a parked send shows when
+       the user sent it, not when the forming match later let it out) */
+    cap_ring_push(s, dart_cstr(cap_cfg.name), data, len, 1, echo,
+                  i_dart_node_now_us(node), i_dart_node_wall_us(node));
     return 1;
 }
 
@@ -1573,7 +1613,10 @@ static int cap_publish_form_op(Capture *cap, const char *topic, const char *cons
             free(buf);
             return 0;
         }
-        cap_ring_push(s, dart_cstr(cap_cfg.name), buf, msg_len, 1, sch);   /* decoded local echo */
+        /* decoded local echo: stamped from the node's clocks, like cap_publish's */
+        cap_ring_push(s, dart_cstr(cap_cfg.name), buf, msg_len, 1, sch,
+                      i_dart_node_now_us((DartNode *)cap->rt),
+                      i_dart_node_wall_us((DartNode *)cap->rt));
         if ((var_op & CAP_SET_OP_FORCE) && s->ring){   /* mark the echo: this write PINS the value */
             int newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
             s->ring[newest].forced = 1;
@@ -1728,12 +1771,14 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         si->error      = (s->error || s->n_drops > 0) ? 1 : 0;
         si->n_msgs     = (uint32_t)s->n_msgs;
         si->n_drops    = (uint32_t)s->n_drops;
-        /* recency from the ring: age of the newest stored message (a live count-up). */
+        /* recency from the ring: age of the newest stored message (a live count-up). Off the
+           ARRIVAL stamp, not the displayed send stamp: a publisher whose clock is skewed (or
+           a replayed message older than this observer) must not make a live topic read stale. */
         si->last_age_s = -1.0;
         if (s->count > 0){
-            double now_s  = (double)(now - cap_start_ms) / 1000.0;
+            double now_s  = (double)((int64_t)i_dart_node_now_us(node) - (int64_t)cap_base_mono_us) / 1e6;
             int    newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
-            si->last_age_s = now_s - s->ring[newest].t_s;
+            si->last_age_s = now_s - s->ring[newest].recv_s;
             if (si->last_age_s < 0.0) si->last_age_s = 0.0;
         }
         /* publish rate: messages received over an accurately measured window (exact count /
@@ -1853,7 +1898,8 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
         const CapMsgRec *m = &s->ring[(start + i) % CAP_FEED_MAX];
         CapFeedItem *o = &out[i];
         int k;
-        o->t_s         = m->t_s;
+        o->wall_us     = m->wall_us;
+        o->stamped     = m->stamped;
         o->uid         = m->uid;
         o->len         = m->len;
         o->preview_len = m->preview_len;

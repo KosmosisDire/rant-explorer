@@ -56,6 +56,13 @@ static Clay_String nf_clock(uint64_t wall_us){   /* the sender's wall clock as l
     if (!lt) return ui_str(ND_DASH);
     return ui_fmt("%02d:%02d:%02d", lt->tm_hour, lt->tm_min, lt->tm_sec);
 }
+static Clay_String nf_clock_ms(uint64_t wall_us){   /* the same, to the millisecond */
+    time_t t = (time_t)(wall_us / 1000000u);
+    struct tm *lt = wall_us ? localtime(&t) : NULL;
+    if (!lt) return ui_str(ND_DASH);
+    return ui_fmt("%02d:%02d:%02d.%03d", lt->tm_hour, lt->tm_min, lt->tm_sec,
+                  (int)(wall_us % 1000000u) / 1000);
+}
 static Clay_String nd_state_word(NodeState s){
     return s == NODE_ALIVE ? CLAY_STRING("ALIVE")
          : s == NODE_JOINING ? CLAY_STRING("JOINING")

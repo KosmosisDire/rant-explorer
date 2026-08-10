@@ -211,6 +211,7 @@ int main(int argc, char **argv){
         if (cur_dpi > 0.0f && fabsf(cur_dpi - g_atlas_scale) > 0.01f){   /* moved to a different-DPI monitor */
             ui_fonts_reload(cur_dpi);   /* sets ui_dpi first... */
             ui_icons_reload(ren);       /* ...so the icon raster picks up the new density */
+            ui_text_cache_clear();      /* every cached glyph raster is now the wrong size */
         }
 
         SDL_GetMouseState(&mx, &my);     /* logical (point) coords; layout is physical */
@@ -286,6 +287,7 @@ int main(int argc, char **argv){
 
     cap_stop(&cap);
     cap_snapshot_free(&g_snap);   /* release the snapshot's grown per-node entity buffers */
+    ui_render_shutdown();   /* cached text textures die before the renderer does */
     ui_icons_unload();
     ui_fonts_unload();
     TTF_Quit();

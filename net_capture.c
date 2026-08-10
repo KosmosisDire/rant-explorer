@@ -36,6 +36,10 @@
                                         that advertises many topics is handled by the node's meta self-
                                         heal (it grows the accept bound + RX buffers and re-solicits). */
 #define CAP_LOG_LINES         400
+#define CAP_SCHEMA_STALE_US   5000000   /* conflict tiebreak: a rival publisher heard this much
+                                           more recently than the current pick is the live one
+                                           (past one 3s announce interval, well under the 12s
+                                           peer_timeout that would age the ghost out anyway) */
 /* CAP_LOG_LINE comes from net_capture.h (shared with the snapshot) */
 
 /* Ensure *arr can hold index `need` (0-based): grow it by doubling through realloc, so a
@@ -132,6 +136,14 @@ static DartNode *cap_node;
 
 static void *cap_schema_alloc(void *user, void *ptr, size_t size);          /* defined below */
 static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic);/* defined below */
+static void cap_schema_poll(DartNode *node);                                 /* defined below */
+
+/* set by cap_on_event whenever the topology (and so a topic's advertised schema) may have
+   changed; cap_schema_poll then re-checks every adopted schema on the next UI frame */
+static int cap_schema_dirty;
+static unsigned long long cap_schema_next_ms;   /* slow periodic fallback: the conflict
+       tiebreak in cap_topic_pick_schema flips on a peer's growing SILENCE, which no
+       event marks, so a dirty flag alone would sit on a stale pick until peer_timeout */
 
 /* one observer-side topic the explorer is using: a ring of recent messages plus the DART
    topic(s) wiring it up. A topic's reliability is FIXED at creation, but our wanted
@@ -754,6 +766,7 @@ static void cap_on_event(const DartEvent *ev){
     switch (ev->kind){
     case DART_PEER_UP: {
         CapPeer *p = cap_peer_get(ev->peer);
+        cap_schema_dirty = 1;
         p->last_change_ms = cap_now_ms();
         if (ev->ip_len == 4)
             cap_logf("UP    id=%u  %u.%u.%u.%u:%u", ev->peer,
@@ -763,12 +776,14 @@ static void cap_on_event(const DartEvent *ev){
         break; }
     case DART_PEER_INTEREST: {                       /* a peer's interest list was (re)applied */
         CapPeer *p = cap_peer_find(ev->peer);
+        cap_schema_dirty = 1;
         if (p){ p->updates++; p->last_change_ms = cap_now_ms(); }
         cap_logf("        interest  id=%u  pub-to=%u  sub-from=%u",
                  ev->peer, ev->publish_topics, ev->receive_topics);
         break; }
     case DART_PEER_DOWN: {
         CapPeer *p = cap_peer_find(ev->peer);
+        cap_schema_dirty = 1;
         if (p) p->down_ms = cap_now_ms();
         cap_logf("DOWN  id=%u", ev->peer);
         break; }
@@ -784,6 +799,7 @@ static void cap_on_event(const DartEvent *ev){
             ev->error == DART_E_MSG_TOO_BIG){
             CapSub *s = cap_sub_by_index(ev->topic);
             if (s) s->error = 1;
+            if (ev->error == DART_E_SCHEMA_MISMATCH) cap_schema_dirty = 1;
         }
         cap_logf("        %s", dart_event_str(ev, line, sizeof line));
         break; }
@@ -900,6 +916,7 @@ int cap_poll(Capture *cap){
     n = dart_node_dispatch(node, 0, 0);
     cap_drain_replies(node);   /* parked function replies -> their feeds (UI thread) */
     cap_pend_poll();           /* parked sends -> the wire once matching resolves */
+    cap_schema_poll(node);     /* re-adopt topics whose advertised schema changed */
     cap_meta_poll(node);       /* keep the watched node's runtime stats fresh */
     return n;
 }
@@ -921,6 +938,7 @@ void cap_stop(Capture *cap){
         free(cap_peers[i].sub); cap_peers[i].sub = NULL; cap_peers[i].sub_cap = cap_peers[i].n_sub = 0;
         cap_peers[i].used = 0;
     }
+    cap_schema_dirty = 0; cap_schema_next_ms = 0;
     cap_nodelog_head = cap_nodelog_count = 0;
     cap_nodelog_index[0] = cap_nodelog_index[1] = cap_nodelog_index[2] = 0xFFFF;
     cap_meta_node[0] = '\0'; cap_meta_inflight = 0;
@@ -2042,7 +2060,7 @@ static const DartSchema *cap_topic_pick_schema(DartNode *node, const char *topic
     uint32_t want_hash;
     const DartSchema *best = NULL;
     int best_is_pub = 0, advertisers = 0, conflict = 0;
-    uint64_t best_hash = 0;
+    uint64_t best_hash = 0, best_heard = 0;
     if (out_hash) *out_hash = 0;
     if (from && from_cap) from[0] = '\0';
     if (n_advertisers) *n_advertisers = 0;
@@ -2054,6 +2072,9 @@ static const DartSchema *cap_topic_pick_schema(DartNode *node, const char *topic
         const DartDiscoveryPeer *dp = &peers[s];
         DartInterestIter it; DartTopicEntry t;
         uint16_t last_alias = 0xFFFF;   /* PUBSUB yields both directions: one schema per index */
+        if (dp->liveness != DART_PEER_ACTIVE) continue;   /* a DROPPED ghost (a restarted node's
+               old incarnation lingers until gone_timeout) must not feed the pick: its stale
+               schema would flag a false conflict and could win the adoption */
         memset(&it, 0, sizeof it);
         while (dart_node_peer_interest_next(dp, &it, &t)){
             DartString nm; uint64_t hash = 0; const DartSchema *sch;
@@ -2081,19 +2102,33 @@ static const DartSchema *cap_topic_pick_schema(DartNode *node, const char *topic
                    publisher since it owns the actual wire bytes. */
                 int best_narrower = dart_schema_subset(best, sch);   /* best subset of sch: sch is wider */
                 int new_narrower  = dart_schema_subset(sch, best);   /* sch subset of best: best is wider */
-                if (!best_narrower && !new_narrower){   /* neither reads the other: real conflict */
+                if (!best_narrower && !new_narrower){
+                    /* neither reads the other: real conflict. A PUBLISHER's schema still
+                       beats a subscriber's (it owns the wire bytes; adopting a stale
+                       subscriber's shape would make us refuse the live writer too), and a
+                       publisher heard CLEARLY more recently beats one gone silent: a
+                       crash-restarted node's dead incarnation stays ACTIVE-listed until
+                       peer_timeout, but it stopped announcing the moment it died, while
+                       two genuinely live rivals both announce every interval and never
+                       drift a whole CAP_SCHEMA_STALE_US apart (no pick flapping). */
                     conflict = 1;
-                    continue;
+                    if (!(t.is_pub && !best_is_pub)
+                        && !(t.is_pub == best_is_pub
+                             && dp->last_heard_us > best_heard + CAP_SCHEMA_STALE_US))
+                        continue;
+                    take = 1;
+                } else {
+                    take = (t.is_pub && !best_is_pub)                    /* publisher wins the wire */
+                        || (t.is_pub == best_is_pub && best_narrower);   /* same role: the wider wins */
                 }
                 advertisers++;
-                take = (t.is_pub && !best_is_pub)                    /* publisher wins the wire */
-                    || (t.is_pub == best_is_pub && best_narrower);   /* same role: the wider wins */
             } else {                                    /* one side hash-only: cannot prove subset */
                 conflict = 1;
                 continue;
             }
             if (take){
                 best = sch; best_is_pub = t.is_pub; best_hash = hash;
+                best_heard = dp->last_heard_us;
                 if (from && from_cap)
                     snprintf(from, from_cap, "%.*s", (int)dp->name.len, dp->name.data ? dp->name.data : "");
             }
@@ -2121,6 +2156,54 @@ static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic){
     }
     dart_node_unlock(node);
     return copy;
+}
+
+/* A publisher that restarts with a CHANGED schema strands any topic we already adopted:
+   a DART topic's schema is immutable for its lifetime, so the old adoption would refuse
+   the new writer forever (a fresh subscriber would pair fine). When the mesh's picked
+   schema no longer hashes to what a topic's live channel adopted, retire the channels
+   (set INACTIVE: the transport re-resolves same-identity twins toward the live one) and
+   re-create them through cap_sub_reconcile, which adopts the current pick. Runs on the
+   UI frame only after an event marked the topology dirty, so steady state costs one
+   flag test. Functions are skipped: a caller handle cannot be retired, and its schemas
+   ride the mangled request/response channels. Each re-adoption permanently retires two
+   topic slots (topics are append-only), which the node's growing reserve absorbs. */
+static void cap_schema_poll(DartNode *node){
+    unsigned long long now = cap_now_ms();
+    int i;
+    if (!node || (!cap_schema_dirty && now < cap_schema_next_ms)) return;
+    cap_schema_dirty = 0;
+    cap_schema_next_ms = now + 1000;
+    for (i = 0; i < CAP_MAX_SUBS; i++){
+        CapSub *s = &cap_subs[i];
+        DartTopic *live;
+        const DartSchema *adopted;
+        uint64_t have, pick = 0;
+        if (!s->used || s->kind == CAP_KIND_FUNCTION) continue;
+        live = s->kind ? s->ch[1]
+             : s->ch[s->reliable] ? s->ch[s->reliable] : s->ch[!s->reliable];
+        if (!live) continue;
+        adopted = dart_topic_schema(live);
+        if (!adopted) continue;             /* generic: decodes any writer, nothing to migrate */
+        have = dart_schema_hash(adopted);
+        dart_node_lock(node);   /* the zero-copy peer view vs the service thread */
+        cap_topic_pick_schema(node, s->name, &pick, NULL, 0, NULL, NULL);
+        dart_node_unlock(node);
+        if (!pick || pick == have) continue;   /* nobody advertises one, or still current */
+        if (s->ch[0])   dart_topic_set_role(s->ch[0],   DART_INACTIVE);
+        if (s->ch[1])   dart_topic_set_role(s->ch[1],   DART_INACTIVE);
+        if (s->set_ch)  dart_topic_set_role(s->set_ch,  DART_INACTIVE);
+        dart_node_lock(node);   /* handle swap vs cap_sub_by_index on the service thread */
+        s->ch[0] = s->ch[1] = s->set_ch = NULL;
+        s->index[0] = s->index[1] = 0;
+        dart_node_unlock(node);
+        if (cap_sub_reconcile(s, node, s->reliable))
+            cap_logf("%s re-adopted a changed schema (id %08x%08x -> %08x%08x)", s->name,
+                     (unsigned)(have >> 32), (unsigned)have,
+                     (unsigned)(pick >> 32), (unsigned)pick);
+        else
+            cap_logf("%s schema changed but re-adoption FAILED (topic create)", s->name);
+    }
 }
 
 /* the schema query for one of an entity's channels: the base name for topics/variables/

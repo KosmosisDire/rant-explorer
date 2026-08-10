@@ -189,13 +189,14 @@ typedef struct {
 } CapMsgField;
 
 typedef struct {
-    uint64_t wall_us;                /* when the SENDER sent it: its own wall clock, us since the
-                                        Unix epoch (DartMsg.sent_us, a source stamp that survives
-                                        repair, replay and queueing). Being the sender's clock, a
-                                        replayed message reads older than this observer and a
-                                        clock-skewed host reads shifted: show it as a time of day
-                                        so that is visible. Holds OUR arrival when stamped = 0. */
-    int      stamped;                /* 1 = wall_us is the sender's own stamp; 0 = the publisher
+    uint64_t wall_us;                /* WRITE time: the publisher's own wall clock when it wrote the
+                                        message, us since the Unix epoch (DartMsg.written_us, stamped
+                                        at the writer's commit point, so it survives repair, replay
+                                        and queueing). Being the writer's clock, a replayed message
+                                        reads older than this observer and a clock-skewed host reads
+                                        shifted: show it as a time of day so that is visible.
+                                        Holds OUR arrival when stamped = 0. */
+    int      stamped;                /* 1 = wall_us is the writer's own stamp; 0 = the publisher
                                         opted out (qos.no_timestamp) and it is our arrival time */
     uint32_t uid;                    /* stable per-topic message id (expand/collapse key) */
     uint32_t len;                    /* true payload length */

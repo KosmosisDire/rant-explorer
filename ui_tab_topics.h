@@ -20,7 +20,9 @@ static CapFeedItem tt_feed[CAP_FEED_MAX];
 static int         tt_feed_n, tt_subscribed, tt_sub_error, tt_sub_reliable;
 static int         tt_send_pending;   /* a send is parked on the forming match (spinner) */
 static uint32_t    tt_msgs, tt_drops;
-static CapSchema   tt_feed_schema;   /* the topic's main schema, for picking the feed's column template */
+static CapSchema   tt_feed_schema[2];   /* the topic's schemas, for picking the feed's column
+                                           templates: [0] the primary one (a FUNCTION's request),
+                                           [1] a function's RESPONSE (empty for every other kind) */
 
 /* entity glyph for a topic's kind: the capture layer folds pattern channels through the
    canonical reflection walk, so a function/variable/signal arrives as ONE entity and this
@@ -633,9 +635,20 @@ static void topics_tree(AppState *app, const Palette *P){
    the inspector (the full decode). Cell text is truncated to its (now dynamic) column width: a
    per-cell clip would overflow Clay's 10-slot scroll-container array, and the full value is
    always one click away in the inspector. Any header overrun on a narrow window is hidden by
-   the (later-drawn, opaque) drawer or clipped at the window edge. */
+   the (later-drawn, opaque) drawer or clipped at the window edge.
+
+   TWO SCHEMAS, ONE TABLE. A FUNCTION feed interleaves our calls (the request schema) with the
+   replies (the response schema), and a field index means something different in each, so one
+   column template would print reply values under request column names. The columns are instead
+   the UNION of the two field sets, each column TAGGED with its group (0 = primary/request,
+   1 = response) and named with a req./rsp. prefix; a row fills only its own group's cells and
+   leaves the other group blank, with a divider line at the boundary. Rows stay one per wire
+   message in arrival order, so chronology is exactly the feed's. Every other kind has one
+   group and renders as before. A row that carries no decode at all (a "call failed: TIMEOUT"
+   entry) shows its text across the field area instead of a line of dashes. */
 
 #define TT_TABLE_COLS 6    /* fields shown by default (right-click the header to change) */
+#define TT_GROUP_COLS 3    /* ...per group when a feed has two (a function's req + rsp) */
 #define TT_TIME_W   105    /* time column width, unscaled px (fits "12:34:56.789") */
 #define TT_FROM_W   110    /* sender column width, unscaled px ("> " call / "< " reply + name) */
 #define TT_FIELD_W   94    /* field column width, unscaled px (fallback before layout is known) */
@@ -643,34 +656,75 @@ static void topics_tree(AppState *app, const Palette *P){
 #define TT_DRAWER_W 332    /* right sidebar width, unscaled px (must match topics_drawer) */
 #define TT_FEED_PAD  16    /* topics_feed content padding, unscaled px */
 
-typedef struct { char name[80]; int fidx; } TblCol;   /* a flattened column -> its fields[] index */
-static TblCol tt_cols[CAP_MSG_FIELDS];   /* every column (drives the right-click menu) */
-static TblCol tt_vis[CAP_MSG_FIELDS];    /* the visible subset, in column order (drives the table) */
+#define TT_MAX_COLS (CAP_MSG_FIELDS * 2)   /* both groups' fields (see the section comment) */
 
-/* build the flattened column list from a template decoded message: each non-struct field
-   becomes a column named by its dotted path (pos.x), keyed to its fields[] index (stable
-   across samples of one schema, since every message enumerates the schema in the same
-   depth-first order). A struct field contributes only its name as a path prefix. */
-static int tt_build_columns(const CapFeedItem *m, TblCol *cols, int maxcols){
+/* a flattened column -> its fields[] index, within its group */
+typedef struct { char name[80]; int fidx; int grp; } TblCol;
+static TblCol tt_cols[TT_MAX_COLS];   /* every column (drives the right-click menu) */
+static TblCol tt_vis[TT_MAX_COLS];    /* the visible subset, in column order (drives the table) */
+static int    tt_seeded_cols;         /* columns the visible set has been seeded against */
+
+/* append group `grp`'s columns (from a template decoded message) to cols[] at `at`, returning
+   the new count: each non-struct field becomes a column named `prefix` + its dotted path
+   (pos.x), keyed to its fields[] index (stable across samples of one schema, since every
+   message enumerates the schema in the same depth-first order). A struct field contributes
+   only its name as a path prefix. `prefix` is NULL on a single-group feed. */
+static int tt_build_columns(const CapFeedItem *m, TblCol *cols, int at, int maxcols,
+                            const char *prefix, int grp){
     static char stack[CAP_MSG_FIELDS][CAP_TOPIC_CAP];   /* ancestor field names, by depth */
-    int i, n = 0;
+    int i, n = at;
     for (i = 0; i < m->n_fields; i++){
         const CapMsgField *f = &m->fields[i];
         int d = f->depth < CAP_MSG_FIELDS ? f->depth : CAP_MSG_FIELDS - 1;
         snprintf(stack[d], sizeof stack[d], "%s", f->name);
         if (!strcmp(f->value, "{...}")) continue;       /* struct: a path prefix, not a column */
         if (n < maxcols){
-            char *dst = cols[n].name; int cap = (int)sizeof cols[n].name, at = 0, k;
+            char *dst = cols[n].name; int cap = (int)sizeof cols[n].name, pos, k;
+            pos = snprintf(dst, (size_t)cap, "%s", prefix ? prefix : "");
+            if (pos < 0 || pos >= cap) pos = cap - 1;
             for (k = 0; k <= d; k++){
-                int w = snprintf(dst + at, (size_t)(cap - at), k ? ".%s" : "%s", stack[k]);
-                if (w < 0 || at + w >= cap){ at = cap - 1; break; }
-                at += w;
+                int w = snprintf(dst + pos, (size_t)(cap - pos), k ? ".%s" : "%s", stack[k]);
+                if (w < 0 || pos + w >= cap){ pos = cap - 1; break; }
+                pos += w;
             }
             cols[n].fidx = i;
+            cols[n].grp  = grp;
             n++;
         }
     }
     return n;
+}
+
+/* which column group a sample fills. Its own decode decides it (the root type + field count
+   the writer declared, matched against the two advertised schemas); a sample that matches
+   neither -- an undecoded outcome line, or a subset publisher -- falls back to the direction,
+   which on a function feed is exact: our echoed call is `mine`, a reply never is. */
+static int tt_msg_group(const CapFeedItem *m, int n_grp){
+    int g;
+    if (n_grp < 2) return 0;
+    if (m->decoded)
+        for (g = 1; g >= 0; g--)
+            if (tt_feed_schema[g].inlined
+                && m->total_fields == tt_feed_schema[g].total_fields
+                && !strcmp(m->type_name, tt_feed_schema[g].type_name)) return g;
+    return m->mine ? 0 : 1;
+}
+
+/* the feed sample whose decode drives group `g`'s columns: one matching that group's advertised
+   schema by preference (a sender publishing a SUBSET of it must not narrow the columns), else
+   the newest decoded sample on that side. -1 = nothing decoded to build the group from (its
+   columns appear once the first such message lands). */
+static int tt_template(int g, int n_grp){
+    const CapSchema *sc = &tt_feed_schema[g];
+    int j;
+    if (sc->inlined)
+        for (j = tt_feed_n - 1; j >= 0; j--)
+            if (tt_feed[j].decoded
+                && tt_feed[j].total_fields == sc->total_fields
+                && !strcmp(tt_feed[j].type_name, sc->type_name)) return j;
+    for (j = tt_feed_n - 1; j >= 0; j--)
+        if (tt_feed[j].decoded && tt_msg_group(&tt_feed[j], n_grp) == g) return j;
+    return -1;
 }
 
 /* a string truncated to `budget` characters, always copied into the frame pool (so callers
@@ -682,11 +736,14 @@ static Clay_String tt_fit(const char *s, int budget){
     return ui_fmt("%.*s", len, s);
 }
 
-/* one fixed-width table cell (mono small, left aligned, truncated to fit) */
-static void tt_cell(const Palette *P, float w, const char *text, int budget, Clay_Color col){
+/* one fixed-width table cell (mono small, left aligned, truncated to fit). `sep` draws the
+   group divider down its left edge (the request | response boundary). */
+static void tt_cell(const Palette *P, float w, const char *text, int budget, Clay_Color col,
+                    int sep){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(w), .height = CLAY_SIZING_GROW(0) },
                        .padding = { .left = UISCI(TT_CELL_PADL), .right = UISCI(2) },
-                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+           .border = { .width = { sep ? UISCI(1) : 0, 0, 0, 0, 0 }, .color = P->border2 } }) {
         CLAY_TEXT(tt_fit(text, budget), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
                                                           .textColor = col, .wrapMode = CLAY_TEXT_WRAP_NONE }));
     }
@@ -704,8 +761,9 @@ static void tt_cell_grow(const Palette *P, const char *text, Clay_Color col){
 }
 
 /* the sticky header row: the fixed time/sender columns (each hideable from the header
-   menu) then a header cell per shown field. `field_w` is the stretched column width so the
-   fields fill the table. `raw` (a schema-less topic) shows a single payload column instead.
+   menu) then a header cell per shown field, the group boundary marked by a divider.
+   `field_w` is the stretched column width so the fields fill the table. `raw` (a schema-less
+   topic) shows a single payload column instead.
    Right-clicking the row opens the column checklist menu at the cursor. */
 static void tt_table_header(AppState *app, const Palette *P, const TblCol *cols, int n_show,
                             float field_w, int field_budget, int time_budget, int from_budget,
@@ -718,20 +776,25 @@ static void tt_table_header(AppState *app, const Palette *P, const TblCol *cols,
             ui_menu_open(tt_cols, g_pointer_x, g_pointer_y);
             g_right_pressed = false;
         }
-        if (app->col_show_time) tt_cell(P, UISC(TT_TIME_W), "written", time_budget, P->faint);
-        if (app->col_show_from) tt_cell(P, UISC(TT_FROM_W), "from", from_budget, P->faint);
+        if (app->col_show_time) tt_cell(P, UISC(TT_TIME_W), "written", time_budget, P->faint, 0);
+        if (app->col_show_from) tt_cell(P, UISC(TT_FROM_W), "from", from_budget, P->faint, 0);
         if (raw) tt_cell_grow(P, "payload", P->faint);
-        else for (c = 0; c < n_show; c++) tt_cell(P, field_w, cols[c].name, field_budget, P->faint);
+        else for (c = 0; c < n_show; c++)
+            tt_cell(P, field_w, cols[c].name, field_budget, P->faint,
+                    c > 0 && cols[c].grp != cols[c - 1].grp);
     }
 }
 
 /* one sample row: the shown fixed columns then a cell per shown field (its decoded value,
-   or "-" when a message lacks it), field cells stretched to `field_w`. `raw` shows the
-   payload instead. Clicking copies the sample into the inspector; the inspected sample is
+   or "-" when a message lacks it), field cells stretched to `field_w`. Cells of the OTHER
+   group (on a two-group function feed) stay blank: this row is a call or a reply, never both.
+   `raw`, and any row with no decode at all, shows its payload/outcome text across the field
+   area instead. Clicking copies the sample into the inspector; the inspected sample is
    highlighted. */
 static void tt_table_row(AppState *app, const Palette *P, const char *topic, const CapFeedItem *m,
                          int idx, const TblCol *cols, int n_show, float field_w,
-                         int field_budget, int time_budget, int from_budget, int kind, int raw){
+                         int field_budget, int time_budget, int from_budget, int kind, int raw,
+                         int n_grp){
     int  selected = app->has_inspect_msg && m->uid == app->inspect_msg.uid
                     && !strcmp(topic, app->inspect_msg_topic);
     char tbuf[16], fbuf[CAP_NAME_CAP + 12];
@@ -752,18 +815,21 @@ static void tt_table_row(AppState *app, const Palette *P, const char *topic, con
            .backgroundColor = selected ? P->accent_bg : (Clay_Hovered() ? P->panel : UI_NONE),
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
         if (Clay_Hovered() && g_pointer_pressed) app_inspect_msg(app, topic, m);
-        if (app->col_show_time) tt_cell(P, UISC(TT_TIME_W), tbuf, time_budget, P->faint);
+        if (app->col_show_time) tt_cell(P, UISC(TT_TIME_W), tbuf, time_budget, P->faint, 0);
         if (app->col_show_from) tt_cell(P, UISC(TT_FROM_W), fbuf, from_budget,
-                                        m->forced ? P->amber : m->mine ? P->accent : P->dim);
-        if (raw){
+                                        m->forced ? P->amber : m->mine ? P->accent : P->dim, 0);
+        if (raw || !m->decoded){
             char rawbuf[CAP_MSG_PREVIEW + 1];
             const char *pv = m->preview;
             if (!m->decoded){ tt_sanitize(rawbuf, (int)sizeof rawbuf, m->preview, m->preview_len); pv = rawbuf; }
             tt_cell_grow(P, pv, P->text);
         } else {
+            int grp = tt_msg_group(m, n_grp);
             for (c = 0; c < n_show; c++){
-                const char *v = (m->decoded && cols[c].fidx < m->n_fields) ? m->fields[cols[c].fidx].value : "-";
-                tt_cell(P, field_w, v, field_budget, P->text);
+                int sep = c > 0 && cols[c].grp != cols[c - 1].grp;
+                const char *v = cols[c].grp != grp ? ""
+                              : cols[c].fidx < m->n_fields ? m->fields[cols[c].fidx].value : "-";
+                tt_cell(P, field_w, v, field_budget, P->text, sep);
             }
         }
     }
@@ -773,7 +839,7 @@ static void tt_table_row(AppState *app, const Palette *P, const char *topic, con
    tt_cols (one feed table exists at a time). The fixed time/sender columns lead, then every
    field; a click toggles visibility and the menu stays open for the next toggle. */
 static void tt_col_menu(AppState *app, const Palette *P, const TblCol *cols, int n_cols){
-    UiMenuItem items[CAP_MSG_FIELDS + 2];
+    UiMenuItem items[TT_MAX_COLS + 2];
     int c, n = 0, hit;
     if (!ui_menu_is_open(tt_cols)) return;
     items[n++] = (UiMenuItem){ .label = CLAY_STRING("written"), .enabled = 1,
@@ -1229,37 +1295,64 @@ static void topics_feed(AppState *app, const Palette *P){
                                     : tt_subscribed ? CLAY_STRING("waiting for messages...")
                                                     : CLAY_STRING("subscribe to see live messages"));
             } else {
-                /* columns come from a decoded sample of the topic's MAIN schema (the widest
-                   compatible one, exactly what the inspector shows via cap_topic_schema), not
-                   merely the newest decoded sample: a subscriber publishing a SUBSET of the
-                   schema must not narrow the available columns to its fewer fields. A sample of
-                   the main schema matches its field count and root type; fall back to the newest
-                   decoded sample when the main schema is hash-only or not yet in the feed. A
-                   schema-less feed shows one payload column. Its fields[] index maps 1:1 across
-                   every sample of that schema, so the columns drive every row. */
-                int   n_cols = 0, tmpl = -1, j, c, n_vis = 0, raw;
+                /* columns come from a decoded sample of the topic's advertised schema (the
+                   widest compatible one, exactly what the inspector shows via cap_topic_schema),
+                   not merely the newest decoded sample: a subscriber publishing a SUBSET of the
+                   schema must not narrow the available columns to its fewer fields. A FUNCTION
+                   has TWO schemas and both become column groups (see the section comment); every
+                   other kind has one. A schema-less feed shows one payload column. A group's
+                   fields[] index maps 1:1 across every sample of that group's schema, so the
+                   columns drive every row. */
+                int   n_cols = 0, c, n_vis = 0, raw, n_grp = 1, tmpl;
                 int   field_budget, time_budget, from_budget;
                 float mono_adv = tt_name_w("00000000") / 8.0f;
                 float table_w = 0.0f, field_w;
                 if (mono_adv <= 0.5f) mono_adv = UISC(7);
                 time_budget = (int)((UISC(TT_TIME_W) - UISC(TT_CELL_PADL + 2)) / mono_adv);
                 if (time_budget < 1) time_budget = 1;
-                for (j = tt_feed_n - 1; j >= 0; j--) if (tt_feed[j].decoded){ tmpl = j; break; }
-                if (app->cap && cap_topic_schema(app->cap, t->path, &tt_feed_schema)
-                    && tt_feed_schema.inlined)
-                    for (j = tt_feed_n - 1; j >= 0; j--)
-                        if (tt_feed[j].decoded
-                            && tt_feed[j].total_fields == tt_feed_schema.total_fields
-                            && !strcmp(tt_feed[j].type_name, tt_feed_schema.type_name)){ tmpl = j; break; }
-                if (tmpl >= 0) n_cols = tt_build_columns(&tt_feed[tmpl], tt_cols, CAP_MSG_FIELDS);
 
-                /* seed the visible set to the first TT_TABLE_COLS fields when the topic changes;
-                   thereafter the right-click menu owns it */
+                /* the group schemas (both accessors zero *out when the topic advertises none).
+                   Two groups only where the response shape genuinely DIFFERS: a function whose
+                   reply repeats the request type is one set of columns, not two identical ones. */
+                if (!app->cap || !cap_topic_schema(app->cap, t->path, &tt_feed_schema[0]))
+                    memset(&tt_feed_schema[0], 0, sizeof tt_feed_schema[0]);
+                if (!app->cap || t->kind != CAP_KIND_FUNCTION
+                    || !cap_topic_rsp_schema(app->cap, t->path, &tt_feed_schema[1])
+                    || tt_feed_schema[1].hash == tt_feed_schema[0].hash)
+                    memset(&tt_feed_schema[1], 0, sizeof tt_feed_schema[1]);
+                else n_grp = 2;
+
+                tmpl = tt_template(0, n_grp);
+                if (tmpl >= 0) n_cols = tt_build_columns(&tt_feed[tmpl], tt_cols, 0, TT_MAX_COLS,
+                                                         n_grp > 1 ? "req." : NULL, 0);
+                if (n_grp > 1 && (tmpl = tt_template(1, n_grp)) >= 0)
+                    n_cols = tt_build_columns(&tt_feed[tmpl], tt_cols, n_cols, TT_MAX_COLS,
+                                              "rsp.", 1);
+
+                /* seed the visible set when the topic changes; thereafter the right-click menu
+                   owns it. Columns that appear LATER are seeded too (a function's response
+                   columns only exist once the first reply decodes, and must not be born hidden),
+                   which leaves the user's existing toggles alone. */
                 if (app->col_vis_topic != app->sel_topic){
                     app->col_vis_topic = app->sel_topic;
                     if (ui_menu_is_open(tt_cols)) ui_menu_close();
-                    app->n_col_vis = 0;
-                    for (c = 0; c < n_cols && c < TT_TABLE_COLS; c++) app_col_toggle(app, tt_cols[c].name);
+                    app->n_col_vis  = 0;
+                    tt_seeded_cols  = 0;
+                }
+                if (n_cols < tt_seeded_cols) tt_seeded_cols = n_cols;   /* the schema shrank */
+                if (n_cols > tt_seeded_cols){
+                    int per_grp = n_grp > 1 ? TT_GROUP_COLS : TT_TABLE_COLS, shown[2];
+                    shown[0] = shown[1] = 0;
+                    for (c = 0; c < n_cols; c++){
+                        int g = tt_cols[c].grp;
+                        if (c < tt_seeded_cols){
+                            if (app_col_visible(app, tt_cols[c].name)) shown[g]++;
+                        } else if (shown[g] < per_grp){
+                            app_col_toggle(app, tt_cols[c].name);
+                            shown[g]++;
+                        }
+                    }
+                    tt_seeded_cols = n_cols;
                 }
                 for (c = 0; c < n_cols; c++)
                     if (app_col_visible(app, tt_cols[c].name)) tt_vis[n_vis++] = tt_cols[c];
@@ -1301,7 +1394,8 @@ static void topics_feed(AppState *app, const Palette *P){
                            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
                         for (i = 0; i < tt_feed_n; i++)
                             tt_table_row(app, P, t->path, &tt_feed[i], i, tt_vis, n_vis, field_w,
-                                         field_budget, time_budget, from_budget, t->kind, raw);
+                                         field_budget, time_budget, from_budget, t->kind, raw,
+                                         n_grp);
                     }
                     ui_scrollbar(P, CLAY_ID("topics_feed_scroll"));
                 }

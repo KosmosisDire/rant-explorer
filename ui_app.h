@@ -78,8 +78,10 @@ typedef struct {
     float    feed_prev_scroll_y;/* the scroll offset we left set last frame (detects user scroll) */
 
     /* message-feed table columns: a set of VISIBLE field-name hashes. Right-click the header
-       to toggle a field; seeded to the first few fields when the selected topic changes. */
-    uint64_t col_vis[CAP_MSG_FIELDS];
+       to toggle a field; seeded to the first few fields when the selected topic changes (and
+       for columns that appear later). Sized for TWO schemas: a function feed carries the
+       request and response field sets side by side, prefixed req./rsp. */
+    uint64_t col_vis[CAP_MSG_FIELDS * 2];
     int      n_col_vis;
     int      col_vis_topic;     /* sel_topic the set was seeded for (-1 = unseeded) */
     int      col_show_time;     /* the fixed time / sender columns: toggled from the same

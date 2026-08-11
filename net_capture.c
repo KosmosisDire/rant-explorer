@@ -169,6 +169,8 @@ typedef struct {
     uint16_t preview_len;
     int      mine;                        /* 1 = we published it (local echo) */
     int      forced;                      /* variable value published FORCED (prefix flag) */
+    int      call_status;                 /* function reply: DartCallStatus (nonzero = failed) */
+    char     call_msg[DART_CALL_MSG_MAX + 1];   /* function reply: DartResponse.message */
     int      decoded;                     /* 1 = fields[] holds the reflected decode */
     int      n_fields, total_fields;
     char     type_name[DART_TOPIC_NAME_MAX + 1];   /* sender's schema root name when decoded */
@@ -561,6 +563,7 @@ static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t
         m->preview_len = c;
     }
     m->mine = mine; m->forced = 0;
+    m->call_status = 0; m->call_msg[0] = '\0';   /* the slot is reused: never inherit */
     snprintf(m->sender, sizeof m->sender, "%.*s", (int)sender.len, sender.data ? sender.data : "");
     s->head = (s->head + 1) % CAP_FEED_MAX;
     if (s->count < CAP_FEED_MAX) s->count++;
@@ -1156,6 +1159,7 @@ typedef struct {
     uint32_t kept;                /* bytes kept in data[] */
     uint64_t recv_us;             /* arrival (node monotonic): taken here, not at the drain */
     uint64_t written_us;          /* the provider's write stamp (0 = synthesized outcome) */
+    char     msg[DART_CALL_MSG_MAX + 1];   /* DartResponse.message (status text if none sent) */
     uint8_t  data[CAP_REPLY_MAX];
 } CapReplyPending;
 static CapReplyPending cap_replies[CAP_REPLY_PENDING];
@@ -1169,6 +1173,10 @@ static void cap_fn_on_reply(const DartResponse *r){
         pr->s = s; pr->status = (int)r->status; pr->provider = r->provider;
         pr->recv_us = i_dart_node_now_us(cap_node);   /* now: the drain is a frame away */
         pr->written_us = r->written_us;
+        {   size_t ml = r->message.len < sizeof pr->msg ? r->message.len : sizeof pr->msg - 1;
+            if (ml) memcpy(pr->msg, r->message.data, ml);
+            pr->msg[ml] = 0;
+        }
         pr->len  = (uint32_t)r->data.len;
         pr->kept = r->data.len > CAP_REPLY_MAX ? CAP_REPLY_MAX : (uint32_t)r->data.len;
         if (pr->kept) memcpy(pr->data, r->data.data, pr->kept);
@@ -1201,19 +1209,20 @@ static void cap_drain_replies(DartNode *node){
                 break;
             }
         s->n_msgs++;
-        if (pr->status != 0){   /* a failed call: the outcome text IS the feed entry */
-            static const char *st[] = { "OK", "APP_ERROR", "NO_HANDLER", "TIMEOUT", "PEER_LOST" };
-            char text[64];
-            snprintf(text, sizeof text, "call failed: %s",
-                     (pr->status > 0 && pr->status <= 4) ? st[pr->status] : "?");
-            cap_ring_push(s, dart_cstr(pr->provider ? sender : "(no reply)"),
-                          text, strlen(text), 0, NULL, pr->recv_us, pr->written_us);
-        } else {
-            /* decode with our response-schema copy when the reply arrived whole */
+        {   /* one shape for every outcome: the payload decodes with our response-schema copy
+               when it arrived whole and validates (a FAILED call's structured payload decodes
+               too, if the app shaped it like the response), and the response message + status
+               ride the record so the UI shows them (failed feed rows + the inspect card) */
             const DartSchema *sch = (pr->kept == pr->len) ? s->rsp_schema : NULL;
+            int newest;
             if (sch && !dart_schema_validate(sch, dart_bytes(pr->data, pr->kept))) sch = NULL;
-            cap_ring_push(s, dart_cstr(sender), pr->data, pr->kept, 0, sch,
-                          pr->recv_us, pr->written_us);
+            cap_ring_push(s, dart_cstr(pr->provider ? sender : "(no reply)"), pr->data, pr->kept,
+                          0, sch, pr->recv_us, pr->written_us);
+            newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
+            if (s->ring){   /* ring is NULL only if the push OOM'd */
+                s->ring[newest].call_status = pr->status;
+                snprintf(s->ring[newest].call_msg, sizeof s->ring[newest].call_msg, "%s", pr->msg);
+            }
         }
     }
 }
@@ -1925,6 +1934,8 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
         o->preview_len = m->preview_len;
         o->mine        = m->mine;
         o->forced      = m->forced;
+        o->call_status = m->call_status;
+        snprintf(o->call_msg, sizeof o->call_msg, "%s", m->call_msg);
         o->decoded     = m->decoded;
         o->n_fields    = m->n_fields;
         o->total_fields= m->total_fields;

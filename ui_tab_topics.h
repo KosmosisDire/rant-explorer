@@ -818,11 +818,27 @@ static void tt_table_row(AppState *app, const Palette *P, const char *topic, con
         if (app->col_show_time) tt_cell(P, UISC(TT_TIME_W), tbuf, time_budget, P->faint, 0);
         if (app->col_show_from) tt_cell(P, UISC(TT_FROM_W), fbuf, from_budget,
                                         m->forced ? P->amber : m->mine ? P->accent : P->dim, 0);
-        if (raw || !m->decoded){
+        if (m->call_status){
+            /* a failed call: the response message leads (never omitted), the payload's
+               preview follows when the provider attached structured failure data */
+            char pvbuf[CAP_MSG_PREVIEW + 1], failbuf[sizeof m->call_msg + CAP_MSG_PREVIEW + 32];
+            int  fn = snprintf(failbuf, sizeof failbuf, "call failed: %s",
+                               m->call_msg[0] ? m->call_msg : "?");
+            if (m->len && fn > 0 && fn < (int)sizeof failbuf){
+                tt_sanitize(pvbuf, (int)sizeof pvbuf, m->preview, m->preview_len);
+                snprintf(failbuf + fn, sizeof failbuf - (size_t)fn, "  |  %s", pvbuf);
+            }
+            tt_cell_grow(P, failbuf, P->amber);
+        } else if (raw || !m->decoded){
             char rawbuf[CAP_MSG_PREVIEW + 1];
             const char *pv = m->preview;
             if (!m->decoded){ tt_sanitize(rawbuf, (int)sizeof rawbuf, m->preview, m->preview_len); pv = rawbuf; }
-            tt_cell_grow(P, pv, P->text);
+            if (m->call_msg[0]){   /* an OK reply carrying debug text: show it beside the payload */
+                char okbuf[CAP_MSG_PREVIEW + sizeof m->call_msg + 8];
+                snprintf(okbuf, sizeof okbuf, "%s  --  %s", pv, m->call_msg);
+                tt_cell_grow(P, okbuf, P->text);
+            } else
+                tt_cell_grow(P, pv, P->text);
         } else {
             int grp = tt_msg_group(m, n_grp);
             for (c = 0; c < n_show; c++){
@@ -1716,6 +1732,11 @@ static void topics_msg_inspect(AppState *app, const Palette *P){
             tt_msg_meta_row(P, CLAY_STRING("Type"),
                             m->decoded && m->type_name[0] ? ui_str(m->type_name) : CLAY_STRING("raw bytes"),
                             m->decoded && m->type_name[0] ? P->accent : P->dim);
+            if (m->call_status)   /* a failed call: its status + response message */
+                tt_msg_meta_row(P, CLAY_STRING("Failed"),
+                                ui_fmt("%s", m->call_msg[0] ? m->call_msg : "?"), P->amber);
+            else if (m->call_msg[0])   /* an OK reply carrying debug text */
+                tt_msg_meta_row(P, CLAY_STRING("Message"), ui_fmt("%s", m->call_msg), P->text);
         }
 
         if (m->decoded){

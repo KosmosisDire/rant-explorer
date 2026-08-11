@@ -203,6 +203,12 @@ typedef struct {
     uint16_t preview_len;            /* bytes filled in preview[] */
     int      mine;                   /* 1 = we published it (local echo) */
     int      forced;                 /* VARIABLE value: the owner published it FORCED (prefix flag) */
+    int      call_status;            /* FUNCTION reply: its DartCallStatus (nonzero = the call
+                                        failed); 0 on every other entry */
+    char     call_msg[256];          /* FUNCTION reply: the response message (DartResponse.message:
+                                        the provider's text, or default status text on a failure;
+                                        "" on an OK reply that carried none and on non-replies).
+                                        Sized to DART_CALL_MSG_MAX + 1. */
     int      decoded;                /* 1 = fields[] holds the reflected decode */
     int      n_fields;               /* fields filled (capped to CAP_MSG_FIELDS) */
     int      total_fields;           /* fields the schema actually has */

@@ -1740,6 +1740,8 @@ static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer
 
     p->n_pub = p->n_sub = 0;
     memset(&it, 0, sizeof it);
+    it.include_dropped = 1;   /* the explorer SHOWS ghosts (state CAP_DROPPED), so it opts
+                                 into the dropped-peer walk the API now refuses by default */
     while (dart_node_peer_entity_next(node, dp->id, &it, &ei)){
         /* provides = the entity's source side (publisher / provider / owner / emitter);
            consumes = its sink side. An entity on both sides lands in both lists. Names

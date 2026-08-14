@@ -238,7 +238,9 @@ int  cap_topic_clear(Capture *cap, const char *topic);
    widest compatible schema (preferring a publisher, which owns the wire). Endpoints whose
    schemas are subset-compatible (dart_schema_subset, the C matcher's rule) agree; only a
    structurally incompatible schema sets hash_conflict. */
-#define CAP_SCHEMA_FIELDS 24    /* top-level fields captured per schema */
+#define CAP_SCHEMA_FIELDS 32    /* fields captured per schema (a standard composite like
+                                   Pose flattens to ~10, so a schema embedding a few of
+                                   them needs headroom over the old 24) */
 #define CAP_ENUM_VARIANTS 16    /* enum option names carried per field (for the publish-form dropdown) */
 #define CAP_ENUM_NAME     28    /* bytes per enum option name (truncated) */
 
@@ -251,19 +253,25 @@ enum {
     CAP_K_F32, CAP_K_F64, CAP_K_BOOL,
     CAP_K_ARR, CAP_K_STRUCT, CAP_K_STR,
     CAP_K_VSTR, CAP_K_VARR, CAP_K_MAP,   /* variable kinds: live-sized, ride the message tail */
-    CAP_K_ENUM                           /* named integer (mirrors DART_ENUM): a dropdown of variants */
+    CAP_K_ENUM,                          /* named integer (mirrors DART_ENUM): a dropdown of variants */
+    CAP_K_NAMED                          /* a nominal tag; reflection unwraps it into .type_name,
+                                            so a field never reports this as its own .kind */
 };
 
 typedef struct {
     char     name[CAP_TOPIC_CAP];  /* field's own name */
-    char     type[24];             /* display type: "u64", "u8[256]", "f32[]", "map", "enum<u8>", "struct" */
-    uint8_t  kind;                 /* CAP_K_* of the field itself */
+    char     type[32];             /* display type: "u64", "u8[256]", "Float3[4]", "map", "Pose" */
+    char     type_name[24];        /* the field type's NAME ("Pose"), "" when anonymous */
+    char     elem_name[24];        /* an array ELEMENT type's name ("Float3"), "" when anonymous */
+    uint8_t  kind;                 /* CAP_K_* of the field itself (a NAMED type reports what it wraps) */
     uint8_t  elem;                 /* CAP_K_* of an array's element (ARR/VARR) or an ENUM's backing, else 0 */
     uint16_t count;                /* array element count (kind == CAP_K_ARR), else 0 */
     uint16_t str_cap;              /* string capacity (STR field or STR-element array), else 0 */
+    uint16_t arr_parent;           /* flat index of the enclosing struct ARRAY, 0xFFFF for none */
     uint8_t  depth;                /* 0 = top level; nested members are one deeper */
     uint32_t offset;               /* absolute byte offset in a message; 0 for variable kinds */
     uint32_t size;                 /* byte size of the field; 0 for variable kinds */
+    uint32_t elem_size;            /* bytes of one array element, else 0 */
     uint8_t  n_variants;           /* ENUM: option count (capped to CAP_ENUM_VARIANTS), else 0 */
     char     variants[CAP_ENUM_VARIANTS][CAP_ENUM_NAME];  /* ENUM: option names (the dropdown choices) */
 } CapSchemaField;

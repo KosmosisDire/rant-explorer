@@ -1999,10 +1999,21 @@ static const char *cap_kind_str(uint8_t kind){
 }
 
 /* a field's DSL type spelling: "u64", "string<33>", "f32[8]", "string<16>[]", "map",
-   "enum<u8>". A struct is NOT spelled here: in the DSL it is `name: { members }`, handled
-   by the caller. An enum's backing integer kind is reported in fi->elem. */
+   "enum<u8>", and a NAMED type by its name ("Pose", "Float3[4]"). A struct is NOT spelled
+   here: in the DSL it is `name: { members }`, handled by the caller. An enum's backing
+   integer kind is reported in fi->elem. */
 static void cap_field_type_str(char *dst, size_t cap, const DartSchemaFieldInfo *fi){
-    if (fi->kind == DART_ENUM)
+    if (fi->type_name.len)                        /* the name IS the type (`at: Pose`) */
+        snprintf(dst, cap, "%.*s", (int)fi->type_name.len, fi->type_name.data);
+    else if (fi->elem_name.len && fi->kind == DART_ARR)
+        snprintf(dst, cap, "%.*s[%u]", (int)fi->elem_name.len, fi->elem_name.data, fi->count);
+    else if (fi->elem_name.len && fi->kind == DART_VARR)
+        snprintf(dst, cap, "%.*s[]", (int)fi->elem_name.len, fi->elem_name.data);
+    else if (fi->kind == DART_ARR && fi->elem == DART_STRUCT)
+        snprintf(dst, cap, "{..}[%u]", fi->count);
+    else if (fi->kind == DART_VARR && fi->elem == DART_STRUCT)
+        snprintf(dst, cap, "{..}[]");
+    else if (fi->kind == DART_ENUM)
         snprintf(dst, cap, "enum<%s>", cap_kind_str(fi->elem));
     else if (fi->kind == DART_STR)
         snprintf(dst, cap, "string<%u>", fi->str_cap);
@@ -2035,6 +2046,12 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
                                 || fi.kind == DART_ENUM) ? fi.elem : 0);   /* ENUM: the backing kind */
         f->count   = (uint16_t)(fi.kind == DART_ARR ? fi.count : 0);
         f->str_cap = fi.str_cap;                                     /* set for STR + STR-element arrays */
+        snprintf(f->type_name, sizeof f->type_name, "%.*s",
+                 (int)fi.type_name.len, fi.type_name.data ? fi.type_name.data : "");
+        snprintf(f->elem_name, sizeof f->elem_name, "%.*s",
+                 (int)fi.elem_name.len, fi.elem_name.data ? fi.elem_name.data : "");
+        f->arr_parent = fi.arr_parent;                               /* a member of a struct array */
+        f->elem_size  = fi.elem_size;
         f->depth  = (uint8_t)(fi.depth > 255 ? 255 : fi.depth);
         f->offset = fi.offset;
         f->size   = fi.size;

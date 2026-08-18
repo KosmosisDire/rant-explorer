@@ -8,6 +8,10 @@ project(dart_explorer C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# Static CRT (see the module): a copied exe must run with no VC++ redistributable.
+# Before FetchContent, so SDL3 and vendored freetype build against the same runtime.
+include("${CMAKE_CURRENT_SOURCE_DIR}/../tools/static_runtime.cmake")
+
 # Standalone: own the output dir and define a minimal `dart` -> ../dist. Under the
 # root build the `dart` target already exists (with dist include + regeneration).
 if(NOT TARGET dart)

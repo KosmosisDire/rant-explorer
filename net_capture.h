@@ -65,9 +65,9 @@ typedef enum { CAP_ST_ACTIVE = 0, CAP_ST_DROPPED = 1, CAP_ST_GONE = 2 } CapState
 /* ENTITY kind, values mirroring DartEntityKind (patterns/core.h). The capture layer walks
    peers through the canonical entity reflection (dart_node_peer_entity_next), so pattern
    channels (f@req / f@rsp / v@set) never reach the UI: a function or variable is ONE entry
-   under its base name, a signal one entry, everything else a plain topic. */
+   under its base name, everything else a plain topic. */
 enum {
-    CAP_KIND_TOPIC = 0, CAP_KIND_FUNCTION, CAP_KIND_VARIABLE, CAP_KIND_SIGNAL
+    CAP_KIND_TOPIC = 0, CAP_KIND_FUNCTION, CAP_KIND_VARIABLE
 };
 
 typedef struct {
@@ -313,8 +313,8 @@ int  cap_topic_schema_dsl(const Capture *cap, const char *topic, int rsp, char *
 int  cap_variable_force_form(Capture *cap, const char *topic, const char *const *values, int n_values);
 int  cap_variable_unforce(Capture *cap, const char *topic);
 
-/* 1 while a send on `topic` is PARKED waiting for its match to resolve (a variable op,
-   signal emit, or best-effort publish fired while the announce/detail cycle was still
+/* 1 while a send on `topic` is PARKED waiting for its match to resolve (a variable op or
+   a best-effort publish fired while the announce/detail cycle was still
    verifying a candidate receiver). cap_poll flushes it the moment matching resolves and
    drops it loudly after a few seconds; the UI shows a sending indicator meanwhile. */
 int  cap_topic_send_pending(const Capture *cap, const char *topic);

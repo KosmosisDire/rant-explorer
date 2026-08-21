@@ -25,7 +25,7 @@ static CapSchema   tt_feed_schema[2];   /* the topic's schemas, for picking the 
                                            [1] a function's RESPONSE (empty for every other kind) */
 
 /* entity glyph for a topic's kind: the capture layer folds pattern channels through the
-   canonical reflection walk, so a function/variable/signal arrives as ONE entity and this
+   canonical reflection walk, so a function or variable arrives as ONE entity and this
    is a straight kind -> icon map. Returns 1 if it drew. Colored per family for a quick scan. */
 static int tt_kind_icon(const Palette *P, int kind){
     IconId id; Clay_Color c;
@@ -33,7 +33,6 @@ static int tt_kind_icon(const Palette *P, int kind){
         case CAP_KIND_TOPIC:    id = ICON_RSS;      c = P->dim;    break;
         case CAP_KIND_FUNCTION: id = ICON_FUNCTION; c = P->accent; break;
         case CAP_KIND_VARIABLE: id = ICON_VARIABLE; c = P->amber;  break;
-        case CAP_KIND_SIGNAL:   id = ICON_SIGNAL;   c = P->green;  break;
         default: return 0;
     }
     ui_icon(id, 14, c);
@@ -44,17 +43,15 @@ static const char *tt_kind_label(const Topic *t){
         case CAP_KIND_FUNCTION: return t->incomplete ? "function (half advertised)" : "function";
         case CAP_KIND_VARIABLE: return t->incomplete ? "variable (half advertised)"
                                      : (t->writable ? "variable" : "variable (read-only)");
-        case CAP_KIND_SIGNAL:   return "signal";
         default: return "topic";
     }
 }
-/* the send verb the composer/form buttons carry: sending IS calling / setting / emitting
-   for a pattern entity (the capture layer routes it) */
+/* the send verb the composer/form buttons carry: sending IS calling / setting for a
+   pattern entity (the capture layer routes it) */
 static const char *tt_send_verb(const Topic *t){
     switch (t->kind){
         case CAP_KIND_FUNCTION: return "Call";
         case CAP_KIND_VARIABLE: return "Set";
-        case CAP_KIND_SIGNAL:   return "Emit";
         default: return "Send";
     }
 }
@@ -158,7 +155,6 @@ static void tt_filter_menu(AppState *app, const Palette *P){
     TT_FM_CHK("Topics",      TT_CAT_TOPIC);
     TT_FM_CHK("Functions",   TT_CAT_FUNCTION);
     TT_FM_CHK("Variables",   TT_CAT_VARIABLE);
-    TT_FM_CHK("Signals",     TT_CAT_SIGNAL);
     TT_FM_HDR("Reliability");
     TT_FM_CHK("Reliable",    TT_CAT_RELIABLE);
     TT_FM_CHK("Best-effort", TT_CAT_BEST_EFF);
@@ -389,9 +385,9 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
                 ui_icon(row->open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12, P->dim);
             }
         }
-        /* topic glyph: a plain topic shows the hash (a named channel); a function/variable/
-           signal shows its type icon instead (tt_kind_icon maps the kind). A namespace branch
-           has no topic and shows nothing here. */
+        /* topic glyph: a plain topic shows the hash (a named channel); a function or
+           variable shows its type icon instead (tt_kind_icon maps the kind). A namespace
+           branch has no topic and shows nothing here. */
         if (row->has_topic){
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(18)), .height = CLAY_SIZING_GROW(0) },
                                .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
@@ -549,7 +545,7 @@ static void topics_tree(AppState *app, const Palette *P){
             snprintf(lbl, sizeof lbl, "%s%s", u->name, u->n_children > 0 ? "/" : "");
             w = UISC(10 + u->depth * 15 + 24) + gap + tt_name_w(lbl);
             /* a topic row prefixes a kind glyph (hash for a plain topic, the type icon for a
-               function/variable/signal), so reserve the same width the row subtracts from its
+               function or variable), so reserve the same width the row subtracts from its
                text budget, else its name gets trimmed. A namespace branch has none. */
             if (u->topic >= 0) w += UISC(18) + gap;
             if (w > name_max) name_max = w;
@@ -1649,7 +1645,6 @@ static void topics_publish(AppState *app, const Palette *P, const Topic *t){
         CLAY_TEXT(ui_str(t->path), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_BODY), .textColor = P->text }));
         ui_section_label(P, t->kind == CAP_KIND_FUNCTION ? CLAY_STRING("COMPOSE CALL")
                           : t->kind == CAP_KIND_VARIABLE ? CLAY_STRING("SET VALUE")
-                          : t->kind == CAP_KIND_SIGNAL   ? CLAY_STRING("EMIT SIGNAL")
                           :                                CLAY_STRING("COMPOSE MESSAGE"));
         topics_composer(app, P, t);
     }

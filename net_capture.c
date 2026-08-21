@@ -65,7 +65,7 @@ typedef struct {
     char     name[DART_TOPIC_NAME_MAX + 1];   /* entity base name (mangling never surfaces) */
     uint16_t index;
     int      reliable;       /* offered (pub) / requested (sub) */
-    uint8_t  kind;           /* DartEntityKind: 0 topic, else function/variable/signal */
+    uint8_t  kind;           /* DartEntityKind: 0 topic, else function/variable */
     uint8_t  writable;       /* variable: a set channel is advertised */
     uint8_t  forceable;      /* variable: the owner permits force/unforce (allow_force) */
     uint8_t  incomplete;     /* pattern half-pair */
@@ -190,13 +190,13 @@ typedef struct {
     char         name[DART_TOPIC_NAME_MAX + 1];
     DartTopic *ch[2];                  /* [0] best-effort, [1] reliable; NULL until first needed.
                                           For a VARIABLE ch[1] is the value channel (subscribe side);
-                                          for a SIGNAL the one shared channel; a FUNCTION has none. */
+                                          a FUNCTION has none. */
     DartTopic   *set_ch;                 /* VARIABLE: our name@set publisher (kind VAR_SET) */
     /* one deadline-bounded pending send, parked when a send races the forming match (the
        core's blocking match wait is disabled here: the UI thread must never stall). Newest
        send overwrites it; cap_poll flushes it the moment matching resolves (or on expiry
        drops it with a log line, never silently). Covers the sends retention cannot: a
-       variable set/force/unforce op, a signal emit, a best-effort publish. */
+       variable set/force/unforce op, a best-effort publish. */
     uint8_t     *pend_data;              /* malloc'd payload (may be empty); pend_used gates */
     uint32_t     pend_len;
     uint8_t      pend_op;                /* VARIABLE: the set-channel op byte */
@@ -1107,7 +1107,7 @@ int cap_meta_stats(const Capture *cap, CapMetaStats *out){
 
 /* ---- pattern-entity interop -----------------------------------------------------------
    Joining a pattern entity's data plane needs KIND-matched channels (the kind gate refuses
-   a plain topic against a variable/signal channel) and, for functions, a real caller (the
+   a plain topic against a variable channel) and, for functions, a real caller (the
    replies are DIRECTED to their caller, so an observer can only ever see its own calls).
    This block is the one place in the explorer that knows the wire constants: the channel
    kinds and prefixes mirror src/patterns/core.c (DART__VAR_PREFIX / DART__SET_PREFIX). */
@@ -1138,7 +1138,7 @@ static uint8_t cap_entity_kind(const char *name, int *writable){
 
 /* the CHANNEL name that carries an entity's schema: a function's request channel
    ("name@req"; rsp = "name@rsp"), everything else the bare name (a variable's value
-   channel and a signal ARE the bare name on the wire) */
+   channel IS the bare name on the wire) */
 static void cap_primary_channel_name(char *dst, size_t cap, const char *topic, uint8_t kind,
                                      int rsp){
     if (kind == CAP_KIND_FUNCTION) snprintf(dst, cap, "%s%s", topic, rsp ? "@rsp" : "@req");
@@ -1232,27 +1232,21 @@ static int cap_sub_reconcile_topic(CapSub *s, DartNode *node, int want);
 /* bring the topic's live channels in line with subscribed/publishing. A plain topic takes
    the original path (cap_sub_reconcile_topic); a pattern entity gets kind-matched channels,
    always reliable: a VARIABLE subscribes its value channel and publishes over its own
-   name@set channel (never the value: that would claim ownership), a SIGNAL rides one
-   kind-matched channel both ways, and a FUNCTION opens a caller handle (subscribe and
-   publish both mean "be a caller": the feed can only ever show our own calls). */
+   name@set channel (never the value: that would claim ownership), and a FUNCTION opens a
+   caller handle (subscribe and publish both mean "be a caller": the feed can only ever
+   show our own calls). */
 static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
     if (!s->kind && !s->ch[0] && !s->ch[1] && !s->fn)
         s->kind = cap_entity_kind(s->name, NULL);   /* resolve once, before any channel exists */
 
-    if (s->kind == CAP_KIND_VARIABLE || s->kind == CAP_KIND_SIGNAL){
-        int variable = (s->kind == CAP_KIND_VARIABLE);
-        DartRole role = variable
-                      ? (s->subscribed ? DART_SUB_ONLY : DART_INACTIVE)
-                      : ((s->subscribed && s->publishing) ? DART_PUBSUB
-                        : s->subscribed ? DART_SUB_ONLY
-                        : s->publishing ? DART_PUB_ONLY : DART_INACTIVE);
+    if (s->kind == CAP_KIND_VARIABLE){
+        DartRole role = s->subscribed ? DART_SUB_ONLY : DART_INACTIVE;
         if (!s->ch[1] && role != DART_INACTIVE){
             DartSchema *sch = cap_topic_schema_parse(node, s->name);
             DartTopic *ch = i_dart_node_create_pattern_topic(node, s->name, role, sch,
-                     &(DartTopicOpts){ .qos = { .reliability = DART_RELIABLE,
-                                                .catch_up = (uint16_t)(variable ? 1 : 0) } },
-                     variable ? DART_KIND_VARIABLE : DART_KIND_SIGNAL,
-                     variable ? CAP_VAR_PREFIX : 0, 0, 0 /*forceable: observer never owns*/, NULL, NULL);
+                     &(DartTopicOpts){ .qos = { .reliability = DART_RELIABLE, .catch_up = 1 } },
+                     DART_KIND_VARIABLE, CAP_VAR_PREFIX, 0,
+                     0 /*forceable: observer never owns*/, NULL, NULL);
             if (sch) dart_schema_free(sch, cap_schema_alloc, NULL);
             if (!ch) return 0;
             dart_topic_dispatch(ch, 0, 0);            /* queued: deliveries drain on the UI thread */
@@ -1263,7 +1257,7 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
         } else if (s->ch[1]){
             dart_topic_set_role(s->ch[1], role);
         }
-        if (variable && s->publishing && !s->set_ch){
+        if (s->publishing && !s->set_ch){
             char sn[DART_TOPIC_NAME_MAX + 8];
             DartSchema *sch = cap_topic_schema_parse(node, s->name);   /* set payload = value schema */
             snprintf(sn, sizeof sn, "%s@set", s->name);
@@ -1396,8 +1390,7 @@ int cap_declare_publish(Capture *cap, const char *topic){
 }
 
 /* route one outgoing payload by entity kind: plain publish, variable SET (op 0 over the
-   set channel), signal emit (its own channel), or a function CALL (reply parks for
-   cap_poll). Returns 1 and fills *echo_sch with the schema the local echo decodes with. */
+   set channel), or a function CALL (reply parks for cap_poll). Returns 1 and fills *echo_sch with the schema the local echo decodes with. */
 #define CAP_SET_OP_FORCE   0x01u   /* set-channel ops, mirroring src/patterns/core.c */
 #define CAP_SET_OP_UNFORCE 0x02u
 
@@ -1428,8 +1421,7 @@ static int cap_send_park(CapSub *s, const void *data, size_t len, uint8_t var_op
     s->pend_used = 1;
     s->pend_expire_ms = cap_now_ms() + CAP_PEND_EXPIRE_MS;
     cap_logf("%s %s parked: match still forming (flushes when it resolves)",
-             s->kind == CAP_KIND_SIGNAL ? "EMIT" : s->kind == CAP_KIND_VARIABLE ? "SET" : "PUBLISH",
-             s->name);
+             s->kind == CAP_KIND_VARIABLE ? "SET" : "PUBLISH", s->name);
     return 1;
 }
 
@@ -1471,11 +1463,11 @@ static int cap_send_routed(CapSub *s, const void *data, size_t len, uint8_t var_
     *echo_sch = dart_topic_schema(ch);
     /* Retention (reliable + catch_up, the explorer's plain-topic default) already covers a
        send racing the forming match: the writer replays it. The un-retainable sends (a
-       variable set/force/unforce op is multi-writer, a signal emit never latches, a
-       best-effort publish never replays) PARK instead when a match is still resolving:
+       variable set/force/unforce op is multi-writer, a best-effort publish never
+       replays) PARK instead when a match is still resolving:
        the node's blocking match wait is disabled here (never stall the UI thread), so the
        pending slot + cap_pend_poll are its async form, driven by dart_topic_ready. */
-    if ((s->kind == CAP_KIND_VARIABLE || s->kind == CAP_KIND_SIGNAL || !s->reliable)
+    if ((s->kind == CAP_KIND_VARIABLE || !s->reliable)
         && dart_topic_match_count(ch) == 0 && !dart_topic_ready(ch))
         return cap_send_park(s, data, len, var_op);
     return cap_send_now(s, ch, data, len, var_op);
@@ -1710,7 +1702,7 @@ static void cap_endpoint_fill(CapTopic *e, const DartEntityInfo *ei){
 /* copy one peer's facts out of the node's zero-copy view into its observer record:
    discovery-level name/addr + liveness, then the peer's advertised ENTITIES via the
    patterns layer's canonical reflection walk (dart_node_peer_entity_next), so pattern
-   channels arrive already folded into functions/variables/signals and this TU never
+   channels arrive already folded into functions and variables and this TU never
    sees the @-mangling. Each direction's list grows to the peer's actual topic count
    (cap_grow), so there is no fixed ceiling. */
 static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer *dp){
@@ -2236,8 +2228,8 @@ static void cap_schema_poll(DartNode *node){
     }
 }
 
-/* the schema query for one of an entity's channels: the base name for topics/variables/
-   signals (their primary channel IS the bare name), the mangled request or response
+/* the schema query for one of an entity's channels: the base name for topics and
+   variables (their primary channel IS the bare name), the mangled request or response
    channel for a function. `rsp` asks a function for its response schema. */
 static int cap_entity_schema(const Capture *cap, const char *topic, int rsp, CapSchema *out){
     DartNode *node = cap ? (DartNode *)cap->rt : NULL;

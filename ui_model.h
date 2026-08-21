@@ -65,7 +65,7 @@ typedef struct {
 typedef struct {
     char path[96];               /* "sensors/lidar/points"; the tree (ui_tree.h) groups
                                      segments split on '/' OR '.' */
-    int  kind;                   /* CAP_KIND_*: plain topic, or a function/variable/signal ENTITY */
+    int  kind;                   /* CAP_KIND_*: plain topic, or a function/variable ENTITY */
     int  writable;               /* variable: an owner advertises a set channel */
     int  forceable;              /* variable: an owner advertises allow_force (force/unforce permitted) */
     int  incomplete;             /* pattern half-pair (a diagnosable misadvertisement) */

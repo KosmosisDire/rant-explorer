@@ -39,8 +39,11 @@ void cap_stop(Capture *cap);
    sourced through the node's peer API (dart_node_peers): the node decodes the
    announce-metadata overlay for us, so net_capture never parses it itself.
 
+   Only ACTIVE peers appear: a peer the node reports dropped or gone leaves the
+   snapshot (and so the UI) on the next rebuild.
+
    Two origins are kept distinct on purpose. Discovery-level facts: the peer's name,
-   advertised unicast locator, liveness, and how long we've observed it. Announce-
+   advertised unicast locator, and how long we've observed it. Announce-
    metadata facts (the transport overlay the node hands back decoded): its UDP
    fragment size and pub/sub interest list, with each entry's offered/requested
    reliability. Node-internal facts (CPU, memory, msg counts, a peer's transport
@@ -59,8 +62,6 @@ void cap_stop(Capture *cap);
                                 subscribed topic shows live data in the table, no artificial limit.
                                 CapSubInfo is ~130 B, so the fixed array is ~2 MB (not the feed
                                 itself: the per-topic message ring is lazily allocated, see CapSub). */
-
-typedef enum { CAP_ST_ACTIVE = 0, CAP_ST_DROPPED = 1, CAP_ST_GONE = 2 } CapState;
 
 /* ENTITY kind, values mirroring DartEntityKind (patterns/core.h). The capture layer walks
    peers through the canonical entity reflection (dart_node_peer_entity_next), so pattern
@@ -81,7 +82,6 @@ typedef struct {
 } CapEndpoint;
 
 typedef struct {
-    CapState state;
     int      have_meta;      /* 1 = the announce overlay was decoded (frag + interest below) */
     int      meta_stale;     /* 1 = peer advertises a newer blob version than the one we hold */
     char     name[CAP_NAME_CAP];

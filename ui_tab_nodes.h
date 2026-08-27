@@ -64,10 +64,7 @@ static Clay_String nf_clock_ms(uint64_t wall_us){   /* the same, to the millisec
                   (int)(wall_us % 1000000u) / 1000);
 }
 static Clay_String nd_state_word(NodeState s){
-    return s == NODE_ALIVE ? CLAY_STRING("ALIVE")
-         : s == NODE_JOINING ? CLAY_STRING("JOINING")
-         : s == NODE_DROPPED ? CLAY_STRING("DROPPED")
-         : CLAY_STRING("GONE");
+    return s == NODE_ALIVE ? CLAY_STRING("ALIVE") : CLAY_STRING("JOINING");
 }
 
 /* ===================================================================== left list */
@@ -81,8 +78,7 @@ static void node_group_header(const Palette *P, const Machine *m){
 }
 
 static void node_list_row(AppState *app, const Palette *P, const Node *nd, int idx){
-    int sel  = app->sel_node == idx;
-    int gone = nd->state == NODE_GONE;
+    int sel = app->sel_node == idx;
     CLAY({ .id = CLAY_IDI("node_row", (uint32_t)idx),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(36)) },
                        .padding = { .left = UISCI(12), .right = UISCI(10) },
@@ -94,17 +90,11 @@ static void node_list_row(AppState *app, const Palette *P, const Node *nd, int i
         ui_dot(UISC(8), ui_state_color(P, nd->state), UI_NONE);
         CLAY_TEXT(ui_str(nd->name),
                   CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, sel ? WT_SEMI : WT_REG, FS_BODY),
-                                     .textColor = gone ? P->faint : P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                                     .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer */
         if (nd->state == NODE_JOINING)
             CLAY_TEXT(CLAY_STRING("joining"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL),
                                                                 .textColor = P->amber, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-        else if (nd->state == NODE_DROPPED)
-            CLAY_TEXT(CLAY_STRING("dropped"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL),
-                                                                .textColor = P->amber, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-        else if (gone)
-            CLAY_TEXT(CLAY_STRING("gone"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL),
-                                                            .textColor = P->gray, .wrapMode = CLAY_TEXT_WRAP_NONE }));
     }
 }
 
@@ -235,7 +225,7 @@ static void node_endpoint_list(const Palette *P, const Dataset *D,
    unlike the wire-derived sections above. The poll's per-topic counters are folded into
    the PUBLISHES / SUBSCRIBES lists instead of shown here. ms is the shared snapshot;
    watching = a poll is aimed here, fresh = it answered for this node. */
-static void nodes_runtime_sections(const Palette *P, const Node *nd,
+static void nodes_runtime_sections(const Palette *P,
                                    const CapMetaStats *ms, int watching, int fresh){
     ui_section_label(P, CLAY_STRING("RUNTIME  (@dart/meta)"));
     if (!fresh){
@@ -244,8 +234,7 @@ static void nodes_runtime_sections(const Palette *P, const Node *nd,
                .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
             node_kv_single(P, CLAY_STRING("Status"),
                            (watching && ms->failing >= 2) ? CLAY_STRING("no @dart/meta response")
-                         : nd->state == NODE_GONE          ? CLAY_STRING("node gone")
-                                                           : CLAY_STRING("querying..."));
+                                                          : CLAY_STRING("querying..."));
         }
     } else {
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
@@ -356,7 +345,7 @@ static void nodes_detail(AppState *app, const Palette *P){
 
             /* ===== RUNTIME: the node's own internals, served by its @dart/meta endpoint
                (a directed call once per second; see net_capture's cap_meta_poll) ===== */
-            nodes_runtime_sections(P, nd, &ms, watching, fresh);
+            nodes_runtime_sections(P, &ms, watching, fresh);
 
             ui_section_label(P, ui_fmt("PUBLISHES  %d", nd->n_pubs));
             node_endpoint_list(P, D, nd->pubs, nd->pub_rel, nd->n_pubs, fresh ? &ms : NULL, 1);

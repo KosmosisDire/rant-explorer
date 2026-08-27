@@ -121,16 +121,10 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         snprintf(n->ip,   sizeof n->ip,   "%s", cn->ip);
         n->machine = uid_machine_for(cn->ip, &n_mach);
 
-        /* discovery state -> display state. An active peer whose announce blob hasn't arrived
-           yet, or whose blob we hold is behind the version it now advertises (re-fetch pending),
-           reads as JOINING. DROPPED = silent past peer_timeout but may still resume (kept
-           prominent); GONE = BYE / gone-timeout / evicted, state freed (de-emphasized). */
-        if (cn->state == CAP_ST_ACTIVE)
-            n->state = (!cn->have_meta || cn->meta_stale) ? NODE_JOINING : NODE_ALIVE;
-        else if (cn->state == CAP_ST_DROPPED)
-            n->state = NODE_DROPPED;
-        else
-            n->state = NODE_GONE;
+        /* display state (every snapshot node is a live peer): one whose announce blob hasn't
+           arrived yet, or whose blob we hold is behind the version it now advertises
+           (re-fetch pending), reads as JOINING. */
+        n->state = (!cn->have_meta || cn->meta_stale) ? NODE_JOINING : NODE_ALIVE;
 
         n->observed_s = cn->observed_s;      /* real (observer view) */
         n->updates    = cn->updates;         /* real */
@@ -195,12 +189,11 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
        are correct even when the explorer neither publishes nor subscribes):
          - reliable_recommend: the reliability to SUBSCRIBE AS. Publisher-driven, because it
            governs what we can receive (a reliable sub refuses a best-effort publisher).
-           Reliable only if every live publisher offers it. -1 = no publishers.
-         - reliable (the DISPLAYED badge): the publishers define it when present (so a
-           publisher-present topic reads exactly as before); a topic with ONLY subscribers
-           takes THEIR reliability instead, so a reliable subscriber-only topic still reads
-           reliable. has_qos = any endpoint at all (else the badge is a dash).
-       Gone/dropped peers are ignored unless they are the only ones on that axis. */
+           Reliable only if every publisher offers it. -1 = no publishers.
+         - reliable (the DISPLAYED badge): the publishers define it when present; a topic
+           with ONLY subscribers takes THEIR reliability instead, so a reliable
+           subscriber-only topic still reads reliable. has_qos = any endpoint at all
+           (else the badge is a dash). */
     /* our own live subscription/publish state, matched by name in O(1) via the topic hash
        (folded into ONE pass over the subscriptions, so it stays cheap at the topic-ceiling
        cap): the topic light + self_sub/self_pub flags + live rate/age/jitter. Runs BEFORE
@@ -221,34 +214,22 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
     for (k = 0; k < n_top; k++){
         Topic *t = &g_topics[k];
         int j;
-        int live = 0, live_all_rel = 1, any_rel = 1, any = 0;              /* publishers */
-        int s_live = 0, s_live_all_rel = 1, s_any_rel = 1, s_any = 0;      /* subscribers */
-        for (j = 0; j < t->n_pubs; j++){
-            int rel  = t->pub_rel[j];
-            int gone = g_nodes[t->pubs[j]].state == NODE_GONE || g_nodes[t->pubs[j]].state == NODE_DROPPED;
-            any = 1;
-            if (!rel) any_rel = 0;
-            if (!gone){ live++; if (!rel) live_all_rel = 0; }   /* silent peers aren't live publishers */
-        }
-        for (j = 0; j < t->n_subs; j++){        /* subscribers set the badge only when no publisher defines it */
-            int rel  = t->sub_rel[j];
-            int gone = g_nodes[t->subs[j]].state == NODE_GONE || g_nodes[t->subs[j]].state == NODE_DROPPED;
-            s_any = 1;
-            if (!rel) s_any_rel = 0;
-            if (!gone){ s_live++; if (!rel) s_live_all_rel = 0; }
-        }
-        /* the explorer publishing this topic counts as a live publisher too, so a topic we
+        int n_pub = t->n_pubs, all_rel = 1;         /* publishers */
+        int s_all_rel = 1;                          /* subscribers */
+        for (j = 0; j < t->n_pubs; j++) if (!t->pub_rel[j]) all_rel = 0;
+        for (j = 0; j < t->n_subs; j++) if (!t->sub_rel[j]) s_all_rel = 0;
+        /* the explorer publishing this topic counts as a publisher too, so a topic we
            publish reliably to reads RELIABLE (not the peer-only best-effort default). self_pub
            was set in the O(1) subscription pass above. */
         if (t->self_pub){
-            any = 1; live++;
-            if (!t->self_pub_reliable){ any_rel = 0; live_all_rel = 0; }
+            n_pub++;
+            if (!t->self_pub_reliable) all_rel = 0;
         }
-        t->reliable_recommend = !any ? -1 : (live ? live_all_rel : any_rel);
-        if (any){                               /* publishers define the topic's QoS (unchanged) */
-            t->has_qos = 1; t->reliable = (t->reliable_recommend == 1);
-        } else if (s_any){                      /* subscriber-only: take the subscribers' QoS */
-            t->has_qos = 1; t->reliable = (s_live ? s_live_all_rel : s_any_rel);
+        t->reliable_recommend = n_pub ? all_rel : -1;
+        if (n_pub){                             /* publishers define the topic's QoS */
+            t->has_qos = 1; t->reliable = all_rel;
+        } else if (t->n_subs){                  /* subscriber-only: take the subscribers' QoS */
+            t->has_qos = 1; t->reliable = s_all_rel;
         } else {                                /* no endpoints yet */
             t->has_qos = 0; t->reliable = 0;
         }

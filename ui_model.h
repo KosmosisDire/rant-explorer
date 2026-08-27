@@ -14,7 +14,7 @@
 #define UI_MAX_NODE_TOPICS 16000
 #define UI_MAX_ENDPOINTS      64
 
-typedef enum { NODE_ALIVE, NODE_JOINING, NODE_DROPPED, NODE_GONE } NodeState;
+typedef enum { NODE_ALIVE, NODE_JOINING } NodeState;   /* dropped/gone peers never reach the UI */
 typedef enum { LVL_ERROR, LVL_WARN, LVL_INFO, LVL_DEBUG } LogLevel;
 typedef enum { QOS_BEST_EFFORT, QOS_RELIABLE } Reliability;
 
@@ -87,10 +87,9 @@ typedef struct {
     int    has_qos;              /* any endpoint (pub OR sub) declares a reliability, so the badge
                                     is meaningful; 0 = no endpoints yet, show a dash. */
     int    reliable_recommend;   /* the reliability to subscribe AS: reliable only if every
-                                    publisher we consider offers it (a mix downgrades to best
-                                    effort, since a reliable sub would refuse the best-effort
-                                    publisher); gone/dropped publishers are ignored unless they
-                                    are the only ones. -1 = no publishers (default best effort). */
+                                    publisher offers it (a mix downgrades to best effort,
+                                    since a reliable sub would refuse the best-effort
+                                    publisher). -1 = no publishers (default best effort). */
 
     /* live subscription state (the explorer can join a topic's data plane on demand), for
        the tree status light: 0 = not subscribed (grey), 1 = subscribed & healthy (green),
@@ -134,8 +133,7 @@ typedef struct {
 
 /* ---- status to color, mirroring data.js ---- */
 static inline Clay_Color ui_state_color(const Palette *P, NodeState s){
-    return s == NODE_ALIVE ? P->green : s == NODE_JOINING ? P->amber
-         : s == NODE_DROPPED ? P->amber : P->gray;   /* dropped: silent, may resume; gone: dead */
+    return s == NODE_ALIVE ? P->green : P->amber;   /* joining: announce blob still settling */
 }
 static inline Clay_Color ui_level_color(const Palette *P, LogLevel l){
     return l == LVL_ERROR ? P->red : l == LVL_WARN ? P->amber : l == LVL_INFO ? P->dim : P->faint;

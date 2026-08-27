@@ -9,7 +9,6 @@
 /* severity tint from keywords in the formatted line (the observer logs free text) */
 static Clay_Color log_color(const Palette *P, const char *line){
     if (strstr(line, "REFUSED")) return P->red;
-    if (strstr(line, "GONE"))    return P->amber;
     if (strstr(line, "DOWN"))    return P->amber;
     if (strstr(line, "UP "))     return P->green;
     return P->dim;

@@ -59,8 +59,6 @@ static int cap_grow(void *arr_ptr, int *cap, int need, size_t elem){
     return 1;
 }
 
-typedef enum { CAP_ACTIVE = 0, CAP_DROPPED = 1, CAP_GONE = 2 } CapPeerState;
-
 typedef struct {
     char     name[DART_TOPIC_NAME_MAX + 1];   /* entity base name (mangling never surfaces) */
     uint16_t index;
@@ -72,14 +70,13 @@ typedef struct {
 } CapTopic;
 
 /* one observer-side peer record, keyed by the node's local peer id. Events drive the
-   observer metrics (first_seen / updates / last_change / down) and the log; the snapshot
-   refreshes the cached facts from the node and is authoritative for state. A GONE peer is
-   kept (de-emphasized in the UI) with its last-known facts until its slot is reclaimed. */
+   observer metrics (first_seen / updates / last_change) and the log; the snapshot
+   refreshes the cached facts from the node. Only ACTIVE peers are tracked: a peer the
+   node reports dropped or gone is freed on the next snapshot and leaves the UI. */
 typedef struct {
     int          used;
     uint32_t     local_id;
-    CapPeerState state;
-    int          seen_frame;   /* the current snapshot found it in the node's peer table */
+    int          seen_frame;   /* the current snapshot found it ACTIVE in the node's peer table */
 
     /* cached facts: discovery-level (name/addr) + announce-metadata (frag/interest) */
     int      have_meta;
@@ -106,7 +103,6 @@ typedef struct {
     unsigned           updates;
     unsigned long long first_seen_ms;
     unsigned long long last_change_ms;
-    unsigned long long down_ms;
 } CapPeer;
 
 static CapPeer cap_peers[CAP_MAX_PEERS];
@@ -657,17 +653,12 @@ static CapPeer *cap_peer_find(uint32_t id){
 
 static CapPeer *cap_peer_get(uint32_t id){
     CapPeer *p = cap_peer_find(id);
-    int i, victim = -1;
-    unsigned long long oldest = ~0ull;
+    int i, victim = 0;
     if (p) return p;
 
+    /* only ACTIVE peers occupy slots and the table mirrors the node's max_peers, so a
+       free slot always exists while the node admits the peer (slot 0 is a safety net) */
     for (i = 0; i < CAP_MAX_PEERS; i++) if (!cap_peers[i].used){ victim = i; break; }
-    if (victim < 0)
-        for (i = 0; i < CAP_MAX_PEERS; i++)
-            if (cap_peers[i].state == CAP_GONE && cap_peers[i].down_ms <= oldest){ oldest = cap_peers[i].down_ms; victim = i; }
-    if (victim < 0)
-        for (i = 0; i < CAP_MAX_PEERS; i++) if (cap_peers[i].state == CAP_DROPPED){ victim = i; break; }
-    if (victim < 0) victim = 0;
 
     p = &cap_peers[victim];
     {   /* preserve the grown pub/sub buffers across the reset: the new peer refills them
@@ -784,12 +775,11 @@ static void cap_on_event(const DartEvent *ev){
         cap_logf("        interest  id=%u  pub-to=%u  sub-from=%u",
                  ev->peer, ev->publish_topics, ev->receive_topics);
         break; }
-    case DART_PEER_DOWN: {
-        CapPeer *p = cap_peer_find(ev->peer);
+    case DART_PEER_DOWN:
+        /* the record is freed by the next snapshot's sweep (a non-ACTIVE peer is not refreshed) */
         cap_schema_dirty = 1;
-        if (p) p->down_ms = cap_now_ms();
         cap_logf("DOWN  id=%u", ev->peer);
-        break; }
+        break;
     case DART_MSG_LOST: {                            /* reliable subscriber skipped past a gap */
         CapSub *s = cap_sub_by_index(ev->topic);
         if (s) s->n_drops += ev->lost_count;
@@ -1066,8 +1056,7 @@ static void cap_meta_poll(DartNode *node){
        service thread under the node lock: bracket the read) */
     dart_node_lock(node);
     for (i = 0; i < CAP_MAX_PEERS; i++)
-        if (cap_peers[i].used && cap_peers[i].state == CAP_ACTIVE
-            && !strcmp(cap_peers[i].name, cap_meta_node)){ pid = cap_peers[i].local_id; break; }
+        if (cap_peers[i].used && !strcmp(cap_peers[i].name, cap_meta_node)){ pid = cap_peers[i].local_id; break; }
     dart_node_unlock(node);
     if (!pid) return;                     /* not discovered / dropped: idle until it is */
     cap_meta_last_ms = now;
@@ -1699,8 +1688,8 @@ static void cap_endpoint_fill(CapTopic *e, const DartEntityInfo *ei){
     e->incomplete = ei->incomplete;
 }
 
-/* copy one peer's facts out of the node's zero-copy view into its observer record:
-   discovery-level name/addr + liveness, then the peer's advertised ENTITIES via the
+/* copy one ACTIVE peer's facts out of the node's zero-copy view into its observer record:
+   discovery-level name/addr, then the peer's advertised ENTITIES via the
    patterns layer's canonical reflection walk (dart_node_peer_entity_next), so pattern
    channels arrive already folded into functions and variables and this TU never
    sees the @-mangling. Each direction's list grows to the peer's actual topic count
@@ -1709,7 +1698,6 @@ static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer
     DartEntityIter it; DartEntityInfo ei;
     uint16_t frag = dart_node_peer_frag(dp);
     p->seen_frame = 1;
-    p->state      = (dp->liveness == DART_PEER_DROPPED) ? CAP_DROPPED : CAP_ACTIVE;
     p->have_meta  = (dp->meta.data && dp->meta.len) ? 1 : 0;
     p->meta_stale = (dp->adv_meta_version > dp->meta_version) ? 1 : 0;
     p->frag       = frag;
@@ -1732,8 +1720,6 @@ static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer
 
     p->n_pub = p->n_sub = 0;
     memset(&it, 0, sizeof it);
-    it.include_dropped = 1;   /* the explorer SHOWS ghosts (state CAP_DROPPED), so it opts
-                                 into the dropped-peer walk the API now refuses by default */
     while (dart_node_peer_entity_next(node, dp->id, &it, &ei)){
         /* provides = the entity's source side (publisher / provider / owner / emitter);
            consumes = its sink side. An entity on both sides lands in both lists. Names
@@ -1824,40 +1810,21 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
     }
 
     /* pull the node's zero-copy peer view (it decodes the overlay for us) and refresh each
-       observer record; peers no longer in the node's table fold to GONE, kept de-emphasized. */
+       ACTIVE peer's observer record; anything else (dropped, gone, evicted) is freed and
+       leaves the UI. The grown pub/sub buffers stay with the slot for reuse (cap_peer_get). */
     for (i = 0; i < CAP_MAX_PEERS; i++) cap_peers[i].seen_frame = 0;
     peers = dart_node_peers(node, &n_peers);
     for (slot = 0; slot < n_peers; slot++)
-        cap_peer_refresh(node, cap_peer_get(peers[slot].id), &peers[slot]);
-    for (i = 0; i < CAP_MAX_PEERS; i++){
-        CapPeer *p = &cap_peers[i];
-        if (p->used && !p->seen_frame && p->state != CAP_GONE){   /* evicted from the node table */
-            p->state = CAP_GONE;
-            if (!p->down_ms) p->down_ms = now;
-        }
-    }
-
-    /* A node stopped and brought back gets a fresh UUID (hence a new local id), so its old
-       GONE record would linger beside the new live one under the same name. Drop any GONE
-       peer whose name a present-this-frame peer now carries: the node returned, replace the
-       stale twin. (Named nodes only: auto "node-XXXX" names differ every boot by design.) */
-    for (i = 0; i < CAP_MAX_PEERS; i++){
-        CapPeer *live = &cap_peers[i];
-        int j;
-        if (!live->used || !live->seen_frame || !live->name[0]) continue;
-        for (j = 0; j < CAP_MAX_PEERS; j++){
-            CapPeer *g = &cap_peers[j];
-            if (j == i || !g->used || g->state != CAP_GONE) continue;
-            if (!strcmp(g->name, live->name)) g->used = 0;   /* free the stale GONE twin */
-        }
-    }
+        if (peers[slot].liveness == DART_PEER_ACTIVE)
+            cap_peer_refresh(node, cap_peer_get(peers[slot].id), &peers[slot]);
+    for (i = 0; i < CAP_MAX_PEERS; i++)
+        if (cap_peers[i].used && !cap_peers[i].seen_frame) cap_peers[i].used = 0;
 
     for (i = 0; i < CAP_MAX_PEERS && out->n_nodes < CAP_SNAP_NODES; i++){
         const CapPeer *p = &cap_peers[i];
         CapNode *n;
         if (!p->used) continue;
         n = &out->nodes[out->n_nodes++];
-        n->state      = (CapState)p->state;   /* CAP_ACTIVE/DROPPED/GONE align with CapState */
         n->have_meta  = p->have_meta;
         n->meta_stale = p->meta_stale;
         n->frag       = p->frag;

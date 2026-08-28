@@ -3,10 +3,10 @@
 #ifndef UI_APP_H
 #define UI_APP_H
 
-typedef enum { TAB_NODES, TAB_TOPICS, TAB_LOG } Tab;
+typedef enum { TAB_NODES, TAB_TOPICS } Tab;
 typedef enum { DRAWER_INSPECT, DRAWER_PUBLISH } DrawerTab;   /* the Topics right-sidebar tabs */
 
-#define UI_MAX_COLLAPSED 128   /* tracked collapsed tree branches (default = expanded) */
+#define UI_MAX_EXPANDED 128    /* tracked expanded tree branches (default = collapsed) */
 #define UI_COMPOSE_MAX   1024  /* bytes the message composer accepts (fits one fragment) */
 #define UI_FORM_MAX      24    /* fields the structured publish form edits (all depths) */
 #define UI_FORM_VAL      40    /* value text per form field */
@@ -15,8 +15,16 @@ typedef struct {
     int  theme_dark;          /* 1 dark, 0 light */
     Tab  tab;
 
-    int  sel_node;            /* index into data->nodes  */
-    int  sel_topic;           /* index into data->topics */
+    /* Selection is keyed by IDENTITY (node id / topic path): the dataset is rebuilt
+       every frame and its ORDER shifts as peers and topics come and go, so a bare
+       index would silently move to a different item. The index fields below are the
+       per-frame resolution of the identity (-1 = the selected item is currently
+       absent; it reselects if the same identity returns), redone after each
+       ui_data_build in the main loop. */
+    int  sel_node;            /* index into data->nodes, resolved from sel_node_id  */
+    int  sel_topic;           /* index into data->topics, resolved from sel_topic_path */
+    char sel_node_id[32];     /* the selected node's id ("" = index-only default) */
+    char sel_topic_path[96];  /* the selected topic's path ("" = nothing selected) */
 
     unsigned nodelog_mask;    /* Nodes-tab log sidebar level filter: bits (1 << DartLogLevel)
                                  for error/warn/info; all three on by default */
@@ -24,9 +32,9 @@ typedef struct {
     int        drawer_open;   /* Topics right sidebar (Inspect / Publish) */
     DrawerTab  drawer_tab;    /* which sidebar tab is showing */
 
-    /* topic tree: a set of COLLAPSED branch-path hashes (absent = expanded, the default) */
-    uint64_t collapsed[UI_MAX_COLLAPSED];
-    int      n_collapsed;
+    /* topic tree: a set of EXPANDED branch-path hashes (absent = collapsed, the default) */
+    uint64_t expanded[UI_MAX_EXPANDED];
+    int      n_expanded;
 
     /* message composer at the bottom of the Topics feed (publishes to the selected topic) */
     char     compose[UI_COMPOSE_MAX];
@@ -90,7 +98,6 @@ typedef struct {
 
     Capture          *cap;    /* live observer (subscribe / read the feed); NULL if not started */
     const Dataset     *data;  /* rebuilt each frame from the live snapshot */
-    const CapSnapshot *snap;  /* the raw snapshot (Log tab reads its event lines) */
 } AppState;
 
 /* topic-tree category-filter bits (AppState.topic_cats). Three groups: KIND (which
@@ -134,11 +141,13 @@ static void app_init(AppState *a, const Dataset *data){
     a->theme_dark  = 1;
     a->tab         = TAB_NODES;
     a->sel_node    = 0;
-    a->sel_topic   = 0;
+    a->sel_topic   = -1;
+    a->sel_node_id[0]    = '\0';
+    a->sel_topic_path[0] = '\0';
     a->nodelog_mask = 0x7;   /* error + warn + info visible */
     a->drawer_open = 1;
     a->drawer_tab  = DRAWER_INSPECT;
-    a->n_collapsed = 0;
+    a->n_expanded  = 0;
     a->compose_len   = 0;
     a->compose[0]    = '\0';
     a->compose_topic = -1;
@@ -167,25 +176,54 @@ static void app_init(AppState *a, const Dataset *data){
     a->col_show_from  = 1;
     a->cap         = NULL;
     a->data        = data;
-    a->snap        = NULL;
 }
 
-/* FNV-1a over a path string, the key for the collapsed-branch set */
+/* FNV-1a over a path string, the key for the expanded-branch set */
 static uint64_t ui_path_hash(const char *s){
     uint64_t h = 1469598103934665603ull;
     for (; s && *s; s++){ h ^= (unsigned char)*s; h *= 1099511628211ull; }
     return h;
 }
-static int app_is_collapsed(const AppState *a, const char *path){
+static int app_is_expanded(const AppState *a, const char *path){
     uint64_t h = ui_path_hash(path); int i;
-    for (i = 0; i < a->n_collapsed; i++) if (a->collapsed[i] == h) return 1;
+    for (i = 0; i < a->n_expanded; i++) if (a->expanded[i] == h) return 1;
     return 0;
 }
-static void app_toggle_collapsed(AppState *a, const char *path){
+static void app_toggle_expanded(AppState *a, const char *path){
     uint64_t h = ui_path_hash(path); int i;
-    for (i = 0; i < a->n_collapsed; i++)
-        if (a->collapsed[i] == h){ a->collapsed[i] = a->collapsed[--a->n_collapsed]; return; }
-    if (a->n_collapsed < UI_MAX_COLLAPSED) a->collapsed[a->n_collapsed++] = h;
+    for (i = 0; i < a->n_expanded; i++)
+        if (a->expanded[i] == h){ a->expanded[i] = a->expanded[--a->n_expanded]; return; }
+    if (a->n_expanded < UI_MAX_EXPANDED) a->expanded[a->n_expanded++] = h;
+}
+
+/* expand every ancestor branch of a topic path so it is visible in the (collapsed by
+   default) tree: used when a selection arrives by NAME (the + add-topic flow, the
+   DART_UI_TOPIC deep link) rather than by a click on an already-visible row. Branch
+   keys are the tree's accumulated paths, which normalize both separators to '/'. */
+static void app_expand_to(AppState *a, const char *path){
+    char acc[96]; int n = 0;
+    const char *p;
+    for (p = path; *p; p++){
+        if (*p == '/' || *p == '.'){
+            if (n && acc[n - 1] != '/'){
+                if (!app_is_expanded(a, acc)) app_toggle_expanded(a, acc);
+                if (n < (int)sizeof acc - 1) acc[n++] = '/';
+            }
+        } else if (n < (int)sizeof acc - 1) acc[n++] = *p;
+        acc[n] = '\0';
+    }
+}
+
+/* select a topic: the path is the durable key, the index just this frame's resolution */
+static void app_select_topic(AppState *a, const Dataset *D, int idx){
+    a->sel_topic = idx;
+    snprintf(a->sel_topic_path, sizeof a->sel_topic_path, "%s",
+             (idx >= 0 && idx < D->n_topics) ? D->topics[idx].path : "");
+}
+static void app_select_node(AppState *a, const Dataset *D, int idx){
+    a->sel_node = idx;
+    snprintf(a->sel_node_id, sizeof a->sel_node_id, "%s",
+             (idx >= 0 && idx < D->n_nodes) ? D->nodes[idx].id : "");
 }
 
 /* message-table column visibility, keyed by a field's flattened name (pos.x) */

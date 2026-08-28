@@ -1,5 +1,5 @@
 /* DART Explorer: a debugger UI for a DART mesh (Discovery And Realtime
-   Transport). Three tabs: Nodes, Topics, Log.
+   Transport). Two tabs: Nodes and Topics.
 
    This translation unit is the GUI: SDL3 for the window/input/renderer, SDL3_ttf
    (FreeType) for text, Clay for declarative (flexbox-style) layout. The UI is
@@ -49,7 +49,6 @@
 #include "ui_tree.h"
 #include "ui_tab_nodes.h"
 #include "ui_tab_topics.h"
-#include "ui_tab_log.h"
 #include "ui_shell.h"
 
 /* mouse-wheel scroll speed: pixels (at 1x DPI) per wheel notch, scaled by UISC */
@@ -138,10 +137,8 @@ int main(int argc, char **argv){
     Clay_SetMeasureTextFunction(ui_measure_text, g_fonts);
 
     app_init(&app, &g_data);
-    app.snap = &g_snap;          /* stable global; the Log tab reads its event lines */
     {   const char *tab = getenv("DART_UI_TAB");   /* optional: open straight on a tab */
         if (tab){ if (!strcmp(tab, "topics")) app.tab = TAB_TOPICS;
-                  else if (!strcmp(tab, "log")) app.tab = TAB_LOG;
                   else if (!strcmp(tab, "nodes")) app.tab = TAB_NODES; }
     }
     static char auto_sub[CAP_TOPIC_CAP];           /* DART_UI_TOPIC: also subscribe once it appears */
@@ -239,23 +236,43 @@ int main(int argc, char **argv){
         cap_snapshot(&cap, &g_snap);     /* live discovery table -> plain view */
         ui_data_build(&g_data, &g_snap); /* -> the UI Dataset (rebuilt every frame) */
         if (app.select_topic[0]){        /* a just-added topic: select it once it appears */
-            int ti;
-            for (ti = 0; ti < g_data.n_topics; ti++)
-                if (!strcmp(g_data.topics[ti].path, app.select_topic)){ app.sel_topic = ti; app.select_topic[0] = '\0'; break; }
+            int ti = uid_topic_find(app.select_topic);
+            if (ti >= 0){
+                app_select_topic(&app, &g_data, ti);
+                app_expand_to(&app, app.sel_topic_path);   /* reveal it in the collapsed tree */
+                app.select_topic[0] = '\0';
+            }
         }
         if (auto_sub[0]){                /* the deep-linked topic: subscribe to it once it appears */
-            int ti;
-            for (ti = 0; ti < g_data.n_topics; ti++)
-                if (!strcmp(g_data.topics[ti].path, auto_sub)){
-                    cap_subscribe(&cap, auto_sub, g_data.topics[ti].reliable_recommend > 0);
-                    auto_sub[0] = '\0';
-                    break;
-                }
+            int ti = uid_topic_find(auto_sub);
+            if (ti >= 0){
+                cap_subscribe(&cap, auto_sub, g_data.topics[ti].reliable_recommend > 0);
+                auto_sub[0] = '\0';
+            }
         }
-        if (app.sel_node >= g_data.n_nodes)
-            app.sel_node = g_data.n_nodes ? g_data.n_nodes - 1 : 0;
-        if (app.sel_topic >= g_data.n_topics)
-            app.sel_topic = g_data.n_topics ? g_data.n_topics - 1 : 0;
+        /* Selection follows IDENTITY, never a bare index: the dataset is rebuilt (and
+           reordered) every frame as peers and topics come and go, so re-find the selected
+           topic/node now. Per-topic UI state keyed to the old index (the publish form's
+           values, the compose draft, the feed pin, the column picks) migrates with it,
+           so a topic-list change never resets it; -1 while the item is absent, and the
+           same identity returning reselects. */
+        if (app.sel_topic_path[0]){
+            int ti = uid_topic_find(app.sel_topic_path);
+            if (ti != app.sel_topic){
+                if (app.compose_topic  == app.sel_topic) app.compose_topic  = ti;
+                if (app.form_topic     == app.sel_topic) app.form_topic     = ti;
+                if (app.feed_sel_topic == app.sel_topic) app.feed_sel_topic = ti;
+                if (app.col_vis_topic  == app.sel_topic) app.col_vis_topic  = ti;
+                app.sel_topic = ti;
+            }
+        } else app.sel_topic = -1;
+        if (app.sel_node_id[0]){
+            int ni;
+            app.sel_node = -1;
+            for (ni = 0; ni < g_data.n_nodes; ni++)
+                if (!strcmp(g_data.nodes[ni].id, app.sel_node_id)){ app.sel_node = ni; break; }
+        } else if (app.sel_node < 0 || app.sel_node >= g_data.n_nodes)
+            app.sel_node = g_data.n_nodes ? 0 : -1;   /* index-only default: first node */
 
         g_now_ms = (uint32_t)now;   /* caret blink, undo coalescing, transient UI feedback */
         ui_strpool_reset();

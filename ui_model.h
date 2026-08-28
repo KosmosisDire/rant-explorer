@@ -15,7 +15,6 @@
 #define UI_MAX_ENDPOINTS      64
 
 typedef enum { NODE_ALIVE, NODE_JOINING } NodeState;   /* dropped/gone peers never reach the UI */
-typedef enum { LVL_ERROR, LVL_WARN, LVL_INFO, LVL_DEBUG } LogLevel;
 typedef enum { QOS_BEST_EFFORT, QOS_RELIABLE } Reliability;
 
 typedef struct {
@@ -106,19 +105,11 @@ typedef struct {
     int    self_sub_reliable;
 } Topic;
 
-typedef struct {
-    char     t[16];
-    LogLevel level;
-    char     src[24];            /* node name or subsystem: transport, qos, shm, discovery */
-    char     msg[160];
-} LogEntry;
-
 /* everything the UI draws from; counts let the tab bar show "Nodes 6" etc. */
 typedef struct {
     const Machine  *machines; int n_machines;
     const Node     *nodes;    int n_nodes;
     const Topic    *topics;   int n_topics;
-    const LogEntry *logs;     int n_logs;
 } Dataset;
 
 /* derived topic tree, built from the topic paths (see NUKLEAR_SPEC section 3).
@@ -137,9 +128,6 @@ typedef struct {
 /* ---- status to color, mirroring data.js ---- */
 static inline Clay_Color ui_state_color(const Palette *P, NodeState s){
     return s == NODE_ALIVE ? P->green : P->amber;   /* joining: announce blob still settling */
-}
-static inline Clay_Color ui_level_color(const Palette *P, LogLevel l){
-    return l == LVL_ERROR ? P->red : l == LVL_WARN ? P->amber : l == LVL_INFO ? P->dim : P->faint;
 }
 static inline Clay_Color ui_qos_color(const Palette *P, int reliable){
     return reliable ? P->green : P->amber;

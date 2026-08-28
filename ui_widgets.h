@@ -20,6 +20,28 @@ static uint32_t g_now_ms = 0;            /* monotonic ms this frame; main sets i
 static float g_pointer_x = 0.0f, g_pointer_y = 0.0f;   /* pointer position, physical px; main sets it */
 static float g_view_w = 0.0f, g_view_h = 0.0f;         /* render output size, physical px; main sets it */
 
+/* The scroll offset to feed a clip's .childOffset, fetched by ELEMENT ID. Never use
+   Clay_GetScrollOffset() for this: it finds the stored offset by comparing LAYOUT-ELEMENT
+   POINTERS, addresses into the per-frame element array, refreshed only when the container
+   is (re)declared. On any frame where an element declared EARLIER in the tree appears or
+   disappears (a blinking caret, a new feed row, a peer joining), every later element
+   shifts slots, the pointer compare misses for exactly that frame, and the container
+   renders scrolled to the top before snapping back -- the periodic one-frame flicker.
+   Matching the stored record by elementId is immune to slot shifts. (Clay's own
+   Clay_GetScrollContainerData is id-keyed too, but dereferences the stale element pointer
+   for its config, so this walks the records directly; Clay internals are visible here
+   because the UI TU owns CLAY_IMPLEMENTATION.) */
+static Clay_Vector2 ui_scroll_offset(Clay_ElementId id){
+    Clay_Context *ctx = Clay_GetCurrentContext();
+    int32_t i;
+    for (i = 0; i < ctx->scrollContainerDatas.length; i++){
+        Clay__ScrollContainerDataInternal *d =
+            Clay__ScrollContainerDataInternalArray_Get(&ctx->scrollContainerDatas, i);
+        if (d->elementId == id.id) return d->scrollPosition;
+    }
+    return CLAY__INIT(Clay_Vector2){ 0, 0 };
+}
+
 /* a filled or hollow status dot (a circle = a rect with full corner radius) */
 static void ui_dot(float d, Clay_Color fill, Clay_Color border){
     uint16_t bw = (uint16_t)(border.a > 0 ? 1 : 0);
@@ -232,7 +254,7 @@ static int ui_menu(const Palette *P, const void *owner, const UiMenuItem *items,
                    .layout = { .sizing = { .width = CLAY_SIZING_GROW(0),
                                            .height = CLAY_SIZING_FIXED(mh - UISC(8)) },
                                .layoutDirection = CLAY_TOP_TO_BOTTOM },
-                   .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+                   .clip = { .vertical = true, .childOffset = ui_scroll_offset(CLAY_ID("ui_ctx_menu_scroll")) } }) {
                 for (i = 0; i < n; i++)
                     if (ui_menu_item(P, &items[i])) clicked = i;
             }

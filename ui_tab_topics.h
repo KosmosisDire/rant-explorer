@@ -387,7 +387,7 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
                            .padding = { .left = UISCI(10 + row->depth * 15) },
                            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
             if (row->is_branch){
-                if (Clay_Hovered() && g_pointer_pressed){ app_toggle_collapsed(app, row->path); g_pointer_pressed = false; }
+                if (Clay_Hovered() && g_pointer_pressed){ app_toggle_expanded(app, row->path); g_pointer_pressed = false; }
                 ui_icon(row->open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12, P->dim);
             }
         }
@@ -450,12 +450,12 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
            a pure namespace has nothing to select, so a click toggles its collapse */
         if (Clay_Hovered() && g_pointer_pressed){
             if (row->has_topic){
-                app->sel_topic = (int)(row->topic - D->topics);
+                app_select_topic(app, D, (int)(row->topic - D->topics));
                 app->drawer_open = 1;
                 app->has_inspect_msg = 0;  /* clicking a topic returns to inspecting the topic */
                 app->adding_topic = 0;     /* selecting a topic exits the new-topic field */
             } else if (row->is_branch){
-                app_toggle_collapsed(app, row->path);
+                app_toggle_expanded(app, row->path);
             }
         }
     }
@@ -594,7 +594,7 @@ static void topics_tree(AppState *app, const Palette *P){
         CLAY({ .id = CLAY_ID("topics_tree_scroll"),
                .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                            .layoutDirection = CLAY_TOP_TO_BOTTOM },
-               .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+               .clip = { .vertical = true, .childOffset = ui_scroll_offset(CLAY_ID("topics_tree_scroll")) } }) {
             if (n == 0)
                 ui_placeholder(P, (app->topic_filter_len || app->topic_cats)
                                       ? CLAY_STRING("no topics match")
@@ -1558,7 +1558,7 @@ static void topics_feed(AppState *app, const Palette *P){
                     CLAY({ .id = CLAY_ID("topics_feed_scroll"),
                            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                                        .layoutDirection = CLAY_TOP_TO_BOTTOM },
-                           .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+                           .clip = { .vertical = true, .childOffset = ui_scroll_offset(CLAY_ID("topics_feed_scroll")) } }) {
                         for (i = 0; i < tt_feed_n; i++)
                             tt_table_row(app, P, t->path, &tt_feed[i], i, tt_vis, n_vis, field_w,
                                          field_budget, time_budget, from_budget, t->kind, raw,
@@ -1625,7 +1625,7 @@ static void topic_node_chip(AppState *app, const Palette *P, int nidx, const cha
                        .childGap = UISCI(9), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
            .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)),
            .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
-        if (Clay_Hovered() && g_pointer_pressed){ app->tab = TAB_NODES; app->sel_node = nidx; }
+        if (Clay_Hovered() && g_pointer_pressed){ app->tab = TAB_NODES; app_select_node(app, app->data, nidx); }
         ui_dot(UISC(7), ui_state_color(P, nd->state), UI_NONE);
         CLAY_TEXT(ui_str(nd->name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL),
                                                        .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
@@ -1753,7 +1753,7 @@ static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(UISC(14)),
                        .childGap = UISCI(11) },
-           .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+           .clip = { .vertical = true, .childOffset = ui_scroll_offset(CLAY_ID("topics_inspect_scroll")) } }) {
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(6),
                            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
             tt_kind_icon(P, t->kind);   /* hash for a plain topic, the type icon for an entity */
@@ -1811,7 +1811,7 @@ static void topics_publish(AppState *app, const Palette *P, const Topic *t){
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(UISC(14)),
                        .childGap = UISCI(11) },
-           .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+           .clip = { .vertical = true, .childOffset = ui_scroll_offset(CLAY_ID("topics_publish_scroll")) } }) {
         CLAY_TEXT(ui_str(t->path), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_BODY), .textColor = P->text }));
         ui_section_label(P, tt_call_kind(t->kind)          ? CLAY_STRING("COMPOSE CALL")
                           : t->kind == CAP_KIND_VARIABLE ? CLAY_STRING("SET VALUE")
@@ -1869,7 +1869,7 @@ static void topics_msg_inspect(AppState *app, const Palette *P){
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(UISC(14)),
                        .childGap = UISCI(11) },
-           .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+           .clip = { .vertical = true, .childOffset = ui_scroll_offset(CLAY_ID("topics_msg_scroll")) } }) {
         /* back to the topic overview */
         CLAY({ .id = CLAY_ID("msg_back"),
                .layout = { .padding = { .right = UISCI(6) }, .childGap = UISCI(4),

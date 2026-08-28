@@ -18,7 +18,6 @@ typedef enum {
     ICON_SEARCH,     /* filter boxes */
     ICON_BOX,        /* Nodes tab */
     ICON_RADIO,      /* Topics tab (broadcast) */
-    ICON_LOGS,       /* Log tab */
     ICON_LOGO,       /* the DART logo (Logo.svg, full color) */
     ICON_SUN,        /* theme: currently light */
     ICON_MOON,       /* theme: currently dark */
@@ -74,7 +73,6 @@ static const char *const UI_ICON_SVG[ICON_COUNT] = {
     /* SEARCH */ UI_ICON("<path d=\"m21 21-4.34-4.34\"/><circle cx=\"11\" cy=\"11\" r=\"8\"/>"),
     /* BOX    */ UI_ICON("<path d=\"M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z\"/><path d=\"m3.3 7 8.7 5 8.7-5\"/><path d=\"M12 22V12\"/>"),
     /* RADIO  */ UI_ICON("<path d=\"M16.247 7.761a6 6 0 0 1 0 8.478\"/><path d=\"M19.075 4.933a10 10 0 0 1 0 14.134\"/><path d=\"M4.925 19.067a10 10 0 0 1 0-14.134\"/><path d=\"M7.753 16.239a6 6 0 0 1 0-8.478\"/><circle cx=\"12\" cy=\"12\" r=\"2\"/>"),
-    /* LOGS   */ UI_ICON("<path d=\"M3 5h1\"/><path d=\"M3 12h1\"/><path d=\"M3 19h1\"/><path d=\"M8 5h1\"/><path d=\"M8 12h1\"/><path d=\"M8 19h1\"/><path d=\"M13 5h8\"/><path d=\"M13 12h8\"/><path d=\"M13 19h8\"/>"),
     /* LOGO   */ UI_LOGO_SVG,
     /* SUN    */ UI_ICON("<circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2v2\"/><path d=\"M12 20v2\"/><path d=\"m4.93 4.93 1.41 1.41\"/><path d=\"m17.66 17.66 1.41 1.41\"/><path d=\"M2 12h2\"/><path d=\"M20 12h2\"/><path d=\"m6.34 17.66-1.41 1.41\"/><path d=\"m19.07 4.93-1.41 1.41\"/>"),
     /* MOON   */ UI_ICON("<path d=\"M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401\"/>"),

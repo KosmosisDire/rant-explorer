@@ -86,7 +86,7 @@ static void node_list_row(AppState *app, const Palette *P, const Node *nd, int i
            .backgroundColor = sel ? P->accent_bg : UI_NONE,
            .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)),
            .border = { .width = { sel ? UISCI(2) : 0, 0, 0, 0, 0 }, .color = P->accent } }) {
-        if (Clay_Hovered() && g_pointer_pressed) app->sel_node = idx;
+        if (Clay_Hovered() && g_pointer_pressed) app_select_node(app, app->data, idx);
         ui_dot(UISC(8), ui_state_color(P, nd->state), UI_NONE);
         CLAY_TEXT(ui_str(nd->name),
                   CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, sel ? WT_SEMI : WT_REG, FS_BODY),
@@ -108,7 +108,7 @@ static void nodes_list(AppState *app, const Palette *P){
         CLAY({ .id = CLAY_ID("nodes_list_scroll"),
                .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                            .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = { .bottom = UISCI(12) } },
-               .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+               .clip = { .vertical = true, .childOffset = ui_scroll_offset(CLAY_ID("nodes_list_scroll")) } }) {
             if (!D || D->n_nodes == 0){
                 ui_placeholder(P, CLAY_STRING("no nodes discovered"));
             } else {
@@ -306,7 +306,7 @@ static void nodes_detail(AppState *app, const Palette *P){
                .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                            .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = CLAY_PADDING_ALL(UISC(18)),
                            .childGap = UISCI(14) },
-               .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+               .clip = { .vertical = true, .childOffset = ui_scroll_offset(CLAY_ID("nodes_detail_scroll")) } }) {
 
             /* header: name + state word (the state dot lives in the node list; the
                state word is color-coded, so it carries the state on its own). The
@@ -423,7 +423,7 @@ static void nodes_log_sidebar(AppState *app, const Palette *P){
         CLAY({ .id = CLAY_ID("nodes_log_scroll"),
                .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                            .layoutDirection = CLAY_TOP_TO_BOTTOM, .padding = { .bottom = UISCI(12) } },
-               .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
+               .clip = { .vertical = true, .childOffset = ui_scroll_offset(CLAY_ID("nodes_log_scroll")) } }) {
             if (!sel)          ui_placeholder(P, CLAY_STRING("select a node"));
             else if (n == 0)   ui_placeholder(P, CLAY_STRING("no log lines"));
             else { int i; for (i = 0; i < n; i++) nodes_log_row(app, P, &lines[i], i); }

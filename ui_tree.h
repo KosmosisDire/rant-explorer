@@ -1,6 +1,6 @@
 /* Topic tree: build a segment tree from the topics' paths (segments split on '/' OR
    '.', either works as a namespace separator) and flatten it into TreeRow[] honoring
-   the app's collapsed-branch set. This is the C port of buildTree()/flatten() in the
+   the app's expanded-branch set (branches are collapsed by default). This is the C port of buildTree()/flatten() in the
    handoff's data.js. A node can be both a namespace and a topic (e.g. "diagnostics"
    with child "diagnostics/heartbeat"), so an interior node carries a Topic* when one
    exists. Rebuilt each frame before the tree renders; the pools are static, so the
@@ -151,7 +151,7 @@ static void ut_flatten(const AppState *app, const Dataset *D, int node, int dept
     for (c = ut_pool[node].first_child; c != -1; c = ut_pool[c].next_sibling){
         int is_branch = ut_pool[c].n_children > 0;
         int filtering = app->topic_filter_len != 0 || app->topic_cats != 0;   /* any filter forces branches open */
-        int collapsed = is_branch && !filtering && app_is_collapsed(app, ut_pool[c].path);
+        int collapsed = is_branch && !filtering && !app_is_expanded(app, ut_pool[c].path);
         TreeRow *r;
         if (ut_n_rows >= UT_MAX_NODES) return;
         r = &ut_rows[ut_n_rows++];

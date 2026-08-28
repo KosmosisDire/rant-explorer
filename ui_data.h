@@ -243,7 +243,6 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
     D->machines = g_machines; D->n_machines = n_mach;
     D->nodes    = g_nodes;    D->n_nodes    = nn;
     D->topics   = g_topics;   D->n_topics   = n_top;
-    D->logs     = NULL;       D->n_logs     = snap->n_log;   /* Log tab body wired later */
 }
 
 #endif /* UI_DATA_H */

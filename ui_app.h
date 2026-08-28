@@ -3,7 +3,7 @@
 #ifndef UI_APP_H
 #define UI_APP_H
 
-typedef enum { TAB_NODES, TAB_TOPICS } Tab;
+typedef enum { TAB_TOPICS, TAB_NODES } Tab;
 typedef enum { DRAWER_INSPECT, DRAWER_PUBLISH } DrawerTab;   /* the Topics right-sidebar tabs */
 
 #define UI_MAX_EXPANDED 128    /* tracked expanded tree branches (default = collapsed) */
@@ -139,7 +139,7 @@ static int app_topic_cat_match(const Topic *t, unsigned cats){
 static void app_init(AppState *a, const Dataset *data){
     int fk;
     a->theme_dark  = 1;
-    a->tab         = TAB_NODES;
+    a->tab         = TAB_TOPICS;
     a->sel_node    = 0;
     a->sel_topic   = -1;
     a->sel_node_id[0]    = '\0';

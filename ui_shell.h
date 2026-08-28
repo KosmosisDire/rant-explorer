@@ -49,8 +49,8 @@ static void ui_topbar(AppState *app, const Palette *P){
            .backgroundColor = P->panel,
            .border = { .width = { 0, 0, 0, (uint16_t)1, 0 }, .color = P->border } }) {
         ui_logo(P);
-        ui_tab(app, P, ICON_BOX,    CLAY_STRING("Nodes"),  D ? D->n_nodes  : 0, TAB_NODES);
         ui_tab(app, P, ICON_RADIO,  CLAY_STRING("Topics"), D ? D->n_topics : 0, TAB_TOPICS);
+        ui_tab(app, P, ICON_BOX,    CLAY_STRING("Nodes"),  D ? D->n_nodes  : 0, TAB_NODES);
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer */
         ui_theme_toggle(app, P);
     }
@@ -68,8 +68,8 @@ static void ui_frame(AppState *app){
         CLAY({ .id = CLAY_ID("body"),
                .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) } } }) {
             switch (app->tab) {
-                case TAB_NODES:  nodes_tab(app, P);  break;
                 case TAB_TOPICS: topics_tab(app, P); break;
+                case TAB_NODES:  nodes_tab(app, P);  break;
             }
         }
     }

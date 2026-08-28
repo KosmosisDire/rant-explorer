@@ -4,7 +4,7 @@
 #define UI_APP_H
 
 typedef enum { TAB_TOPICS, TAB_NODES } Tab;
-typedef enum { DRAWER_INSPECT, DRAWER_PUBLISH } DrawerTab;   /* the Topics right-sidebar tabs */
+typedef enum { DRAWER_PUBLISH, DRAWER_INSPECT } DrawerTab;   /* the Topics right-sidebar tabs, in display order */
 
 #define UI_MAX_EXPANDED 128    /* tracked expanded tree branches (default = collapsed) */
 #define UI_COMPOSE_MAX   1024  /* bytes the message composer accepts (fits one fragment) */
@@ -146,7 +146,7 @@ static void app_init(AppState *a, const Dataset *data){
     a->sel_topic_path[0] = '\0';
     a->nodelog_mask = 0x7;   /* error + warn + info visible */
     a->drawer_open = 1;
-    a->drawer_tab  = DRAWER_INSPECT;
+    a->drawer_tab  = DRAWER_PUBLISH;   /* publishing is the common reason to open a topic */
     a->n_expanded  = 0;
     a->compose_len   = 0;
     a->compose[0]    = '\0';
@@ -214,11 +214,22 @@ static void app_expand_to(AppState *a, const char *path){
     }
 }
 
-/* select a topic: the path is the durable key, the index just this frame's resolution */
+/* select a topic: the path is the durable key, the index just this frame's resolution.
+   Selecting also JOINS the topic's data plane, so clicking into a topic is enough to see it
+   live (the feed, the rate/jitter columns and the status light all ride the data plane). It
+   joins at the topic's recommended reliability, like every other subscribe path. An
+   already-subscribed topic is left alone (a re-subscribe would clear its error/drop counters),
+   and a FUNCTION is skipped: replies are DIRECTED to their caller, so there is nothing to
+   passively receive. */
 static void app_select_topic(AppState *a, const Dataset *D, int idx){
     a->sel_topic = idx;
     snprintf(a->sel_topic_path, sizeof a->sel_topic_path, "%s",
              (idx >= 0 && idx < D->n_topics) ? D->topics[idx].path : "");
+    if (a->cap && idx >= 0 && idx < D->n_topics){
+        const Topic *t = &D->topics[idx];
+        if (t->kind != CAP_KIND_FUNCTION && !t->sub_state)
+            cap_subscribe(a->cap, t->path, t->reliable_recommend > 0);
+    }
 }
 static void app_select_node(AppState *a, const Dataset *D, int idx){
     a->sel_node = idx;

@@ -141,10 +141,8 @@ int main(int argc, char **argv){
         if (tab){ if (!strcmp(tab, "topics")) app.tab = TAB_TOPICS;
                   else if (!strcmp(tab, "nodes")) app.tab = TAB_NODES; }
     }
-    static char auto_sub[CAP_TOPIC_CAP];           /* DART_UI_TOPIC: also subscribe once it appears */
     {   const char *tp = getenv("DART_UI_TOPIC");  /* optional: select a topic (+drawer) once it appears */
-        if (tp && *tp){ snprintf(app.select_topic, sizeof app.select_topic, "%s", tp); app.drawer_open = 1;
-                        snprintf(auto_sub, sizeof auto_sub, "%s", tp); }
+        if (tp && *tp){ snprintf(app.select_topic, sizeof app.select_topic, "%s", tp); app.drawer_open = 1; }
     }
 
     if (!cap_start(&cap, &cfg))
@@ -235,19 +233,13 @@ int main(int argc, char **argv){
 
         cap_snapshot(&cap, &g_snap);     /* live discovery table -> plain view */
         ui_data_build(&g_data, &g_snap); /* -> the UI Dataset (rebuilt every frame) */
-        if (app.select_topic[0]){        /* a just-added topic: select it once it appears */
+        if (app.select_topic[0]){        /* a just-added or deep-linked topic: select (and so
+                                            subscribe to) it once it appears */
             int ti = uid_topic_find(app.select_topic);
             if (ti >= 0){
                 app_select_topic(&app, &g_data, ti);
                 app_expand_to(&app, app.sel_topic_path);   /* reveal it in the collapsed tree */
                 app.select_topic[0] = '\0';
-            }
-        }
-        if (auto_sub[0]){                /* the deep-linked topic: subscribe to it once it appears */
-            int ti = uid_topic_find(auto_sub);
-            if (ti >= 0){
-                cap_subscribe(&cap, auto_sub, g_data.topics[ti].reliable_recommend > 0);
-                auto_sub[0] = '\0';
             }
         }
         /* Selection follows IDENTITY, never a bare index: the dataset is rebuilt (and

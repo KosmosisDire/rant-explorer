@@ -1,8 +1,9 @@
 /* Topics tab: topic tree (264) + center feed (grow) + right sidebar (332, only when open)
-   that tabs between Inspect and Publish. Wired to live discovery: the tree, each topic's
-   reliability, and its publisher/subscriber node lists are real (from the announce interest
-   blobs). The center FEED is live too: the explorer subscribes to the selected topic on
-   demand (cap_subscribe) and shows messages as they arrive, newest at the bottom, auto-scrolling
+   that tabs between Publish (the default) and Inspect. Wired to live discovery: the tree, each
+   topic's reliability, and its publisher/subscriber node lists are real (from the announce
+   interest blobs). The center FEED is live too: SELECTING a topic subscribes to it
+   (app_select_topic -> cap_subscribe; the pills and the tree menu still toggle it by hand) and
+   messages show as they arrive, newest at the bottom, auto-scrolling
    while the user is parked there. A topic's status light is its subscription state: green
    subscribed, red dropping/erroring, hollow grey not subscribed. The feed is a TABLE: columns
    are the message's (flattened) fields, rows are samples, with a sticky header; clicking a row
@@ -1582,8 +1583,8 @@ static void topics_drawer_header(AppState *app, const Palette *P){
                        .padding = { .left = UISCI(8), .right = UISCI(6) }, .childGap = UISCI(3),
                        .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
            .border = { .width = { 0, 0, 0, UISCI(1), 0 }, .color = P->border } }) {
-        topics_drawer_tab(app, P, CLAY_STRING("Inspect"), DRAWER_INSPECT);
         topics_drawer_tab(app, P, CLAY_STRING("Publish"), DRAWER_PUBLISH);
+        topics_drawer_tab(app, P, CLAY_STRING("Inspect"), DRAWER_INSPECT);
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
         if (ui_icon_button(P, ICON_X, 14, 26, P->dim, P->text))
             app->drawer_open = 0;

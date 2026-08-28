@@ -102,6 +102,41 @@ typedef struct {
     double   age_s;          /* seconds since its last announce change (observer view) */
 } CapNode;
 
+/* ---- mini value preview (the topic list's VALUE column) ----------------------------
+   The newest received value on a subscribed topic, rendered compactly at intake. A
+   standard-type root gets a type-aware one-liner ("1.2, -0.5, 3.1", "#FF8800",
+   "RTSP cam-front"), plus the raw value for the kinds the UI draws instead of prints
+   (a Color swatch, a Matrix heat grid). Otherwise only a bare-type root (a single
+   value) or a raw payload's printable head is shown; a plain struct's text stays ""
+   (a full serialization never fits the column). std values mirror DartStdType
+   (net_capture.c static-asserts the mirror); CAP_STD_NONE = not a standard type. */
+enum {
+    CAP_STD_NONE = 0,
+    CAP_STD_FLOAT2, CAP_STD_FLOAT3, CAP_STD_FLOAT4,
+    CAP_STD_DOUBLE2, CAP_STD_DOUBLE3, CAP_STD_DOUBLE4,
+    CAP_STD_INT2, CAP_STD_INT3, CAP_STD_INT4,
+    CAP_STD_QUATERNION,
+    CAP_STD_COLOR,
+    CAP_STD_RECT, CAP_STD_RECTI,
+    CAP_STD_POSE, CAP_STD_TWIST,
+    CAP_STD_GEOPOINT,
+    CAP_STD_UUID,
+    CAP_STD_TIMESTAMP, CAP_STD_DURATION,
+    CAP_STD_MATRIX3X3, CAP_STD_MATRIX4X4,
+    CAP_STD_URI,
+    CAP_STD_IMAGE, CAP_STD_VIDEOFRAME, CAP_STD_EXTERNAL_VIDEO_STREAM
+};
+
+#define CAP_MINI_TEXT 48   /* bytes of mini-preview text (the UI truncates to its column) */
+typedef struct {
+    int     have;                 /* 1 = a value has been rendered (needs a live subscription) */
+    uint8_t std;                  /* CAP_STD_* of the newest value's root type */
+    char    text[CAP_MINI_TEXT];  /* the compact one-line rendering ("" = nothing printable) */
+    uint8_t rgba[4];              /* CAP_STD_COLOR: the value's bytes (sRGB, straight alpha) */
+    uint8_t mat_n;                /* CAP_STD_MATRIX*: dimension (3 or 4), else 0 */
+    float   cells[16];            /* CAP_STD_MATRIX*: row-major values (n*n filled) */
+} CapMiniPreview;
+
 /* Per-topic subscription state, so the UI can colour each topic's status light:
    subscribed + healthy (green), subscribed but dropping/erroring (red), or absent =
    not subscribed (grey). The explorer subscribes on demand, so this is real. */
@@ -118,6 +153,7 @@ typedef struct {
     double   jitter_p90_ms;  /* p90 of inter-arrival jitter (ms), smoothed by an online estimator
                                  over the topic's WHOLE lifetime (not just the stored feed ring, which
                                  overwrites); < 0 = not enough samples yet */
+    CapMiniPreview mini;     /* newest value, compact (the topic list's VALUE column) */
 } CapSubInfo;
 
 typedef struct {

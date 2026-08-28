@@ -82,6 +82,8 @@ typedef struct {
     double jitter_p90_ms;        /* p90 inter-arrival jitter (ms), smoothed over the topic's whole
                                      observed lifetime, not just the visible feed; < 0 = not enough
                                      samples yet (rides the data plane, so real only while subscribed) */
+    CapMiniPreview mini;         /* newest received value, compact (the tree's VALUE column;
+                                     rides the data plane like rate/jitter) */
 
     int    reliable;             /* the DISPLAYED QoS: reliable iff every live endpoint (publisher
                                     offered + subscriber requested) is reliable, so a topic with

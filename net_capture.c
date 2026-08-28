@@ -21,9 +21,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
-#ifndef _WIN32
-#include <time.h>
-#endif
+#include <math.h>   /* atan2/sqrt: the mini preview's quaternion axis-angle */
+#include <time.h>   /* localtime: the mini preview's Timestamp text (POSIX also: clock_gettime) */
 
 #include "net_capture.h"
 
@@ -240,6 +239,9 @@ typedef struct {
     double       jitter_mean_ms;         /* EWMA of the inter-arrival interval (ms): the topic's "expected" spacing */
     double       jitter_p90_ms;          /* online p90 estimate of the deviation from jitter_mean_ms (ms) */
     int          jitter_n;               /* inter-arrival samples folded in (gates the estimate until warm) */
+    CapMiniPreview mini;                 /* newest value, compact (the topic list's VALUE column) */
+    uint64_t     mini_hash;              /* schema hash the recognition below was formed under */
+    uint8_t      mini_std;               /* DartStdType of that schema's root (recognized once per schema) */
 } CapSub;
 
 static CapSub cap_subs[CAP_MAX_SUBS];
@@ -605,6 +607,273 @@ static void cap_rec_fill(CapMsgRec *m, DartString sender, const void *data, size
     snprintf(m->sender, sizeof m->sender, "%.*s", (int)sender.len, sender.data ? sender.data : "");
 }
 
+/* ---- mini value preview: the topic list's VALUE column ------------------------------
+   The newest value rendered compactly at intake (UI thread, the same funnel as the
+   ring). A standard-type root (dart_std_recognize, cached per schema hash) gets a
+   type-aware one-liner aimed at ~16 chars; a Color also ships its bytes (the swatch)
+   and a Matrix its cells (the heat grid). Otherwise only a bare-type root (a single
+   value) or a raw payload's printable head shows; a plain struct stays blank, since
+   its full text serialization never fits the column. */
+
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable:5287)   /* comparing the two enums is the point of this assert */
+#endif
+typedef char cap_std_mirror_check[      /* CAP_STD_* must mirror DartStdType by value */
+    ((int)CAP_STD_FLOAT2  == (int)DART_STD_FLOAT2  && (int)CAP_STD_QUATERNION == (int)DART_STD_QUATERNION &&
+     (int)CAP_STD_COLOR   == (int)DART_STD_COLOR   && (int)CAP_STD_GEOPOINT   == (int)DART_STD_GEOPOINT &&
+     (int)CAP_STD_URI     == (int)DART_STD_URI     && (int)CAP_STD_MATRIX4X4  == (int)DART_STD_MATRIX4X4 &&
+     (int)CAP_STD_EXTERNAL_VIDEO_STREAM == (int)DART_STD_EXTERNALVIDEOSTREAM) ? 1 : -1];
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
+/* copy the fixed head of the payload into a std-type mirror; 0 = payload too short */
+static int cap_mini_take(DartBytes d, size_t need, void *out){
+    if (!d.data || d.len < need) return 0;
+    memcpy(out, d.data, need);
+    return 1;
+}
+
+static void cap_mini_vec(char *dst, const double *v, int n){
+    int at = 0, i;
+    for (i = 0; i < n; i++) at = cap_val_append(dst, CAP_MINI_TEXT, at, i ? ", %.4g" : "%.4g", v[i]);
+}
+
+/* a quaternion's rotation as 2*atan2(|xyz|, w), folded to [-180, 180] and signed by the
+   dominant axis component (so -z by 45 reads as z by -45); scale-invariant, so a non-unit
+   quaternion still reads right */
+static double cap_quat_angle_deg(double x, double y, double z, double w, char *axis){
+    double l = sqrt(x * x + y * y + z * z);
+    double deg, ax = fabs(x), ay = fabs(y), az = fabs(z), sgn = x;
+    if (axis) *axis = 'x';
+    if (l < 1e-9) return 0.0;
+    deg = 2.0 * atan2(l, w) * (180.0 / 3.14159265358979323846);
+    if (deg > 180.0) deg -= 360.0;
+    if (ay > ax && ay >= az){ if (axis) *axis = 'y'; sgn = y; }
+    else if (az > ax && az > ay){ if (axis) *axis = 'z'; sgn = z; }
+    return sgn < 0.0 ? -deg : deg;
+}
+
+static void cap_mini_timestamp(char *dst, int64_t us){
+    time_t     tv = (time_t)(us / 1000000);
+    time_t     now = time(NULL);
+    struct tm  tmv, tmn, *p;
+    if (us == 0){ snprintf(dst, CAP_MINI_TEXT, "unset"); return; }
+    p = localtime(&tv);
+    if (!p){ snprintf(dst, CAP_MINI_TEXT, "%lld us", (long long)us); return; }
+    tmv = *p;
+    p = localtime(&now); tmn = p ? *p : tmv;
+    if (tmv.tm_year == tmn.tm_year && tmv.tm_yday == tmn.tm_yday)
+        snprintf(dst, CAP_MINI_TEXT, "%02d:%02d:%02d.%03d", tmv.tm_hour, tmv.tm_min, tmv.tm_sec,
+                 (int)(((us < 0 ? -us : us) / 1000) % 1000));
+    else
+        snprintf(dst, CAP_MINI_TEXT, "%04d-%02d-%02d %02d:%02d", tmv.tm_year + 1900,
+                 tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min);
+}
+
+static void cap_mini_duration(char *dst, int64_t us){
+    const char *sign = us < 0 ? "-" : "";
+    unsigned long long a = (unsigned long long)(us < 0 ? -us : us);
+    if      (a < 1000ull)                snprintf(dst, CAP_MINI_TEXT, "%s%llu us", sign, a);
+    else if (a < 1000000ull)             snprintf(dst, CAP_MINI_TEXT, "%s%.4g ms", sign, (double)a / 1e3);
+    else if (a < 60ull * 1000000ull)     snprintf(dst, CAP_MINI_TEXT, "%s%.4g s", sign, (double)a / 1e6);
+    else if (a < 3600ull * 1000000ull)   snprintf(dst, CAP_MINI_TEXT, "%s%llum %02llus", sign,
+                                                  a / 60000000ull, (a / 1000000ull) % 60ull);
+    else                                 snprintf(dst, CAP_MINI_TEXT, "%s%.4g h", sign, (double)a / 3.6e9);
+}
+
+static void cap_mini_size(char *dst, int *at, uint64_t n){
+    if      (n < 1024ull)           *at = cap_val_append(dst, CAP_MINI_TEXT, *at, "%lluB",
+                                                         (unsigned long long)n);
+    else if (n < 1024ull * 1024ull) *at = cap_val_append(dst, CAP_MINI_TEXT, *at, "%lluK",
+                                                         (unsigned long long)(n >> 10));
+    else                            *at = cap_val_append(dst, CAP_MINI_TEXT, *at, "%.1fM",
+                                                         (double)n / (1024.0 * 1024.0));
+}
+
+/* the media types read through reflection (their tails are variable): field indices are
+   exact because recognition verified the canonical shape. Enum values print as the
+   schema's own option names (dart_enum_name_of), so no local name table can drift. */
+static void cap_mini_media(CapMiniPreview *o, int std, DartBytes d, const DartSchema *s){
+    DartValue v;
+    int at = 0;
+    if (std == CAP_STD_URI){                       /* string<256> root: the text IS the value */
+        if (dart_get_value(d, s, 0, &v) && v.bytes.len)
+            snprintf(o->text, sizeof o->text, "%.*s", (int)v.bytes.len, (const char *)v.bytes.data);
+        else
+            snprintf(o->text, sizeof o->text, "(empty)");
+    } else if (std == CAP_STD_IMAGE){              /* width height stride format data */
+        uint64_t w = 0, h = 0, bytes = 0;
+        DartString fn = dart_string(0, 0);
+        if (dart_get_value(d, s, 0, &v)) w = v.v.u;
+        if (dart_get_value(d, s, 1, &v)) h = v.v.u;
+        if (dart_get_value(d, s, 3, &v)) fn = dart_enum_name_of(s, 3, v.v.i);
+        if (dart_get_value(d, s, 4, &v)) bytes = v.bytes.len;
+        at = cap_val_append(o->text, CAP_MINI_TEXT, at, "%.*s %llux%llu ",
+                            fn.len ? (int)fn.len : 3, fn.len ? fn.data : "img",
+                            (unsigned long long)w, (unsigned long long)h);
+        cap_mini_size(o->text, &at, bytes);
+    } else if (std == CAP_STD_VIDEOFRAME){         /* codec width height keyframe pts data */
+        uint64_t w = 0, h = 0, key = 0;
+        DartString cn = dart_string(0, 0);
+        if (dart_get_value(d, s, 0, &v)) cn = dart_enum_name_of(s, 0, v.v.i);
+        if (dart_get_value(d, s, 1, &v)) w = v.v.u;
+        if (dart_get_value(d, s, 2, &v)) h = v.v.u;
+        if (dart_get_value(d, s, 3, &v)) key = v.v.u;
+        at = cap_val_append(o->text, CAP_MINI_TEXT, at, "%.*s",
+                            cn.len ? (int)cn.len : 1, cn.len ? cn.data : "?");
+        if (w && h) at = cap_val_append(o->text, CAP_MINI_TEXT, at, " %llux%llu",
+                                        (unsigned long long)w, (unsigned long long)h);
+        else if (dart_get_value(d, s, 5, &v)){
+            at = cap_val_append(o->text, CAP_MINI_TEXT, at, " ");
+            cap_mini_size(o->text, &at, v.bytes.len);
+        }
+        if (key) cap_val_append(o->text, CAP_MINI_TEXT, at, " key");
+    } else {                                       /* EXTERNAL_VIDEO_STREAM: kind codec w h url name */
+        DartString kn = dart_string(0, 0), label = dart_string(0, 0);
+        if (dart_get_value(d, s, 0, &v)) kn = dart_enum_name_of(s, 0, v.v.i);
+        if (dart_get_value(d, s, 5, &v) && v.bytes.len)
+            label = dart_string((const char *)v.bytes.data, v.bytes.len);   /* name preferred */
+        else if (dart_get_value(d, s, 4, &v) && v.bytes.len)
+            label = dart_string((const char *)v.bytes.data, v.bytes.len);   /* else the url */
+        snprintf(o->text, sizeof o->text, "%.*s %.*s",
+                 kn.len ? (int)kn.len : 1, kn.len ? kn.data : "?",
+                 (int)label.len, label.data ? label.data : "");
+    }
+}
+
+static void cap_mini_update(CapSub *s, DartBytes d, const DartSchema *schema, const CapMsgRec *m){
+    CapMiniPreview *o = &s->mini;
+    int std = 0;
+    if (schema){                                   /* recognition is per schema, cached by hash */
+        uint64_t h = dart_schema_hash(schema);
+        if (h != s->mini_hash){
+            s->mini_hash = h;
+            s->mini_std  = (uint8_t)dart_std_recognize(schema, cap_schema_alloc, NULL);
+        }
+        std = s->mini_std;
+    }
+    o->std = (uint8_t)std;
+    o->mat_n = 0;
+    o->text[0] = '\0';
+    switch (std){
+        case CAP_STD_FLOAT2:  { DartFloat2  t; if (cap_mini_take(d, sizeof t, &t)){ double v[2] = { t.x, t.y };           cap_mini_vec(o->text, v, 2); } break; }
+        case CAP_STD_FLOAT3:  { DartFloat3  t; if (cap_mini_take(d, sizeof t, &t)){ double v[3] = { t.x, t.y, t.z };      cap_mini_vec(o->text, v, 3); } break; }
+        case CAP_STD_FLOAT4:  { DartFloat4  t; if (cap_mini_take(d, sizeof t, &t)){ double v[4] = { t.x, t.y, t.z, t.w }; cap_mini_vec(o->text, v, 4); } break; }
+        case CAP_STD_DOUBLE2: { DartDouble2 t; if (cap_mini_take(d, sizeof t, &t)){ double v[2] = { t.x, t.y };           cap_mini_vec(o->text, v, 2); } break; }
+        case CAP_STD_DOUBLE3: { DartDouble3 t; if (cap_mini_take(d, sizeof t, &t)){ double v[3] = { t.x, t.y, t.z };      cap_mini_vec(o->text, v, 3); } break; }
+        case CAP_STD_DOUBLE4: { DartDouble4 t; if (cap_mini_take(d, sizeof t, &t)){ double v[4] = { t.x, t.y, t.z, t.w }; cap_mini_vec(o->text, v, 4); } break; }
+        case CAP_STD_INT2:  { DartInt2 t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%ld, %ld", (long)t.x, (long)t.y); break; }
+        case CAP_STD_INT3:  { DartInt3 t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%ld, %ld, %ld", (long)t.x, (long)t.y, (long)t.z); break; }
+        case CAP_STD_INT4:  { DartInt4 t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%ld, %ld, %ld, %ld", (long)t.x, (long)t.y, (long)t.z, (long)t.w); break; }
+        case CAP_STD_QUATERNION: {
+            DartQuaternion q;
+            if (cap_mini_take(d, sizeof q, &q)){
+                char axis; double deg = cap_quat_angle_deg(q.x, q.y, q.z, q.w, &axis);
+                if (fabs(deg) < 0.05 && sqrt(q.x*q.x + q.y*q.y + q.z*q.z) < 1e-6)
+                    snprintf(o->text, sizeof o->text, "identity");
+                else
+                    snprintf(o->text, sizeof o->text, "%c %.*f\xC2\xB0", axis,
+                             fabs(deg) < 10.0 ? 1 : 0, deg);
+            }
+            break; }
+        case CAP_STD_COLOR: {
+            DartColor c;
+            if (cap_mini_take(d, sizeof c, &c)){
+                o->rgba[0] = c.r; o->rgba[1] = c.g; o->rgba[2] = c.b; o->rgba[3] = c.a;
+                if (c.a != 255) snprintf(o->text, sizeof o->text, "#%02X%02X%02X%02X", c.r, c.g, c.b, c.a);
+                else            snprintf(o->text, sizeof o->text, "#%02X%02X%02X", c.r, c.g, c.b);
+            }
+            break; }
+        case CAP_STD_RECT:  { DartRect  t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%.4gx%.4g @%.4g,%.4g", t.w, t.h, t.x, t.y); break; }
+        case CAP_STD_RECTI: { DartRectI t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%ldx%ld @%ld,%ld", (long)t.w, (long)t.h, (long)t.x, (long)t.y); break; }
+        case CAP_STD_POSE: {
+            DartPose p;
+            if (cap_mini_take(d, sizeof p, &p)){
+                int at = 0;
+                double deg = cap_quat_angle_deg(p.orientation.x, p.orientation.y,
+                                                p.orientation.z, p.orientation.w, NULL);
+                at = cap_val_append(o->text, CAP_MINI_TEXT, at, "%.3g, %.3g, %.3g",
+                                    p.position.x, p.position.y, p.position.z);
+                if (fabs(deg) >= 0.5)
+                    cap_val_append(o->text, CAP_MINI_TEXT, at, " R%.0f\xC2\xB0", fabs(deg));
+            }
+            break; }
+        case CAP_STD_TWIST: {
+            DartTwist t;
+            if (cap_mini_take(d, sizeof t, &t))
+                snprintf(o->text, sizeof o->text, "%.3g m/s %.3g rad/s",
+                         dart_double3_length(t.linear), dart_double3_length(t.angular));
+            break; }
+        case CAP_STD_GEOPOINT: {
+            DartGeoPoint g;
+            if (cap_mini_take(d, sizeof g, &g))
+                snprintf(o->text, sizeof o->text, "%.4f%c %.4f%c",
+                         fabs(g.lat), g.lat < 0.0 ? 'S' : 'N',
+                         fabs(g.lon), g.lon < 0.0 ? 'W' : 'E');
+            break; }
+        case CAP_STD_UUID: {
+            DartUuid u;
+            if (cap_mini_take(d, sizeof u, &u)){
+                if (dart_uuid_is_nil(u)) snprintf(o->text, sizeof o->text, "nil");
+                else snprintf(o->text, sizeof o->text, "%02x%02x%02x%02x..",
+                              u.bytes[0], u.bytes[1], u.bytes[2], u.bytes[3]);
+            }
+            break; }
+        case CAP_STD_TIMESTAMP: { int64_t t; if (cap_mini_take(d, sizeof t, &t)) cap_mini_timestamp(o->text, t); break; }
+        case CAP_STD_DURATION:  { int64_t t; if (cap_mini_take(d, sizeof t, &t)) cap_mini_duration(o->text, t);  break; }
+        case CAP_STD_MATRIX3X3: {
+            DartMatrix3x3 t;
+            if (cap_mini_take(d, sizeof t, &t)){
+                memcpy(o->cells, t.m, sizeof t.m);
+                o->mat_n = 3;
+                snprintf(o->text, sizeof o->text, "3x3");
+            }
+            break; }
+        case CAP_STD_MATRIX4X4: {
+            DartMatrix4x4 t;
+            if (cap_mini_take(d, sizeof t, &t)){
+                memcpy(o->cells, t.m, sizeof t.m);
+                o->mat_n = 4;
+                snprintf(o->text, sizeof o->text, "4x4");
+            }
+            break; }
+        case CAP_STD_URI: case CAP_STD_IMAGE: case CAP_STD_VIDEOFRAME:
+        case CAP_STD_EXTERNAL_VIDEO_STREAM:
+            cap_mini_media(o, std, d, schema);
+            break;
+        default: break;
+    }
+    if (!o->text[0]){          /* not a standard type (or its payload was short) */
+        o->std = CAP_STD_NONE;
+        o->mat_n = 0;
+        if (!schema){          /* raw bytes: the printable head (a plain-text payload reads well) */
+            int i, j = 0, n = m->preview_len;
+            if (n > CAP_MINI_TEXT - 1) n = CAP_MINI_TEXT - 1;
+            for (i = 0; i < n; i++){
+                unsigned char c = (unsigned char)m->preview[i];
+                o->text[j++] = (c >= 0x20 && c < 0x7f) ? (char)c : '.';
+            }
+            o->text[j] = '\0';
+            if (!j) snprintf(o->text, sizeof o->text, "%u B", m->len);
+        } else {
+            /* a bare-type root (one anonymous non-struct field) is a single value and reads
+               well; a struct's full text serialization never fits the column, so it stays
+               BLANK (the feed and inspector are the place for it) */
+            DartSchemaFieldInfo fi;
+            if (dart_schema_field_count(schema) == 1 && dart_schema_field_at(schema, 0, &fi)
+                && fi.name.len == 0 && fi.kind != DART_STRUCT){
+                const char *pv = m->preview;              /* drop the summary's fixed-width */
+                int n = m->preview_len;                   /* float padding */
+                while (n && *pv == ' '){ pv++; n--; }
+                snprintf(o->text, sizeof o->text, "%.*s", n, pv);
+            }
+        }
+    }
+    o->have = 1;
+}
+
 /* append one message to a topic's ring (received or our own echo). Does not touch n_msgs. */
 static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t len, int mine,
                           const DartSchema *schema, uint64_t recv_us, uint64_t written_us){
@@ -618,6 +887,10 @@ static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t
     m->uid = ++s->uid_next;
     s->head = (s->head + 1) % CAP_FEED_MAX;
     if (s->count < CAP_FEED_MAX) s->count++;
+    /* the VALUE column tracks the newest VALUE, so a function/task's call-log rows
+       (requests, replies, synthesized timeouts) never overwrite it */
+    if (s->kind != CAP_KIND_FUNCTION && s->kind != CAP_KIND_TASK)
+        cap_mini_update(s, dart_bytes(data, len), schema, m);
 }
 
 static unsigned long long cap_now_ms(void){
@@ -2246,6 +2519,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         }
         si->rate_hz = s->rate_hz;
         si->jitter_p90_ms = s->jitter_n >= 4 ? s->jitter_p90_ms : -1.0;   /* a few intervals to warm up */
+        si->mini = s->mini;                     /* newest value, compact (the VALUE column) */
     }
 
     /* pull the node's zero-copy peer view (it decodes the overlay for us) and refresh each
@@ -2375,6 +2649,7 @@ int cap_topic_clear(Capture *cap, const char *topic){
     s->error = 0;
     s->rate_hz = 0.0; s->rate_prev_hr = 0.0; s->rate_prev_msgs = 0;
     s->jitter_last_hr = 0.0; s->jitter_mean_ms = 0.0; s->jitter_p90_ms = 0.0; s->jitter_n = 0;
+    s->mini.have = 0;    /* the VALUE column clears with the feed (the schema cache keeps) */
     dart_node_unlock(node);
     cap_logf("CLEAR %s (feed + counters)", topic);
     return 1;

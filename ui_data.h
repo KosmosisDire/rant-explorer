@@ -213,6 +213,7 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         g_topics[ti].rate_hz    = si->rate_hz;     /* live: publish rate over the stored window */
         g_topics[ti].last_age_s = si->last_age_s;  /* live: age of the newest received message */
         g_topics[ti].jitter_p90_ms = si->jitter_p90_ms;  /* live: p90 inter-arrival jitter, smoothed */
+        g_topics[ti].mini       = si->mini;        /* live: newest value, compact (VALUE column) */
     }
 
     for (k = 0; k < n_top; k++){

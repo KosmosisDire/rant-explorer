@@ -185,6 +185,7 @@ static void tt_filter_menu(AppState *app, const Palette *P){
 /* the tree is a table: the name column (indented) plus fixed stat columns. These are the
    stat-column widths (unscaled px); the name column measures to fit its content. */
 #define TT_COL_DOT    14
+#define TT_COL_VALUE  116
 #define TT_COL_RATE   58
 #define TT_COL_JITTER 64
 #define TT_COL_GAP    6
@@ -195,6 +196,13 @@ static float tt_name_w(const char *s){
     int w = 0, h = 0;
     if (f && s && *s) TTF_GetStringSize(f, s, strlen(s), &w, &h);
     return (float)w;
+}
+/* mono-caption char advance (the stat cells' font), for truncating the VALUE column */
+static float tt_caption_cw(void){
+    TTF_Font *f = g_fonts[ui_font_id(FAM_MONO, WT_REG, FS_CAPTION)];
+    int w = 0, h = 0;
+    if (f) TTF_GetStringSize(f, "0000000000", 10, &w, &h);
+    return (float)w / 10.0f;
 }
 
 static Clay_String tt_fit(const char *s, int budget);   /* defined with the feed cells below */
@@ -222,6 +230,78 @@ static void tt_stat_cell(const Palette *P, float w, Clay_String value, Clay_Colo
     }
 }
 
+/* the VALUE column: the newest received value, rendered compactly at intake (net_capture's
+   mini preview). Most kinds are text; a Color draws its swatch beside the hex, a Matrix a
+   per-cell heat grid (brightness = |cell| / max, red = negative). Values ride the data
+   plane, so a dash shows until the topic is subscribed and a message arrives. */
+static void tt_value_cell(const Palette *P, const TreeRow *row, int live, float cw){
+    const CapMiniPreview *mp = (row->has_topic && live && row->topic->mini.have)
+                               ? &row->topic->mini : NULL;
+    int budget = (cw > 0.0f) ? (int)((UISC(TT_COL_VALUE) - UISC(2)) / cw) : 16;
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(TT_COL_VALUE)), .height = CLAY_SIZING_GROW(0) },
+                       .childGap = UISCI(5), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+        if (!mp){
+            CLAY_TEXT(ui_str(ND_DASH), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                                          .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        } else if (mp->std == CAP_STD_COLOR){
+            /* swatch over the classic transparency checkerboard: the two checker shades are
+               pre-blended with the value here, so quadrants are plain filled rects (an opaque
+               color blends to a solid swatch, no separate path) */
+            float af = (float)mp->rgba[3] / 255.0f;
+            float r  = (float)mp->rgba[0], g = (float)mp->rgba[1], b = (float)mp->rgba[2];
+            Clay_Color cl = { r * af + 255.0f * (1.0f - af), g * af + 255.0f * (1.0f - af),
+                              b * af + 255.0f * (1.0f - af), 255.0f };
+            Clay_Color cd = { r * af + 180.0f * (1.0f - af), g * af + 180.0f * (1.0f - af),
+                              b * af + 180.0f * (1.0f - af), 255.0f };
+            int rr;
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(12)), .height = CLAY_SIZING_FIXED(UISC(12)) },
+                               .layoutDirection = CLAY_TOP_TO_BOTTOM },
+                   .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+                for (rr = 0; rr < 2; rr++){
+                    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) } } }) {
+                        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) } },
+                               .backgroundColor = rr ? cd : cl }) {}
+                        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) } },
+                               .backgroundColor = rr ? cl : cd }) {}
+                    }
+                }
+            }
+            CLAY_TEXT(tt_fit(mp->text, budget > 3 ? budget - 3 : 1),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                         .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        } else if (mp->mat_n){
+            int   n = mp->mat_n, r, c;
+            float maxv = 0.0f, box = UISC(16);
+            for (r = 0; r < n * n; r++){
+                float a = mp->cells[r] < 0.0f ? -mp->cells[r] : mp->cells[r];
+                if (a > maxv) maxv = a;
+            }
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(box), .height = CLAY_SIZING_FIXED(box) },
+                               .layoutDirection = CLAY_TOP_TO_BOTTOM, .childGap = 1 } }) {
+                for (r = 0; r < n; r++){
+                    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
+                                       .childGap = 1 } }) {
+                        for (c = 0; c < n; c++){
+                            float      v   = mp->cells[r * n + c];
+                            float      a   = maxv > 0.0f ? (v < 0.0f ? -v : v) / maxv : 0.0f;
+                            Clay_Color col = v < 0.0f ? P->red : P->accent;
+                            col.a = 40.0f + 215.0f * a;
+                            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) } },
+                                   .backgroundColor = col }) {}
+                        }
+                    }
+                }
+            }
+            CLAY_TEXT(tt_fit(mp->text, 8), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                                              .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        } else {
+            CLAY_TEXT(tt_fit(mp->text, budget),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                         .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        }
+    }
+}
+
 /* the table header: "TOPIC" then the stat columns, laid out to match the rows so the
    fixed columns (right-anchored by a grow spacer) line up under their labels */
 static void tt_tree_header(const Palette *P){
@@ -233,6 +313,7 @@ static void tt_tree_header(const Palette *P){
                                           .textColor = P->faint, .letterSpacing = 1, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer */
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(TT_COL_DOT)) } } }) {}
+        tt_stat_cell(P, UISC(TT_COL_VALUE),  CLAY_STRING("VALUE"),  P->faint);
         tt_stat_cell(P, UISC(TT_COL_RATE),   CLAY_STRING("RATE"),   P->faint);
         tt_stat_cell(P, UISC(TT_COL_JITTER), CLAY_STRING("JITTER"), P->faint);
     }
@@ -362,7 +443,7 @@ static void tt_tree_menu(AppState *app, const Palette *P){
    than the clamped budget grows the GROW row past the fixed-width panel and spills the
    stat columns + scrollbar off the sidebar's right edge. */
 static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, int idx,
-                           float name_col, float cw, float gap){
+                           float name_col, float cw, float val_cw, float gap){
     const Dataset *D = app->data;
     int sel  = row->has_topic && app->sel_topic >= 0 && app->sel_topic < D->n_topics
                && row->topic == &D->topics[app->sel_topic];
@@ -416,7 +497,8 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
                            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
             if (row->has_topic) tt_status_dot(P, row->topic->sub_state, tt_recent(row->topic));
         }
-        /* Rate / Jitter: ride the data plane, so real only while subscribed (dash otherwise) */
+        /* Value / Rate / Jitter: ride the data plane, so real only while subscribed (dash otherwise) */
+        tt_value_cell(P, row, live, val_cw);
         tt_stat_cell(P, UISC(TT_COL_RATE), live ? tt_rate(row->topic->rate_hz) : ui_str(ND_DASH),
                      live && row->topic->rate_hz > 0.0 ? P->dim : P->faint);
         tt_stat_cell(P, UISC(TT_COL_JITTER), live ? tt_jitter(row->topic->jitter_p90_ms) : ui_str(ND_DASH),
@@ -521,7 +603,8 @@ static void topics_tree(AppState *app, const Palette *P){
        measure only the few longest candidates (the width clamps at 300 px, so an exact winner is
        not needed). */
     float gap        = UISC(TT_COL_GAP);
-    float data_block = UISC(TT_COL_DOT) + UISC(TT_COL_RATE) + UISC(TT_COL_JITTER) + gap * 3;
+    float data_block = UISC(TT_COL_DOT) + UISC(TT_COL_VALUE) + UISC(TT_COL_RATE)
+                     + UISC(TT_COL_JITTER) + gap * 4;
     float name_max   = UISC(70);
     float panel_w;
     {
@@ -549,6 +632,7 @@ static void topics_tree(AppState *app, const Palette *P){
     panel_w = name_max + gap + data_block + UISC(10) + UISC(16);   /* right pad + breathing room */
     if (panel_w < UISC(300)) panel_w = UISC(300);                  /* keep filter + add usable */
     float name_cw = tt_name_w("0000000000") / 10.0f;   /* mono-small char advance, for the name trim */
+    float val_cw  = tt_caption_cw();                   /* mono-caption advance, for the VALUE trim */
     CLAY({ .id = CLAY_ID("topics_tree"),
            .layout = { .sizing = { .width = CLAY_SIZING_FIXED(panel_w), .height = CLAY_SIZING_GROW(0) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM },
@@ -595,7 +679,7 @@ static void topics_tree(AppState *app, const Palette *P){
                     CLAY({ .id = CLAY_ID("topics_tree_vtop"),
                            .layout = { .sizing = { .width  = CLAY_SIZING_GROW(0),
                                                    .height = CLAY_SIZING_FIXED((float)first * row_h) } } }) {}
-                for (i = first; i < last; i++) topic_tree_row(app, P, &ut_rows[i], i, name_max, name_cw, gap);
+                for (i = first; i < last; i++) topic_tree_row(app, P, &ut_rows[i], i, name_max, name_cw, val_cw, gap);
                 if (last < n)
                     CLAY({ .id = CLAY_ID("topics_tree_vbot"),
                            .layout = { .sizing = { .width  = CLAY_SIZING_GROW(0),
@@ -718,11 +802,16 @@ static int tt_template(int g, int n_grp){
 }
 
 /* a string truncated to `budget` characters, always copied into the frame pool (so callers
-   may pass a local buffer). Keeps a fixed-width cell's text from overrunning into its neighbour. */
+   may pass a local buffer). Keeps a fixed-width cell's text from overrunning into its
+   neighbour. A cut never splits a UTF-8 sequence (a stray continuation byte would render
+   as a broken glyph: the mini previews carry a degree sign). */
 static Clay_String tt_fit(const char *s, int budget){
     int len = (int)strlen(s);
     if (budget < 1) budget = 1;
-    if (len > budget) len = budget;
+    if (len > budget){
+        len = budget;
+        while (len > 0 && ((unsigned char)s[len] & 0xC0) == 0x80) len--;
+    }
     return ui_fmt("%.*s", len, s);
 }
 

@@ -1235,7 +1235,7 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
             DartTopic *ch = i_dart_node_create_pattern_topic(node, s->name, role, sch,
                      &(DartTopicOpts){ .qos = { .reliability = DART_RELIABLE, .catch_up = 1 } },
                      DART_KIND_VARIABLE, CAP_VAR_PREFIX, 0,
-                     0 /*forceable: observer never owns*/, NULL, NULL);
+                     0 /*attrs: observer never owns*/, NULL, NULL);
             if (sch) dart_schema_free(sch, cap_schema_alloc, NULL);
             if (!ch) return 0;
             dart_topic_dispatch(ch, 0, 0);            /* queued: deliveries drain on the UI thread */

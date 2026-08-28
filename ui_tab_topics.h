@@ -186,8 +186,6 @@ static void tt_filter_menu(AppState *app, const Palette *P){
 #define TT_COL_DOT    14
 #define TT_COL_RATE   58
 #define TT_COL_JITTER 64
-#define TT_COL_LAST   66
-#define TT_COL_QOS    42
 #define TT_COL_GAP    6
 
 /* mono-small text width in physical px, for fitting the name column to its content */
@@ -214,8 +212,6 @@ static Clay_String tt_jitter(double ms){
     if (ms < 1000.0) return ui_fmt("%.1f ms", ms);
     return ui_fmt("%.2f s", ms / 1000.0);
 }
-static Clay_String tt_qos_short(int reliable){ return reliable ? CLAY_STRING("REL") : CLAY_STRING("BE"); }
-
 /* one fixed-width stat cell (caption mono, left-aligned) shared by the rows and header */
 static void tt_stat_cell(const Palette *P, float w, Clay_String value, Clay_Color col){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(w), .height = CLAY_SIZING_GROW(0) },
@@ -238,8 +234,6 @@ static void tt_tree_header(const Palette *P){
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(TT_COL_DOT)) } } }) {}
         tt_stat_cell(P, UISC(TT_COL_RATE),   CLAY_STRING("RATE"),   P->faint);
         tt_stat_cell(P, UISC(TT_COL_JITTER), CLAY_STRING("JITTER"), P->faint);
-        tt_stat_cell(P, UISC(TT_COL_LAST),   CLAY_STRING("LAST"),   P->faint);
-        tt_stat_cell(P, UISC(TT_COL_QOS),    CLAY_STRING("QOS"),    P->faint);
     }
 }
 
@@ -371,8 +365,7 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
     const Dataset *D = app->data;
     int sel  = row->has_topic && app->sel_topic >= 0 && app->sel_topic < D->n_topics
                && row->topic == &D->topics[app->sel_topic];
-    int live = row->has_topic && row->topic->sub_state != 0;         /* rate/last need the data plane */
-    int qos  = row->has_topic && row->topic->has_qos;                /* reliability rides discovery */
+    int live = row->has_topic && row->topic->sub_state != 0;         /* rate/jitter need the data plane */
     CLAY({ .id = CLAY_IDI("tree_row", (uint32_t)idx),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(29)) },
                        .padding = { .right = UISCI(10) }, .childGap = UISCI(TT_COL_GAP),
@@ -422,16 +415,11 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
                            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
             if (row->has_topic) tt_status_dot(P, row->topic->sub_state, tt_recent(row->topic));
         }
-        /* Rate / Jitter / Last: ride the data plane, so real only while subscribed (dash
-           otherwise); QoS rides discovery, so it shows whenever the topic has any endpoint. */
+        /* Rate / Jitter: ride the data plane, so real only while subscribed (dash otherwise) */
         tt_stat_cell(P, UISC(TT_COL_RATE), live ? tt_rate(row->topic->rate_hz) : ui_str(ND_DASH),
                      live && row->topic->rate_hz > 0.0 ? P->dim : P->faint);
         tt_stat_cell(P, UISC(TT_COL_JITTER), live ? tt_jitter(row->topic->jitter_p90_ms) : ui_str(ND_DASH),
                      live && row->topic->jitter_p90_ms >= 0.0 ? P->dim : P->faint);
-        tt_stat_cell(P, UISC(TT_COL_LAST), live ? nf_age(row->topic->last_age_s) : ui_str(ND_DASH),
-                     live && row->topic->last_age_s >= 0.0 ? P->dim : P->faint);
-        tt_stat_cell(P, UISC(TT_COL_QOS),  qos ? tt_qos_short(row->topic->reliable) : ui_str(ND_DASH),
-                     qos ? ui_qos_color(P, row->topic->reliable) : P->faint);
         /* right-click opens the subscribe menu: "Subscribe" for the row's own topic, and/or
            "Subscribe All (N)" when the subtree holds subscribable descendants. Nothing to
            offer (a lone function, an empty namespace) means no menu. */
@@ -532,8 +520,7 @@ static void topics_tree(AppState *app, const Palette *P){
        measure only the few longest candidates (the width clamps at 300 px, so an exact winner is
        not needed). */
     float gap        = UISC(TT_COL_GAP);
-    float data_block = UISC(TT_COL_DOT) + UISC(TT_COL_RATE) + UISC(TT_COL_JITTER) + UISC(TT_COL_LAST)
-                      + UISC(TT_COL_QOS) + gap * 5;
+    float data_block = UISC(TT_COL_DOT) + UISC(TT_COL_RATE) + UISC(TT_COL_JITTER) + gap * 3;
     float name_max   = UISC(70);
     float panel_w;
     {

@@ -33,6 +33,7 @@ static int tt_kind_icon(const Palette *P, int kind){
         case CAP_KIND_TOPIC:    id = ICON_RSS;      c = P->dim;    break;
         case CAP_KIND_FUNCTION: id = ICON_FUNCTION; c = P->accent; break;
         case CAP_KIND_VARIABLE: id = ICON_VARIABLE; c = P->amber;  break;
+        case CAP_KIND_TASK:     id = ICON_TASK;     c = P->green;  break;
         default: return 0;
     }
     ui_icon(id, 14, c);
@@ -43,6 +44,7 @@ static const char *tt_kind_label(const Topic *t){
         case CAP_KIND_FUNCTION: return t->incomplete ? "function (half advertised)" : "function";
         case CAP_KIND_VARIABLE: return t->incomplete ? "variable (half advertised)"
                                      : (t->writable ? "variable" : "variable (read-only)");
+        case CAP_KIND_TASK:     return t->incomplete ? "task (half advertised)" : "task";
         default: return "topic";
     }
 }
@@ -51,10 +53,13 @@ static const char *tt_kind_label(const Topic *t){
 static const char *tt_send_verb(const Topic *t){
     switch (t->kind){
         case CAP_KIND_FUNCTION: return "Call";
+        case CAP_KIND_TASK:     return "Call";
         case CAP_KIND_VARIABLE: return "Set";
         default: return "Send";
     }
 }
+/* a function/task entity: the feed is a call log (request + reply groups, directed rows) */
+static int tt_call_kind(int kind){ return kind == CAP_KIND_FUNCTION || kind == CAP_KIND_TASK; }
 
 /* a freshly received message blinks the status light full green for this long (seconds);
    between messages it settles back to the dim subscribed green. */
@@ -155,6 +160,7 @@ static void tt_filter_menu(AppState *app, const Palette *P){
     TT_FM_CHK("Topics",      TT_CAT_TOPIC);
     TT_FM_CHK("Functions",   TT_CAT_FUNCTION);
     TT_FM_CHK("Variables",   TT_CAT_VARIABLE);
+    TT_FM_CHK("Tasks",       TT_CAT_TASK);
     TT_FM_HDR("Reliability");
     TT_FM_CHK("Reliable",    TT_CAT_RELIABLE);
     TT_FM_CHK("Best-effort", TT_CAT_BEST_EFF);
@@ -800,10 +806,10 @@ static void tt_table_row(AppState *app, const Palette *P, const char *topic, con
         Clay_String cs = nf_clock_ms(m->wall_us);
         snprintf(tbuf, sizeof tbuf, "%.*s", (int)cs.length, cs.chars);
     }
-    /* the sender, direction-marked on a function feed ("> " = our call, "< " = the reply);
+    /* the sender, direction-marked on a call log ("> " = our call, "< " = the reply);
        a FORCED variable value carries its pin marker with the writer */
     snprintf(fbuf, sizeof fbuf, "%s%s%s",
-             kind == CAP_KIND_FUNCTION ? (m->mine ? "> " : "< ") : "",
+             tt_call_kind(kind) ? (m->mine ? "> " : "< ") : "",
              m->sender,
              m->forced ? " [F]" : "");
     CLAY({ .id = CLAY_IDI("feed_row", (uint32_t)idx),
@@ -1194,6 +1200,154 @@ static void topics_composer(AppState *app, const Palette *P, const Topic *t){
     }
 }
 
+/* =================================== center: task panel (our live call + observed runs) */
+
+static CapTaskCall tt_task_call;                 /* the selected task's own-call state, per frame */
+static CapTaskRun  tt_task_runs[CAP_TASK_RUNS];  /* observed runs off the @prg tap, per frame */
+
+/* DartCallStatus display words (net_capture hands the numeric status; no DART types here) */
+static const char *tt_call_status_word(int status){
+    switch (status){
+        case 0: return "OK";
+        case 1: return "APP_ERROR";
+        case 2: return "NO_HANDLER";
+        case 3: return "TIMEOUT";
+        case 4: return "PEER_LOST";
+        case 5: return "CANCELLED";
+        default: return "?";
+    }
+}
+
+/* a small status chip (caption mono on a tinted pill) */
+static void tt_task_chip(const Palette *P, Clay_String txt, Clay_Color fg, Clay_Color bg){
+    CLAY({ .layout = { .padding = { .left = UISCI(8), .right = UISCI(8),
+                                    .top = UISCI(3), .bottom = UISCI(3) } },
+           .backgroundColor = bg, .cornerRadius = CLAY_CORNER_RADIUS(UISC(4)) }) {
+        CLAY_TEXT(txt, CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_SEMI, FS_CAPTION),
+                                          .textColor = fg, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+}
+
+/* a cancel pill, greyed (and inert) when the definition declared no_cancel or nothing runs */
+static int tt_cancel_pill(const Palette *P, int enabled){
+    return ui_pill(P, CLAY_STRING("Cancel"), FAM_SANS, WT_SEMI, FS_SMALL,
+                   enabled ? P->amber : P->faint, P->panel2, P->border2, UISC(24)) && enabled;
+}
+
+/* one field of the latest progress update (name then value; nested members indented) */
+static void tt_task_prg_field(const Palette *P, const CapMsgField *f, int idx){
+    CLAY({ .id = CLAY_IDI("task_prg_field", (uint32_t)idx),
+           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(20)) },
+                       .padding = { .left = UISCI(10 + f->depth * 12), .right = UISCI(10) },
+                       .childGap = UISCI(10), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(110 - f->depth * 12)) } } }) {
+            CLAY_TEXT(ui_str(f->name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                                          .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        }
+        CLAY_TEXT(ui_str(f->value), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                       .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+}
+
+/* one observed run: caller + call id, its newest progress line, update count, age, cancel */
+static void tt_task_run_row(AppState *app, const Palette *P, const Topic *t,
+                            const CapTaskRun *r, int idx){
+    CLAY({ .id = CLAY_IDI("task_run", (uint32_t)idx),
+           .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(28)) },
+                       .padding = { .left = UISCI(10), .right = UISCI(4) }, .childGap = UISCI(10),
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
+           .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)),
+           .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+        ui_dot(UISC(6), P->green, UI_NONE);
+        CLAY_TEXT(ui_fmt("%s #%u", r->caller, r->call_id),
+                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                     .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) },
+                           .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+            CLAY_TEXT(tt_fit(r->preview, 60), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                                                 .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        }
+        CLAY_TEXT(ui_fmt("%u upd", r->updates),
+                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                     .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        CLAY_TEXT(nf_age(r->age_s), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                                       .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        if (tt_cancel_pill(P, t->cancellable) && app->cap)
+            cap_task_cancel_run(app->cap, t->path, r->provider_id, r->caller_lo, r->call_id);
+    }
+}
+
+/* the task panel between the control row and the call log: our own call's live state
+   (phase, decoded latest progress, terminal outcome, cancel) then every run observed on
+   the broadcast @prg tap, each with its own cancel. Progress semantics are schema-defined,
+   so updates render as decoded fields, never an invented percentage bar. */
+static void topics_task_panel(AppState *app, const Palette *P, const Topic *t){
+    int have  = app->cap ? cap_task_call_state(app->cap, t->path, &tt_task_call) : 0;
+    int n_run = app->cap ? cap_task_runs(app->cap, t->path, tt_task_runs, CAP_TASK_RUNS) : 0;
+    int i;
+    if (have && tt_task_call.phase != CAP_TCALL_IDLE){
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM,
+                           .padding = CLAY_PADDING_ALL(UISC(8)), .childGap = UISCI(4) },
+               .backgroundColor = P->panel, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
+               .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+            const CapTaskCall *c = &tt_task_call;
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(10),
+                               .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+                CLAY_TEXT(ui_fmt("your call #%u", c->call_id),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_SEMI, FS_SMALL),
+                                             .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                if (c->phase == CAP_TCALL_SENT)
+                    tt_task_chip(P, CLAY_STRING("CALLING..."), P->amber, P->amber_bg);
+                else if (c->phase == CAP_TCALL_RUNNING)
+                    tt_task_chip(P, CLAY_STRING("RUNNING"), P->green, P->green_bg);
+                else if (c->call_status == 0)
+                    tt_task_chip(P, CLAY_STRING("OK"), P->green, P->green_bg);
+                else
+                    tt_task_chip(P, ui_str(tt_call_status_word(c->call_status)), P->red, P->red_bg);
+                if (c->progress_count)
+                    CLAY_TEXT(ui_fmt("%u update%s", c->progress_count, c->progress_count == 1 ? "" : "s"),
+                              CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
+                                                 .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+                CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
+                if (tt_cancel_pill(P, t->cancellable
+                                   && (c->phase == CAP_TCALL_SENT || c->phase == CAP_TCALL_RUNNING))
+                    && app->cap)
+                    cap_task_cancel_call(app->cap, t->path);
+            }
+            if (c->phase == CAP_TCALL_DONE && c->call_msg[0])   /* the terminal message */
+                CLAY_TEXT(ui_fmt("%s", c->call_msg),
+                          CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION),
+                                             .textColor = c->call_status ? P->amber : P->dim }));
+            if (c->has_progress){                               /* the latest update, as fields */
+                if (c->latest.decoded)
+                    for (i = 0; i < c->latest.n_fields; i++)
+                        tt_task_prg_field(P, &c->latest.fields[i], i);
+                else {
+                    char raw[CAP_MSG_PREVIEW + 1];
+                    tt_sanitize(raw, (int)sizeof raw, c->latest.preview, c->latest.preview_len);
+                    CLAY_TEXT(ui_fmt("%s", raw), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                                                    .textColor = P->text }));
+                }
+            }
+        }
+    }
+    /* every run the tap observes (the explorer's own call excluded: the card above is it) */
+    CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8),
+                       .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
+        ui_section_label(P, ui_fmt("LIVE RUNS  %d", n_run));
+        if (t->exclusive || t->multi || !t->cancellable)
+            CLAY_TEXT(ui_fmt("%s%s%s", !t->cancellable ? "no cancel  " : "",
+                             t->exclusive ? "exclusive  " : "", t->multi ? "multi" : ""),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
+                                         .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+    }
+    if (n_run == 0)
+        CLAY_TEXT(tt_subscribed ? CLAY_STRING("no runs observed (progress shows here as it happens)")
+                                : CLAY_STRING("subscribe to observe live runs"),
+                  CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint }));
+    for (i = 0; i < n_run; i++) tt_task_run_row(app, P, t, &tt_task_runs[i], i);
+}
+
 static void topics_feed(AppState *app, const Palette *P){
     const Dataset *D = app->data;
     const Topic *t = (D && D->n_topics && app->sel_topic >= 0 && app->sel_topic < D->n_topics)
@@ -1301,8 +1455,9 @@ static void topics_feed(AppState *app, const Palette *P){
                     }
                 }
             }
+            if (t->kind == CAP_KIND_TASK) topics_task_panel(app, P, t);
             if (tt_feed_n == 0){
-                ui_placeholder(P, t->kind == CAP_KIND_FUNCTION
+                ui_placeholder(P, tt_call_kind(t->kind)
                                     ? CLAY_STRING("compose a call in the Publish tab to see requests and replies")
                                     : tt_subscribed ? CLAY_STRING("waiting for messages...")
                                                     : CLAY_STRING("subscribe to see live messages"));
@@ -1328,7 +1483,7 @@ static void topics_feed(AppState *app, const Palette *P){
                    reply repeats the request type is one set of columns, not two identical ones. */
                 if (!app->cap || !cap_topic_schema(app->cap, t->path, &tt_feed_schema[0]))
                     memset(&tt_feed_schema[0], 0, sizeof tt_feed_schema[0]);
-                if (!app->cap || t->kind != CAP_KIND_FUNCTION
+                if (!app->cap || !tt_call_kind(t->kind)
                     || !cap_topic_rsp_schema(app->cap, t->path, &tt_feed_schema[1])
                     || tt_feed_schema[1].hash == tt_feed_schema[0].hash)
                     memset(&tt_feed_schema[1], 0, sizeof tt_feed_schema[1]);
@@ -1517,36 +1672,38 @@ static void topic_schema_field_row(const Palette *P, const CapSchemaField *f, in
 /* the selected topic's advertised message schema (from any endpoint: pub or sub). The query
    prefilters each peer's interest by topic hash, so it is cheap even at many-thousand-topic
    scale and runs live every frame (no cache, no staleness). */
-static CapSchema tt_schema[2];          /* [0] request/primary, [1] response: Clay renders the
-                                           frame's text AFTER both sections fill, so each needs
-                                           its own strings to point into */
+static CapSchema tt_schema[3];          /* [0] request/primary, [1] response, [2] a task's
+                                           progress: Clay renders the frame's text AFTER the
+                                           sections fill, so each needs its own strings */
 static char      tt_dsl[8192];          /* scratch for the DSL handed to the clipboard */
 static int       tt_dsl_copied_topic = -1;   /* which topic's Copy DSL was last clicked */
 static uint32_t  tt_dsl_copied_ms;      /* when, for the brief "Copied" flash */
 static void topic_schema_section(AppState *app, const Palette *P, const Topic *t,
-                                 Clay_String label, int rsp){
-    CapSchema *sc = &tt_schema[rsp ? 1 : 0];
+                                 Clay_String label, int which){
+    CapSchema *sc = &tt_schema[which];
     int have, i, copied;
-    have = app->cap ? (rsp ? cap_topic_rsp_schema(app->cap, t->path, sc)
-                           : cap_topic_schema(app->cap, t->path, sc)) : 0;
-    copied = tt_dsl_copied_topic == app->sel_topic * 2 + rsp
+    have = app->cap ? (which == 1 ? cap_topic_rsp_schema(app->cap, t->path, sc)
+                     : which == 2 ? cap_topic_prg_schema(app->cap, t->path, sc)
+                                  : cap_topic_schema(app->cap, t->path, sc)) : 0;
+    copied = tt_dsl_copied_topic == app->sel_topic * 3 + which
           && (uint32_t)(g_now_ms - tt_dsl_copied_ms) < 1500u;
     /* header row: the label, and (inlined) a Copy DSL button that puts this section's
-       schema (request OR response) as compile-ready DSL text onto the system clipboard */
+       schema (request, response or progress) as compile-ready DSL onto the clipboard */
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(22)) },
                        .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
         ui_section_label(P, label);
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
         if (have && sc->inlined && ui_copy_pill(P, copied)
-            && cap_topic_schema_dsl(app->cap, t->path, rsp, tt_dsl, sizeof tt_dsl) > 0){
+            && cap_topic_schema_dsl(app->cap, t->path, which, tt_dsl, sizeof tt_dsl) > 0){
             SDL_SetClipboardText(tt_dsl);
-            tt_dsl_copied_topic = app->sel_topic * 2 + rsp;
+            tt_dsl_copied_topic = app->sel_topic * 3 + which;
             tt_dsl_copied_ms    = g_now_ms;
         }
     }
     if (!have){
-        CLAY_TEXT(rsp ? CLAY_STRING("none advertised (empty acknowledgement)")
-                      : CLAY_STRING("none advertised (raw bytes)"),
+        CLAY_TEXT(which == 1 ? CLAY_STRING("none advertised (empty acknowledgement)")
+                : which == 2 ? CLAY_STRING("none advertised (raw progress bytes)")
+                             : CLAY_STRING("none advertised (raw bytes)"),
                   CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL), .textColor = P->faint }));
     } else {
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
@@ -1571,10 +1728,10 @@ static void topic_schema_section(AppState *app, const Palette *P, const Topic *t
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
                                              .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
             }
-            if (sc->inlined)   /* id space split: request + response sections coexist */
+            if (sc->inlined)   /* id space split: the sections coexist in one layout */
                 for (i = 0; i < sc->n_fields; i++)
                     topic_schema_field_row(P, &sc->fields[i],
-                                           i + (rsp ? CAP_SCHEMA_FIELDS : 0));
+                                           i + which * CAP_SCHEMA_FIELDS);
             if (sc->inlined && sc->total_fields > sc->n_fields)
                 CLAY_TEXT(ui_fmt("  +%d more fields", sc->total_fields - sc->n_fields),
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->faint }));
@@ -1605,6 +1762,14 @@ static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
         if (t->kind)   /* patterns layer: name the entity + channel role this topic plays */
             CLAY_TEXT(ui_str(tt_kind_label(t)),
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->dim }));
+        if (t->kind == CAP_KIND_TASK){   /* the definition's declared attrs, as badges */
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(6) } }) {
+                if (t->cancellable) tt_task_chip(P, CLAY_STRING("cancellable"), P->green, P->green_bg);
+                else                tt_task_chip(P, CLAY_STRING("no cancel"),   P->amber, P->amber_bg);
+                if (t->exclusive)   tt_task_chip(P, CLAY_STRING("exclusive"),   P->dim,   P->panel2);
+                if (t->multi)       tt_task_chip(P, CLAY_STRING("multi"),       P->dim,   P->panel2);
+            }
+        }
 
         ui_section_label(P, CLAY_STRING("QUALITY OF SERVICE"));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8) } }) {
@@ -1614,6 +1779,11 @@ static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
         if (t->kind == CAP_KIND_FUNCTION){
             /* a function has two shapes: what a call sends and what the reply carries */
             topic_schema_section(app, P, t, CLAY_STRING("REQUEST SCHEMA"), 0);
+            topic_schema_section(app, P, t, CLAY_STRING("RESPONSE SCHEMA"), 1);
+        } else if (t->kind == CAP_KIND_TASK){
+            /* a task adds the broadcast progress shape between request and response */
+            topic_schema_section(app, P, t, CLAY_STRING("REQUEST SCHEMA"), 0);
+            topic_schema_section(app, P, t, CLAY_STRING("PROGRESS SCHEMA"), 2);
             topic_schema_section(app, P, t, CLAY_STRING("RESPONSE SCHEMA"), 1);
         } else {
             topic_schema_section(app, P, t, CLAY_STRING("SCHEMA"), 0);
@@ -1643,7 +1813,7 @@ static void topics_publish(AppState *app, const Palette *P, const Topic *t){
                        .childGap = UISCI(11) },
            .clip = { .vertical = true, .childOffset = Clay_GetScrollOffset() } }) {
         CLAY_TEXT(ui_str(t->path), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_BODY), .textColor = P->text }));
-        ui_section_label(P, t->kind == CAP_KIND_FUNCTION ? CLAY_STRING("COMPOSE CALL")
+        ui_section_label(P, tt_call_kind(t->kind)          ? CLAY_STRING("COMPOSE CALL")
                           : t->kind == CAP_KIND_VARIABLE ? CLAY_STRING("SET VALUE")
                           :                                CLAY_STRING("COMPOSE MESSAGE"));
         topics_composer(app, P, t);

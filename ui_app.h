@@ -102,9 +102,10 @@ enum {
     TT_CAT_RELIABLE   = 1u << 3,   /* reliable QoS */
     TT_CAT_BEST_EFF   = 1u << 4,   /* best-effort QoS */
     TT_CAT_SUBSCRIBED = 1u << 5,   /* the explorer is subscribed */
-    TT_CAT_ACTIVE     = 1u << 6    /* actively publishing (a measurable rate) */
+    TT_CAT_ACTIVE     = 1u << 6,   /* actively publishing (a measurable rate) */
+    TT_CAT_TASK       = 1u << 7    /* task entities */
 };
-#define TT_CAT_GROUP_KIND (TT_CAT_TOPIC | TT_CAT_FUNCTION | TT_CAT_VARIABLE)
+#define TT_CAT_GROUP_KIND (TT_CAT_TOPIC | TT_CAT_FUNCTION | TT_CAT_VARIABLE | TT_CAT_TASK)
 #define TT_CAT_GROUP_QOS  (TT_CAT_RELIABLE | TT_CAT_BEST_EFF)
 
 /* 1 if a topic passes the category filter (see AppState.topic_cats). cats == 0 = all pass. */
@@ -113,6 +114,7 @@ static int app_topic_cat_match(const Topic *t, unsigned cats){
     if (kind){                                   /* OR within the kind group */
         unsigned bit = t->kind == CAP_KIND_FUNCTION ? TT_CAT_FUNCTION
                      : t->kind == CAP_KIND_VARIABLE ? TT_CAT_VARIABLE
+                     : t->kind == CAP_KIND_TASK     ? TT_CAT_TASK
                      :                                TT_CAT_TOPIC;
         if (!(kind & bit)) return 0;
     }

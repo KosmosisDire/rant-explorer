@@ -65,10 +65,10 @@ void cap_stop(Capture *cap);
 
 /* ENTITY kind, values mirroring DartEntityKind (patterns/core.h). The capture layer walks
    peers through the canonical entity reflection (dart_node_peer_entity_next), so pattern
-   channels (f@req / f@rsp / v@set) never reach the UI: a function or variable is ONE entry
-   under its base name, everything else a plain topic. */
+   channels (f@req / f@rsp / t@prg / v@set) never reach the UI: a function, task or variable
+   is ONE entry under its base name, everything else a plain topic. */
 enum {
-    CAP_KIND_TOPIC = 0, CAP_KIND_FUNCTION, CAP_KIND_VARIABLE
+    CAP_KIND_TOPIC = 0, CAP_KIND_FUNCTION, CAP_KIND_VARIABLE, CAP_KIND_TASK
 };
 
 typedef struct {
@@ -78,6 +78,9 @@ typedef struct {
     uint8_t  kind;           /* CAP_KIND_*: what this entity is */
     uint8_t  writable;       /* CAP_KIND_VARIABLE: a set channel is advertised */
     uint8_t  forceable;      /* CAP_KIND_VARIABLE: the owner permits force/unforce (allow_force) */
+    uint8_t  cancellable;    /* CAP_KIND_TASK: the provider honors cancel (attrs; default on) */
+    uint8_t  exclusive;      /* CAP_KIND_TASK: declared serialization (attrs) */
+    uint8_t  multi;          /* redundant providers intended (attrs) */
     uint8_t  incomplete;     /* a pattern half-pair (partner channel missing/unresolved) */
 } CapEndpoint;
 
@@ -295,16 +298,19 @@ typedef struct {
    is the REQUEST schema (what the publish form fills / a call sends). */
 int  cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out);
 
-/* A FUNCTION entity's RESPONSE schema (what a reply carries); 0 for every other kind or
-   when no provider advertises one. */
+/* A FUNCTION or TASK entity's RESPONSE schema (what a reply carries); 0 for every other
+   kind or when no provider advertises one. */
 int  cap_topic_rsp_schema(const Capture *cap, const char *topic, CapSchema *out);
 
+/* A TASK entity's PROGRESS schema (what a @prg update carries); 0 for every other kind. */
+int  cap_topic_prg_schema(const Capture *cap, const char *topic, CapSchema *out);
+
 /* Spell `topic`'s advertised schema as compile-ready DSL text into out[out_cap] (always
-   NUL-terminated). rsp = 1 spells a FUNCTION's response schema instead of the primary
-   (request/value/payload) one. Returns the text length, or 0 when no inlinable schema is
-   advertised (hash-only or none). Walks the FULL field set, not the display cap; nested
-   structs render as `name: { ... }`. */
-int  cap_topic_schema_dsl(const Capture *cap, const char *topic, int rsp, char *out, size_t out_cap);
+   NUL-terminated). which = 0 spells the primary (request/value/payload) schema, 1 a
+   function/task RESPONSE, 2 a task PROGRESS. Returns the text length, or 0 when no
+   inlinable schema is advertised (hash-only or none). Walks the FULL field set, not the
+   display cap; nested structs render as `name: { ... }`. */
+int  cap_topic_schema_dsl(const Capture *cap, const char *topic, int which, char *out, size_t out_cap);
 
 /* Variable FORCE control (a writable VARIABLE entity only): force pins the value built
    from the publish-form values (same field parsing as cap_publish_form) until unforce;
@@ -318,6 +324,53 @@ int  cap_variable_unforce(Capture *cap, const char *topic);
    verifying a candidate receiver). cap_poll flushes it the moment matching resolves and
    drops it loudly after a few seconds; the UI shows a sending indicator meanwhile. */
 int  cap_topic_send_pending(const Capture *cap, const char *topic);
+
+/* ---------------------------------------------------------------------- task control
+   A TASK entity (a function with progress + cancel). Subscribing one opens a raw tap on
+   its broadcast @prg channel (best-effort: an observer must never stall the task), so the
+   explorer sees EVERY live run's progress; a call from the publish form goes through a
+   real remote-task handle (cap_publish_form routes it), and its live state lands here. */
+
+/* the explorer's own in-flight call on a task topic */
+enum { CAP_TCALL_IDLE = 0, CAP_TCALL_SENT, CAP_TCALL_RUNNING, CAP_TCALL_DONE };
+typedef struct {
+    int      phase;              /* CAP_TCALL_*: SENT until the RUNNING ack (or a reply) */
+    uint32_t call_id;            /* the call's id (the cancel key) */
+    uint32_t progress_count;     /* progress payloads received for this call */
+    int      call_status;        /* terminal DartCallStatus (phase DONE) */
+    char     call_msg[256];      /* terminal response message ("" = none) */
+    int      has_progress;       /* latest holds the newest decoded progress update */
+    CapFeedItem latest;          /* that update, decoded like any feed message */
+} CapTaskCall;
+/* Fill *out with the explorer's own call state on `topic`; 0 for a non-task / never-called
+   topic (out zeroed, phase IDLE). */
+int  cap_task_call_state(const Capture *cap, const char *topic, CapTaskCall *out);
+/* Cancel the explorer's OWN in-flight call (phase SENT/RUNNING). Cooperative: the terminal
+   status is the answer. Returns 1 on send (0: nothing in flight, or provider no_cancel). */
+int  cap_task_cancel_call(Capture *cap, const char *topic);
+
+/* one observed live run on a task topic (from the raw @prg tap), the explorer's own
+   call excluded (that one is cap_task_call_state) */
+#define CAP_TASK_RUNS 16          /* live-run rows kept (oldest evicted when full) */
+typedef struct {
+    char     caller[CAP_NAME_CAP];    /* caller resolved via discovery uuids, or lo-32 hex */
+    char     provider[CAP_NAME_CAP];  /* the node working the call */
+    uint32_t caller_lo;               /* the caller's uuid low-32 (the wire discriminator) */
+    uint32_t call_id;
+    uint32_t provider_id;             /* provider peer id (the cancel destination) */
+    uint32_t updates;                 /* progress payloads seen */
+    double   age_s;                   /* seconds since the last update */
+    uint32_t last_len;                /* newest update's payload length */
+    char     preview[CAP_MSG_PREVIEW];/* newest update, one line (decoded when typed) */
+} CapTaskRun;
+/* Copy up to max of `topic`'s observed live runs (newest-updated first). Rows age out
+   ~30s after their last update. Returns the count. */
+int  cap_task_runs(const Capture *cap, const char *topic, CapTaskRun *out, int max);
+/* Third-party cancel: craft the raw CANCEL op ([u32 call_id][op 1] + [u32 caller_lo])
+   on the task's request channel, directed at the run's provider. Cooperative, never
+   acked; the run's terminal outcome (at ITS caller) is the answer. Returns 1 on send. */
+int  cap_task_cancel_run(Capture *cap, const char *topic, uint32_t provider_id,
+                         uint32_t caller_lo, uint32_t call_id);
 
 /* ------------------------------------------------------------------- node logs
    Every DART node hosts the built-in @dart/log/{error,warn,info} topics. The explorer

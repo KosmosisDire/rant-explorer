@@ -148,6 +148,10 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
                 g_topics[ti].kind = cn->pub[k].kind;
                 if (cn->pub[k].writable)   g_topics[ti].writable = 1;
                 if (cn->pub[k].forceable)  g_topics[ti].forceable = 1;
+                /* task attrs come from the PROVIDES side only (the definition declares them) */
+                if (cn->pub[k].cancellable) g_topics[ti].cancellable = 1;
+                if (cn->pub[k].exclusive)   g_topics[ti].exclusive = 1;
+                if (cn->pub[k].multi)       g_topics[ti].multi = 1;
                 if (cn->pub[k].incomplete) g_topics[ti].incomplete = 1;
             }
         }

@@ -65,9 +65,12 @@ typedef struct {
 typedef struct {
     char path[96];               /* "sensors/lidar/points"; the tree (ui_tree.h) groups
                                      segments split on '/' OR '.' */
-    int  kind;                   /* CAP_KIND_*: plain topic, or a function/variable ENTITY */
+    int  kind;                   /* CAP_KIND_*: plain topic, or a function/variable/task ENTITY */
     int  writable;               /* variable: an owner advertises a set channel */
     int  forceable;              /* variable: an owner advertises allow_force (force/unforce permitted) */
+    int  cancellable;            /* task: the provider honors cancel (attrs; gates the cancel buttons) */
+    int  exclusive;              /* task: declared serialization (attrs) */
+    int  multi;                  /* task: redundant providers intended (attrs) */
     int  incomplete;             /* pattern half-pair (a diagnosable misadvertisement) */
     Qos  qos;
     int  pubs[UI_MAX_ENDPOINTS]; int n_pubs;   /* node indices */

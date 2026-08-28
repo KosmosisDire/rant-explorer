@@ -63,9 +63,12 @@ typedef struct {
     char     name[DART_TOPIC_NAME_MAX + 1];   /* entity base name (mangling never surfaces) */
     uint16_t index;
     int      reliable;       /* offered (pub) / requested (sub) */
-    uint8_t  kind;           /* DartEntityKind: 0 topic, else function/variable */
+    uint8_t  kind;           /* DartEntityKind: 0 topic, else function/variable/task */
     uint8_t  writable;       /* variable: a set channel is advertised */
     uint8_t  forceable;      /* variable: the owner permits force/unforce (allow_force) */
+    uint8_t  cancellable;    /* task: the provider honors cancel (attrs) */
+    uint8_t  exclusive;      /* task: declared serialization (attrs) */
+    uint8_t  multi;          /* redundant providers intended (attrs) */
     uint8_t  incomplete;     /* pattern half-pair */
 } CapTopic;
 
@@ -198,11 +201,30 @@ typedef struct {
     uint8_t      pend_op;                /* VARIABLE: the set-channel op byte */
     uint8_t      pend_used;
     unsigned long long pend_expire_ms;
-    DartFunction *fn;                    /* FUNCTION: our caller handle (subscribe = watch own calls) */
-    DartSchema  *req_schema;             /* FUNCTION: parsed request schema (ours; form + echo decode) */
-    DartSchema  *rsp_schema;             /* FUNCTION: parsed response schema (ours; reply decode) */
+    DartFunction *fn;                    /* FUNCTION/TASK: our caller handle (subscribe = watch own calls) */
+    DartSchema  *req_schema;             /* FUNCTION/TASK: parsed request schema (ours; form + echo decode) */
+    DartSchema  *rsp_schema;             /* FUNCTION/TASK: parsed response schema (ours; reply decode) */
     int          forced;                 /* VARIABLE: the newest value carried the FORCED flag */
     uint32_t     write_seq;              /* VARIABLE: the newest value's write counter */
+    /* TASK: entirely RAW wire, no pattern handle (the per-peer demux binds an identity to
+       ONE local topic, so a remote handle's channels and raw twins cannot coexist; the
+       taskx selftest pins the raw recipe). prg_ch taps the broadcast progress, req_raw
+       carries calls + cancel ops, rsp_ch receives our directed responses. The call state
+       below is UI-thread-owned (queued intake) and bracketed for the snapshot reads. */
+    DartTopic   *prg_ch;                 /* TASK: raw @prg tap (best-effort: never stalls the task) */
+    DartTopic   *req_raw;                /* TASK: raw @req publisher (calls + cancel ops) */
+    DartTopic   *rsp_ch;                 /* TASK: raw @rsp subscriber (RUNNING + terminals) */
+    uint16_t     prg_index, rsp_index;   /* their local indices (intake demux keys) */
+    int          call_phase;             /* CAP_TCALL_* of our own newest call */
+    uint32_t     call_id;                /* that call's id (our own per-caller counter) */
+    uint32_t     call_seq;               /* the counter behind call_id */
+    uint32_t     call_provider;          /* the peer the call was directed at (cancel target) */
+    unsigned long long call_deadline_ms; /* until-first-response bound (RUNNING drops it) */
+    uint32_t     prg_count;              /* progress payloads seen for the current call */
+    int          task_status;            /* its terminal DartCallStatus */
+    char         task_msg[DART_CALL_MSG_MAX + 1];   /* its terminal response message */
+    CapMsgRec   *prg_last;               /* newest decoded progress (lazily allocated) */
+    int          prg_have;               /* prg_last holds the current call's newest update */
     uint16_t     index[2];               /* their topic indices (valid where ch[i] != NULL) */
     unsigned long long n_msgs;
     unsigned long long n_drops;
@@ -221,6 +243,33 @@ typedef struct {
 } CapSub;
 
 static CapSub cap_subs[CAP_MAX_SUBS];
+
+/* task-pattern wire constants, mirroring src/patterns/core.c (like the variable block below) */
+#define CAP_REQ_PREFIX 5           /* @req: [u32 call_id][u8 op] */
+#define CAP_RSP_PREFIX 5           /* @rsp: [u32 call_id][u8 status], then [u8 len][msg] */
+#define CAP_PRG_PREFIX 8           /* @prg: [u32 caller_lo][u32 call_id] */
+#define CAP_TASK_OP_CALL   0u      /* @req op: a call (payload = the request) */
+#define CAP_TASK_OP_CANCEL 1u      /* @req op: cancel (empty payload = the sender's own call;
+                                      a [u32 caller_lo] payload names another caller's) */
+#define CAP_CALL_TIMEOUT_MS 5000ull /* until-first-response bound (DART_CALL_TIMEOUT_US) */
+
+static uint32_t cap_self_lo;       /* our own uuid low-32 (the @prg header's caller key) */
+
+/* observed live runs across every tapped task topic, keyed (topic, provider, caller_lo,
+   call_id). Written by the tap intake (UI thread bar the create-to-queue window, so writes
+   and the UI reads bracket with the node lock like the other shared tables); aged out by
+   cap_task_poll ~30s after the last update. */
+#define CAP_RUN_TTL_MS 30000ull
+typedef struct {
+    int      used;
+    CapSub  *s;
+    uint32_t provider, caller_lo, call_id;
+    uint32_t updates, last_len;
+    unsigned long long last_ms;
+    char     preview[CAP_MSG_PREVIEW];
+} CapRunRec;
+static CapRunRec cap_runs[CAP_TASK_RUNS];
+static CapMsgRec cap_run_scratch;  /* decode scratch for a run's preview line */
 
 static CapSub *cap_sub_find(const char *name){
     int i;
@@ -533,18 +582,11 @@ static void cap_stamp(CapMsgRec *m, uint64_t recv_us, uint64_t written_us){
     m->wall_us = m->stamped ? written_us : cap_base_wall_us + (uint64_t)(m->recv_s * 1e6);
 }
 
-/* append one message to a topic's ring (received or our own echo). Does not touch
-   n_msgs. With a schema the message is reflected into field rows; raw bytes else. */
-static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t len, int mine,
-                          const DartSchema *schema, uint64_t recv_us, uint64_t written_us){
-    CapMsgRec *m;
-    if (!s->ring){                       /* lazy: first message on this topic allocates the ring */
-        s->ring = (CapMsgRec *)calloc(CAP_FEED_MAX, sizeof *s->ring);
-        if (!s->ring) return;            /* out of memory: drop the message rather than crash */
-    }
-    m = &s->ring[s->head];
+/* fill one message record (a ring slot, or the task layer's latest-progress copy). With a
+   schema the message is reflected into field rows; raw bytes else. */
+static void cap_rec_fill(CapMsgRec *m, DartString sender, const void *data, size_t len, int mine,
+                         const DartSchema *schema, uint64_t recv_us, uint64_t written_us){
     cap_stamp(m, recv_us, written_us);
-    m->uid = ++s->uid_next;
     m->len = (uint32_t)len;
     m->decoded = 0; m->type_name[0] = '\0';
     m->n_fields = m->total_fields = 0;
@@ -561,6 +603,19 @@ static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t
     m->mine = mine; m->forced = 0;
     m->call_status = 0; m->call_msg[0] = '\0';   /* the slot is reused: never inherit */
     snprintf(m->sender, sizeof m->sender, "%.*s", (int)sender.len, sender.data ? sender.data : "");
+}
+
+/* append one message to a topic's ring (received or our own echo). Does not touch n_msgs. */
+static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t len, int mine,
+                          const DartSchema *schema, uint64_t recv_us, uint64_t written_us){
+    CapMsgRec *m;
+    if (!s->ring){                       /* lazy: first message on this topic allocates the ring */
+        s->ring = (CapMsgRec *)calloc(CAP_FEED_MAX, sizeof *s->ring);
+        if (!s->ring) return;            /* out of memory: drop the message rather than crash */
+    }
+    m = &s->ring[s->head];
+    cap_rec_fill(m, sender, data, len, mine, schema, recv_us, written_us);
+    m->uid = ++s->uid_next;
     s->head = (s->head + 1) % CAP_FEED_MAX;
     if (s->count < CAP_FEED_MAX) s->count++;
 }
@@ -729,12 +784,170 @@ int cap_node_log(const Capture *cap, const char *node_name, unsigned level_mask,
     return n;
 }
 
+/* a task tap's message by the tap topic's local index */
+static CapSub *cap_sub_by_prg_index(uint16_t index){
+    int i;
+    for (i = 0; i < CAP_MAX_SUBS; i++){
+        CapSub *s = &cap_subs[i];
+        if (s->used && s->prg_ch && s->prg_index == index) return s;
+    }
+    return NULL;
+}
+/* a task response by the rsp channel's local index */
+static CapSub *cap_sub_by_rsp_index(uint16_t index){
+    int i;
+    for (i = 0; i < CAP_MAX_SUBS; i++){
+        CapSub *s = &cap_subs[i];
+        if (s->used && s->rsp_ch && s->rsp_index == index) return s;
+    }
+    return NULL;
+}
+
+/* one directed @rsp message: the RUNNING ack or the terminal of OUR current call. The
+   header splits as [u32 call_id][u8 status][u8 len][message]. UI thread (queued). */
+static void cap_task_rsp_intake(CapSub *s, const DartMsg *msg){
+    const uint8_t *h = msg->header.data;
+    uint32_t id; uint8_t status; size_t mlen;
+    if (msg->header.len < CAP_RSP_PREFIX + 1u) return;
+    id = i_dart_le_r32(h); status = h[4];
+    mlen = h[5];
+    if (CAP_RSP_PREFIX + 1u + mlen > msg->header.len) mlen = msg->header.len - CAP_RSP_PREFIX - 1u;
+    if (cap_node) dart_node_lock(cap_node);
+    if (id != s->call_id || s->call_phase == CAP_TCALL_IDLE){
+        if (cap_node) dart_node_unlock(cap_node);
+        return;                                      /* a stale call's straggler */
+    }
+    if (status == (uint8_t)DART_CALL_RUNNING){       /* non-terminal: the deadline drops */
+        if (s->call_phase == CAP_TCALL_SENT) s->call_phase = CAP_TCALL_RUNNING;
+        if (cap_node) dart_node_unlock(cap_node);
+        return;
+    }
+    s->call_phase  = CAP_TCALL_DONE;
+    s->task_status = (int)status;
+    snprintf(s->task_msg, sizeof s->task_msg, "%.*s", (int)mlen, (const char *)h + CAP_RSP_PREFIX + 1);
+    if (cap_node) dart_node_unlock(cap_node);
+    /* the terminal joins the call log (the ring is UI-thread-owned, like every feed) */
+    cap_ring_push(s, msg->publisher_name, msg->data.data, msg->data.len, 0, msg->schema,
+                  msg->recv_us, msg->written_us);
+    if (s->ring){
+        int newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
+        s->ring[newest].call_status = (int)status;
+        snprintf(s->ring[newest].call_msg, sizeof s->ring[newest].call_msg, "%s", s->task_msg);
+    }
+    s->n_msgs++;
+}
+
+/* one @prg update off the raw tap: our own call's newest progress, or a foreign run's row.
+   Runs on the UI thread (queued dispatch); the shared call state and run table are
+   bracketed with the node lock (no-op if this thread already holds it). Progress never
+   enters the topic feed ring: the ring stays the call log (echoes + terminals). */
+static void cap_task_prg_intake(CapSub *s, const DartMsg *msg){
+    uint32_t lo, id;
+    if (msg->header.len != CAP_PRG_PREFIX) return;
+    lo = i_dart_le_r32(msg->header.data);
+    id = i_dart_le_r32(msg->header.data + 4);
+    if (cap_node) dart_node_lock(cap_node);
+    if (lo == cap_self_lo){                    /* our own call (the remote's prg twin is shadowed) */
+        if (s->call_id == id && s->call_phase != CAP_TCALL_IDLE){
+            if (s->call_phase == CAP_TCALL_SENT) s->call_phase = CAP_TCALL_RUNNING;
+            if (!s->prg_last) s->prg_last = (CapMsgRec *)calloc(1, sizeof *s->prg_last);
+            if (s->prg_last){
+                cap_rec_fill(s->prg_last, msg->publisher_name, msg->data.data, msg->data.len,
+                             0, msg->schema, msg->recv_us, msg->written_us);
+                s->prg_last->uid = ++s->prg_count;   /* update ordinal: a fresh copy per update */
+                s->prg_have = 1;
+            } else {
+                s->prg_count++;
+            }
+        }
+    } else {                                   /* a foreign run: upsert its row */
+        CapRunRec *r = NULL;
+        int i;
+        for (i = 0; i < CAP_TASK_RUNS; i++){
+            CapRunRec *c = &cap_runs[i];
+            if (c->used && c->s == s && c->provider == msg->publisher_id
+                && c->caller_lo == lo && c->call_id == id){ r = c; break; }
+        }
+        if (!r){                               /* claim a free slot, else evict the stalest */
+            CapRunRec *victim = &cap_runs[0];
+            for (i = 0; i < CAP_TASK_RUNS && !r; i++) if (!cap_runs[i].used) r = &cap_runs[i];
+            if (!r){
+                for (i = 1; i < CAP_TASK_RUNS; i++)
+                    if (cap_runs[i].last_ms < victim->last_ms) victim = &cap_runs[i];
+                r = victim;
+            }
+            memset(r, 0, sizeof *r);
+            r->used = 1; r->s = s;
+            r->provider = msg->publisher_id; r->caller_lo = lo; r->call_id = id;
+        }
+        r->updates++;
+        r->last_ms  = cap_now_ms();
+        r->last_len = (uint32_t)msg->data.len;
+        if (msg->schema){
+            cap_decode_fields(&cap_run_scratch, msg->data, msg->schema);
+            memcpy(r->preview, cap_run_scratch.preview, CAP_MSG_PREVIEW);
+            r->preview[CAP_MSG_PREVIEW - 1] = '\0';
+        } else {                               /* raw head, printable ASCII */
+            uint32_t k, n = msg->data.len < CAP_MSG_PREVIEW - 1 ? (uint32_t)msg->data.len
+                                                                : CAP_MSG_PREVIEW - 1;
+            for (k = 0; k < n; k++){
+                unsigned char c = ((const unsigned char *)msg->data.data)[k];
+                r->preview[k] = (c >= 0x20 && c < 0x7f) ? (char)c : '.';
+            }
+            r->preview[n] = '\0';
+        }
+    }
+    if (cap_node) dart_node_unlock(cap_node);
+}
+
+/* task upkeep, on the UI thread each frame: age out run rows that stopped updating
+   (~30s), and time out an own call still waiting for its FIRST response (5s; RUNNING
+   has no deadline, cancel is the tool for impatience). */
+static void cap_task_poll(void){
+    unsigned long long now = cap_now_ms();
+    int i, any = 0;
+    for (i = 0; i < CAP_TASK_RUNS; i++) if (cap_runs[i].used) any = 1;
+    if (any){
+        if (cap_node) dart_node_lock(cap_node);
+        for (i = 0; i < CAP_TASK_RUNS; i++)
+            if (cap_runs[i].used && now - cap_runs[i].last_ms > CAP_RUN_TTL_MS) cap_runs[i].used = 0;
+        if (cap_node) dart_node_unlock(cap_node);
+    }
+    for (i = 0; i < CAP_MAX_SUBS; i++){
+        CapSub *s = &cap_subs[i];
+        int expire;
+        if (!s->used || s->kind != CAP_KIND_TASK) continue;
+        if (cap_node) dart_node_lock(cap_node);
+        expire = s->call_phase == CAP_TCALL_SENT && now > s->call_deadline_ms;
+        if (expire){
+            s->call_phase  = CAP_TCALL_DONE;
+            s->task_status = (int)DART_CALL_TIMEOUT;
+            snprintf(s->task_msg, sizeof s->task_msg, "timeout");
+        }
+        if (cap_node) dart_node_unlock(cap_node);
+        if (expire){   /* one synthesized call-log row, like a function's timed-out reply */
+            cap_ring_push(s, dart_cstr("(no reply)"), NULL, 0, 0, NULL,
+                          cap_node ? i_dart_node_now_us(cap_node) : 0, 0);
+            if (s->ring){
+                int newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
+                s->ring[newest].call_status = (int)DART_CALL_TIMEOUT;
+                snprintf(s->ring[newest].call_msg, sizeof s->ring[newest].call_msg, "timeout");
+            }
+            s->n_msgs++;
+        }
+    }
+}
+
 /* the node's message sink: append a delivered message to its topic ring. Every explorer
    topic is queued, so this only ever runs on the UI thread (cap_poll's dispatch) --
    the rings and their metrics need no locking. We keep only a short payload preview. */
 static void cap_on_message(const DartMsg *msg){
     CapSub *s;
     if (cap_nodelog_intake(msg)) return;      /* a @dart/log line, not a topic feed */
+    s = cap_sub_by_prg_index(msg->topic_index);
+    if (s){ cap_task_prg_intake(s, msg); return; }   /* a task tap update, not a topic feed */
+    s = cap_sub_by_rsp_index(msg->topic_index);
+    if (s){ cap_task_rsp_intake(s, msg); return; }   /* a task response (RUNNING / terminal) */
     s = cap_sub_by_index(msg->topic_index);
     if (!s) return;
     /* jitter is INTER-ARRIVAL, so it stays on recv_us (the poll-side arrival stamp, not when
@@ -868,6 +1081,7 @@ int cap_start(Capture *cap, const Config *cfg){
     cap->mem = NULL;         /* the node owns its memory now; close frees it */
     cap_base_mono_us = i_dart_node_now_us(node);    /* the two feed-stamp origins, from the */
     cap_base_wall_us = i_dart_node_wall_us(node);   /* node's own clocks (see cap_stamp) */
+    cap_self_lo = i_dart_le_r32(i_dart_node_uuid(node));   /* our @prg caller key */
     cap_node = node;         /* the log/table serializer handle (see the THREADING note) */
     {   /* join the mesh-wide @dart/log topics: widen our own built-in handles to PUBSUB
            (one shared topic per level subscribes to EVERY node's lines, with each node's
@@ -909,6 +1123,7 @@ int cap_poll(Capture *cap){
     n = dart_node_dispatch(node, 0, 0);
     cap_drain_replies(node);   /* parked function replies -> their feeds (UI thread) */
     cap_pend_poll();           /* parked sends -> the wire once matching resolves */
+    cap_task_poll();           /* age out silent task-run rows */
     cap_schema_poll(node);     /* re-adopt topics whose advertised schema changed */
     cap_meta_poll(node);       /* keep the watched node's runtime stats fresh */
     return n;
@@ -924,8 +1139,13 @@ void cap_stop(Capture *cap){
     for (i = 0; i < CAP_MAX_SUBS; i++){
         free(cap_subs[i].ring);   cap_subs[i].ring = NULL; cap_subs[i].count = cap_subs[i].head = 0;
         free(cap_subs[i].pend_data); cap_subs[i].pend_data = NULL; cap_subs[i].pend_used = 0;
+        free(cap_subs[i].prg_last); cap_subs[i].prg_last = NULL; cap_subs[i].prg_have = 0;
+        if (cap_subs[i].req_schema){ dart_schema_free(cap_subs[i].req_schema, cap_schema_alloc, NULL); cap_subs[i].req_schema = NULL; }
+        if (cap_subs[i].rsp_schema){ dart_schema_free(cap_subs[i].rsp_schema, cap_schema_alloc, NULL); cap_subs[i].rsp_schema = NULL; }
         cap_subs[i].used = 0;
     }
+    memset(cap_runs, 0, sizeof cap_runs);
+    cap_self_lo = 0;
     for (i = 0; i < CAP_MAX_PEERS; i++){
         free(cap_peers[i].pub); cap_peers[i].pub = NULL; cap_peers[i].pub_cap = cap_peers[i].n_pub = 0;
         free(cap_peers[i].sub); cap_peers[i].sub = NULL; cap_peers[i].sub_cap = cap_peers[i].n_sub = 0;
@@ -1125,13 +1345,15 @@ static uint8_t cap_entity_kind(const char *name, int *writable){
     return CAP_KIND_TOPIC;
 }
 
-/* the CHANNEL name that carries an entity's schema: a function's request channel
-   ("name@req"; rsp = "name@rsp"), everything else the bare name (a variable's value
-   channel IS the bare name on the wire) */
+/* the CHANNEL name that carries an entity's schema: a function/task request channel
+   ("name@req"; which 1 = "name@rsp", 2 = a task's "name@prg"), everything else the bare
+   name (a variable's value channel IS the bare name on the wire) */
 static void cap_primary_channel_name(char *dst, size_t cap, const char *topic, uint8_t kind,
-                                     int rsp){
-    if (kind == CAP_KIND_FUNCTION) snprintf(dst, cap, "%s%s", topic, rsp ? "@rsp" : "@req");
-    else                           snprintf(dst, cap, "%s", topic);
+                                     int which){
+    if (kind == CAP_KIND_FUNCTION || kind == CAP_KIND_TASK)
+        snprintf(dst, cap, "%s%s", topic, which == 1 ? "@rsp" : which == 2 ? "@prg" : "@req");
+    else
+        snprintf(dst, cap, "%s", topic);
 }
 
 /* function replies arrive on the SERVICE thread (the caller's delivery callback, node lock
@@ -1287,6 +1509,66 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
         s->reliable = 1;
         return 1;
     }
+    if (s->kind == CAP_KIND_TASK){
+        /* Subscribe = watch every live run over the raw @prg tap; publish = also be a
+           caller (calling implies watching, like a function's call log). ALL THREE
+           channels are raw: a remote-task handle beside them would be a same-identity
+           twin, and the per-peer demux binds an identity to ONE local topic, so its
+           channels would shadow (or be shadowed by) the raw ones. The taskx selftest
+           pins this recipe (raw tap + raw req; no live pattern handle). */
+        DartRole trole;
+        char cn[DART_TOPIC_NAME_MAX + 8];
+        if (s->publishing) s->subscribed = 1;
+        trole = s->subscribed ? DART_SUB_ONLY : DART_INACTIVE;
+        if (!s->prg_ch && trole != DART_INACTIVE){
+            /* the tap, BEST-EFFORT: RxO keeps an observer out of flow control, so it can
+               never stall the task */
+            DartSchema *prg;
+            snprintf(cn, sizeof cn, "%s@prg", s->name);
+            prg = cap_topic_schema_parse(node, cn);
+            s->prg_ch = i_dart_node_create_pattern_topic(node, cn, trole, prg,
+                     &(DartTopicOpts){ .qos = { .reliability = DART_BEST_EFFORT } },
+                     DART_KIND_TASK_PRG, CAP_PRG_PREFIX, 0, 0, NULL, NULL);
+            if (prg) dart_schema_free(prg, cap_schema_alloc, NULL);
+            if (!s->prg_ch) return 0;
+            dart_topic_dispatch(s->prg_ch, 0, 0);   /* queued: updates drain on the UI thread */
+            dart_node_lock(node);
+            s->prg_index = dart_topic_index(s->prg_ch);
+            dart_node_unlock(node);
+        } else if (s->prg_ch){
+            dart_topic_set_role(s->prg_ch, trole);
+        }
+        if (!s->rsp_ch && trole != DART_INACTIVE){
+            /* our directed responses (RUNNING + terminals); reliable like the pattern's */
+            snprintf(cn, sizeof cn, "%s@rsp", s->name);
+            s->rsp_ch = i_dart_node_create_pattern_topic(node, cn, DART_SUB_ONLY, NULL,
+                     &(DartTopicOpts){ .qos = { .reliability = DART_RELIABLE } },
+                     DART_KIND_TASK_RSP, CAP_RSP_PREFIX, 0, 0, NULL, NULL);
+            if (!s->rsp_ch) return 0;
+            dart_topic_dispatch(s->rsp_ch, 0, 0);
+            dart_node_lock(node);
+            s->rsp_index = dart_topic_index(s->rsp_ch);
+            dart_node_unlock(node);
+        }
+        if (!s->req_raw && trole != DART_INACTIVE){
+            /* calls + cancel ops out; carries the provider's request schema so its gate
+               matches. Created at subscribe so it is matched by the time a call or a
+               run's cancel button happens. */
+            DartSchema *req;
+            snprintf(cn, sizeof cn, "%s@req", s->name);
+            req = cap_topic_schema_parse(node, cn);
+            s->req_raw = i_dart_node_create_pattern_topic(node, cn, DART_PUB_ONLY, req,
+                     &(DartTopicOpts){ .qos = { .reliability = DART_RELIABLE } },
+                     DART_KIND_TASK_REQ, CAP_REQ_PREFIX, 0, 0, NULL, NULL);
+            if (!s->req_raw){
+                if (req) dart_schema_free(req, cap_schema_alloc, NULL);
+                return 0;
+            }
+            s->req_schema = req;   /* keep our parsed copy: form source + echo decode */
+        }
+        s->reliable = 1;
+        return 1;
+    }
     return cap_sub_reconcile_topic(s, node, want);
 }
 
@@ -1384,9 +1666,36 @@ int cap_declare_publish(Capture *cap, const char *topic){
 #define CAP_SET_OP_UNFORCE 0x02u
 
 /* the live channel that carries this topic's outgoing sends (functions never route here:
-   a call goes through the caller handle) */
+   a call goes through the caller handle; a task call is crafted on its raw req channel) */
 static DartTopic *cap_send_channel(CapSub *s){
-    return s->kind == CAP_KIND_VARIABLE ? s->set_ch : s->ch[s->reliable];
+    return s->kind == CAP_KIND_VARIABLE ? s->set_ch
+         : s->kind == CAP_KIND_TASK     ? s->req_raw : s->ch[s->reliable];
+}
+
+/* one raw task call: [u32 call_id][op CALL] + the request, DIRECTED at the oldest matched
+   provider (a task request always has exactly one executor). UI thread. */
+static int cap_task_call_send(CapSub *s, const void *data, size_t len){
+    uint8_t hdr[CAP_REQ_PREFIX];
+    uint32_t provider = i_dart_topic_oldest_match(s->req_raw);
+    uint32_t id;
+    if (!provider) return 0;               /* routed callers park until a provider matches */
+    dart_node_lock(cap_node);              /* the state is read by cap_task_call_state */
+    id = ++s->call_seq;
+    s->call_phase = CAP_TCALL_SENT;
+    s->call_id = id; s->call_provider = provider;
+    s->prg_count = 0; s->prg_have = 0;
+    s->task_status = 0; s->task_msg[0] = '\0';
+    s->call_deadline_ms = cap_now_ms() + CAP_CALL_TIMEOUT_MS;
+    dart_node_unlock(cap_node);
+    i_dart_le_w32(hdr, id); hdr[4] = (uint8_t)CAP_TASK_OP_CALL;
+    if (i_dart_topic_send_to(s->req_raw, provider, dart_bytes(hdr, sizeof hdr),
+                             dart_bytes(data, len)) != DART_OK){
+        dart_node_lock(cap_node);
+        s->call_phase = CAP_TCALL_IDLE;
+        dart_node_unlock(cap_node);
+        return 0;
+    }
+    return 1;
 }
 
 static int cap_send_now(CapSub *s, DartTopic *ch, const void *data, size_t len, uint8_t var_op){
@@ -1394,6 +1703,7 @@ static int cap_send_now(CapSub *s, DartTopic *ch, const void *data, size_t len, 
         uint8_t op = var_op;   /* 0 = a dumb write; force/unforce ride the same byte */
         return i_dart_topic_send_hdr(ch, dart_bytes(&op, 1), dart_bytes(data, len)) >= 0;
     }
+    if (s->kind == CAP_KIND_TASK) return cap_task_call_send(s, data, len);
     return dart_topic_send(ch, dart_bytes(data, len)) >= 0;
 }
 
@@ -1410,7 +1720,8 @@ static int cap_send_park(CapSub *s, const void *data, size_t len, uint8_t var_op
     s->pend_used = 1;
     s->pend_expire_ms = cap_now_ms() + CAP_PEND_EXPIRE_MS;
     cap_logf("%s %s parked: match still forming (flushes when it resolves)",
-             s->kind == CAP_KIND_VARIABLE ? "SET" : "PUBLISH", s->name);
+             s->kind == CAP_KIND_VARIABLE ? "SET" : s->kind == CAP_KIND_TASK ? "CALL" : "PUBLISH",
+             s->name);
     return 1;
 }
 
@@ -1446,6 +1757,15 @@ static int cap_send_routed(CapSub *s, const void *data, size_t len, uint8_t var_
             return 0;   /* a call racing the provider match queues in the patterns layer */
         *echo_sch = s->req_schema;
         return 1;
+    }
+    if (s->kind == CAP_KIND_TASK){
+        if (!s->req_raw) return 0;
+        *echo_sch = s->req_schema;
+        /* no provider matched yet: park like a variable op (cap_pend_poll flushes the
+           moment matching resolves, so a first call right after subscribe still lands) */
+        if (i_dart_topic_oldest_match(s->req_raw) == 0 && !dart_topic_ready(s->req_raw))
+            return cap_send_park(s, data, len, 0);
+        return cap_task_call_send(s, data, len);
     }
     ch = cap_send_channel(s);
     if (!ch) return 0;
@@ -1597,10 +1917,11 @@ static int cap_publish_form_op(Capture *cap, const char *topic, const char *cons
     if (!topic || !values) return 0;
     if (!cap_declare_publish(cap, topic)) return 0;
     s = cap_sub_find(topic);
-    /* the form's shape: a function fills its REQUEST schema; a variable its value schema
-       (the set channel carries it); a plain topic its adopted channel schema */
+    /* the form's shape: a function or task fills its REQUEST schema; a variable its value
+       schema (the set channel carries it); a plain topic its adopted channel schema */
     sch = !s ? NULL
         : s->kind == CAP_KIND_FUNCTION ? s->req_schema
+        : s->kind == CAP_KIND_TASK     ? s->req_schema
         : s->kind == CAP_KIND_VARIABLE ? (s->set_ch ? dart_topic_schema(s->set_ch) : NULL)
         : s->ch[s->reliable]           ? dart_topic_schema(s->ch[s->reliable]) : NULL;
     if (!sch){ cap_logf("PUBLISH %s refused: topic carries no schema", topic); return 0; }
@@ -1675,17 +1996,135 @@ int cap_topic_send_pending(const Capture *cap, const char *topic){
     return s ? (int)s->pend_used : 0;
 }
 
+/* ------------------------------------------------------------------- task control */
+
+static void cap_feed_item_out(CapFeedItem *o, const CapMsgRec *m);   /* defined below */
+
+int cap_task_call_state(const Capture *cap, const char *topic, CapTaskCall *out){
+    DartNode *node = (cap && cap->rt) ? (DartNode *)cap->rt : NULL;
+    CapSub *s = (node && topic) ? cap_sub_find(topic) : NULL;
+    if (!out) return 0;
+    memset(out, 0, sizeof *out);
+    if (!s || s->kind != CAP_KIND_TASK) return 0;
+    dart_node_lock(node);   /* phase/id settle on the service thread: bracket the read */
+    out->phase          = s->call_phase;
+    out->call_id        = s->call_id;
+    out->progress_count = s->prg_count;
+    out->call_status    = s->task_status;
+    snprintf(out->call_msg, sizeof out->call_msg, "%s", s->task_msg);
+    if (s->prg_have && s->prg_last){
+        cap_feed_item_out(&out->latest, s->prg_last);
+        out->has_progress = 1;
+    }
+    dart_node_unlock(node);
+    return 1;
+}
+
+int cap_task_cancel_call(Capture *cap, const char *topic){
+    DartNode *node = (cap && cap->rt) ? (DartNode *)cap->rt : NULL;
+    CapSub *s = (node && topic) ? cap_sub_find(topic) : NULL;
+    uint8_t hdr[CAP_REQ_PREFIX];
+    uint32_t id, provider;
+    int phase;
+    if (!s || s->kind != CAP_KIND_TASK || !s->req_raw) return 0;
+    dart_node_lock(node);
+    phase = s->call_phase; id = s->call_id; provider = s->call_provider;
+    dart_node_unlock(node);
+    if ((phase != CAP_TCALL_SENT && phase != CAP_TCALL_RUNNING) || !id || !provider) return 0;
+    /* the raw CANCEL op, empty payload = the sender's own call, to the same provider */
+    i_dart_le_w32(hdr, id); hdr[4] = (uint8_t)CAP_TASK_OP_CANCEL;
+    if (i_dart_topic_send_to(s->req_raw, provider, dart_bytes(hdr, sizeof hdr),
+                             dart_bytes(NULL, 0)) != DART_OK){
+        cap_logf("CANCEL %s call %u send failed", topic, id);
+        return 0;
+    }
+    cap_logf("CANCEL %s call %u requested (cooperative: the terminal status answers)", topic, id);
+    return 1;
+}
+
+int cap_task_runs(const Capture *cap, const char *topic, CapTaskRun *out, int max){
+    DartNode *node = (cap && cap->rt) ? (DartNode *)cap->rt : NULL;
+    CapSub *s = (node && topic) ? cap_sub_find(topic) : NULL;
+    unsigned long long now = cap_now_ms();
+    int n = 0, i, j;
+    if (!s || !out || max <= 0 || s->kind != CAP_KIND_TASK) return 0;
+    dart_node_lock(node);   /* the run table + cap_peers + the zero-copy peer view */
+    for (i = 0; i < CAP_TASK_RUNS && n < max; i++){
+        const CapRunRec *r = &cap_runs[i];
+        CapTaskRun *o;
+        if (!r->used || r->s != s) continue;
+        o = &out[n++];
+        o->caller_lo   = r->caller_lo;
+        o->call_id     = r->call_id;
+        o->provider_id = r->provider;
+        o->updates     = r->updates;
+        o->age_s       = (double)(now - r->last_ms) / 1000.0;
+        o->last_len    = r->last_len;
+        memcpy(o->preview, r->preview, CAP_MSG_PREVIEW);
+        o->preview[CAP_MSG_PREVIEW - 1] = '\0';
+        snprintf(o->caller, sizeof o->caller, "%08x", r->caller_lo);   /* hex fallback */
+        o->provider[0] = '\0';
+        for (j = 0; j < CAP_MAX_PEERS; j++)
+            if (cap_peers[j].used && cap_peers[j].local_id == r->provider && cap_peers[j].name[0]){
+                snprintf(o->provider, sizeof o->provider, "%s", cap_peers[j].name);
+                break;
+            }
+        {   /* caller_lo -> a discovered peer's uuid low-32 -> its name */
+            uint16_t n_peers = 0, p;
+            const DartDiscoveryPeer *peers = dart_node_peers(node, &n_peers);
+            for (p = 0; p < n_peers; p++)
+                if (i_dart_le_r32(peers[p].uuid) == r->caller_lo && peers[p].name.len){
+                    snprintf(o->caller, sizeof o->caller, "%.*s",
+                             (int)peers[p].name.len, peers[p].name.data);
+                    break;
+                }
+        }
+    }
+    dart_node_unlock(node);
+    /* newest-updated first (a handful of rows: selection sort is plenty) */
+    for (i = 0; i < n; i++){
+        int best = i;
+        for (j = i + 1; j < n; j++) if (out[j].age_s < out[best].age_s) best = j;
+        if (best != i){ CapTaskRun tmp = out[i]; out[i] = out[best]; out[best] = tmp; }
+    }
+    return n;
+}
+
+int cap_task_cancel_run(Capture *cap, const char *topic, uint32_t provider_id,
+                        uint32_t caller_lo, uint32_t call_id){
+    DartNode *node = (cap && cap->rt) ? (DartNode *)cap->rt : NULL;
+    CapSub *s = (node && topic) ? cap_sub_find(topic) : NULL;
+    uint8_t hdr[CAP_REQ_PREFIX], pl[4];
+    int r;
+    if (!s || s->kind != CAP_KIND_TASK || !s->req_raw || !provider_id) return 0;
+    /* the raw CANCEL op, exactly the taskx-selftest recipe: [u32 call_id][op 1] with the
+       victim caller's lo-32 as the payload, directed at the provider working the run */
+    i_dart_le_w32(hdr, call_id); hdr[4] = (uint8_t)CAP_TASK_OP_CANCEL;
+    i_dart_le_w32(pl, caller_lo);
+    r = i_dart_topic_send_to(s->req_raw, provider_id, dart_bytes(hdr, sizeof hdr),
+                             dart_bytes(pl, sizeof pl));
+    if (r != DART_OK){
+        cap_logf("CANCEL %s run %08x#%u send failed (%d)", topic, caller_lo, call_id, r);
+        return 0;
+    }
+    cap_logf("CANCEL %s run %08x#%u sent to provider %u", topic, caller_lo, call_id, provider_id);
+    return 1;
+}
+
 /* fill one observer endpoint from an entity yielded by the canonical reflection walk */
 static void cap_endpoint_fill(CapTopic *e, const DartEntityInfo *ei){
     if (ei->name.data) snprintf(e->name, sizeof e->name, "%.*s", (int)ei->name.len, ei->name.data);
     else               snprintf(e->name, sizeof e->name, "0x%08x", (unsigned)ei->hash);
     /* a placeholder name resolves itself: the arriving details bump the interest epoch */
-    e->index      = ei->index;
-    e->reliable   = ei->reliable;
-    e->kind       = (uint8_t)ei->kind;
-    e->writable   = ei->writable;
-    e->forceable  = ei->forceable;
-    e->incomplete = ei->incomplete;
+    e->index       = ei->index;
+    e->reliable    = ei->reliable;
+    e->kind        = (uint8_t)ei->kind;
+    e->writable    = ei->writable;
+    e->forceable   = ei->forceable;
+    e->cancellable = ei->cancellable;
+    e->exclusive   = ei->exclusive;
+    e->multi       = ei->multi;
+    e->incomplete  = ei->incomplete;
 }
 
 /* copy one ACTIVE peer's facts out of the node's zero-copy view into its observer record:
@@ -1841,27 +2280,55 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
            terminated 65-byte field, and per-entry snprintf x thousands is slow) */
         for (k = 0; k < p->n_pub && cap_grow(&n->pub, &n->pub_cap, k, sizeof *n->pub); k++){
             memcpy(n->pub[k].name, p->pub[k].name, sizeof n->pub[k].name);
-            n->pub[k].index      = p->pub[k].index;
-            n->pub[k].reliable   = p->pub[k].reliable;
-            n->pub[k].kind       = p->pub[k].kind;
-            n->pub[k].writable   = p->pub[k].writable;
-            n->pub[k].forceable  = p->pub[k].forceable;
-            n->pub[k].incomplete = p->pub[k].incomplete;
+            n->pub[k].index       = p->pub[k].index;
+            n->pub[k].reliable    = p->pub[k].reliable;
+            n->pub[k].kind        = p->pub[k].kind;
+            n->pub[k].writable    = p->pub[k].writable;
+            n->pub[k].forceable   = p->pub[k].forceable;
+            n->pub[k].cancellable = p->pub[k].cancellable;
+            n->pub[k].exclusive   = p->pub[k].exclusive;
+            n->pub[k].multi       = p->pub[k].multi;
+            n->pub[k].incomplete  = p->pub[k].incomplete;
         }
         n->n_pub = k;
         for (k = 0; k < p->n_sub && cap_grow(&n->sub, &n->sub_cap, k, sizeof *n->sub); k++){
             memcpy(n->sub[k].name, p->sub[k].name, sizeof n->sub[k].name);
-            n->sub[k].index      = p->sub[k].index;
-            n->sub[k].reliable   = p->sub[k].reliable;
-            n->sub[k].kind       = p->sub[k].kind;
-            n->sub[k].writable   = p->sub[k].writable;
-            n->sub[k].forceable  = p->sub[k].forceable;
-            n->sub[k].incomplete = p->sub[k].incomplete;
+            n->sub[k].index       = p->sub[k].index;
+            n->sub[k].reliable    = p->sub[k].reliable;
+            n->sub[k].kind        = p->sub[k].kind;
+            n->sub[k].writable    = p->sub[k].writable;
+            n->sub[k].forceable   = p->sub[k].forceable;
+            n->sub[k].cancellable = p->sub[k].cancellable;
+            n->sub[k].exclusive   = p->sub[k].exclusive;
+            n->sub[k].multi       = p->sub[k].multi;
+            n->sub[k].incomplete  = p->sub[k].incomplete;
         }
         n->n_sub = k;
     }
 
     dart_node_unlock(node);
+}
+
+/* one stored record -> the UI's plain view */
+static void cap_feed_item_out(CapFeedItem *o, const CapMsgRec *m){
+    int k;
+    o->wall_us     = m->wall_us;
+    o->stamped     = m->stamped;
+    o->uid         = m->uid;
+    o->len         = m->len;
+    o->preview_len = m->preview_len;
+    o->mine        = m->mine;
+    o->forced      = m->forced;
+    o->call_status = m->call_status;
+    snprintf(o->call_msg, sizeof o->call_msg, "%s", m->call_msg);
+    o->decoded     = m->decoded;
+    o->n_fields    = m->n_fields;
+    o->total_fields= m->total_fields;
+    for (k = 0; k < m->n_fields; k++) o->fields[k] = m->fields[k];
+    snprintf(o->type_name, sizeof o->type_name, "%s", m->type_name);
+    snprintf(o->sender, sizeof o->sender, "%s", m->sender);
+    if (m->preview_len) memcpy(o->preview, m->preview, m->preview_len);
+    if (m->preview_len < CAP_MSG_PREVIEW) o->preview[m->preview_len] = '\0';  /* terminate: %s reads it, slot is reused */
 }
 
 int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int max,
@@ -1884,28 +2351,8 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
     /* walk the ring oldest first; with a full ring the oldest is at head */
     n     = s->count < max ? s->count : max;
     start = (s->head - n) % CAP_FEED_MAX; if (start < 0) start += CAP_FEED_MAX;
-    for (i = 0; i < n; i++){
-        const CapMsgRec *m = &s->ring[(start + i) % CAP_FEED_MAX];
-        CapFeedItem *o = &out[i];
-        int k;
-        o->wall_us     = m->wall_us;
-        o->stamped     = m->stamped;
-        o->uid         = m->uid;
-        o->len         = m->len;
-        o->preview_len = m->preview_len;
-        o->mine        = m->mine;
-        o->forced      = m->forced;
-        o->call_status = m->call_status;
-        snprintf(o->call_msg, sizeof o->call_msg, "%s", m->call_msg);
-        o->decoded     = m->decoded;
-        o->n_fields    = m->n_fields;
-        o->total_fields= m->total_fields;
-        for (k = 0; k < m->n_fields; k++) o->fields[k] = m->fields[k];
-        snprintf(o->type_name, sizeof o->type_name, "%s", m->type_name);
-        snprintf(o->sender, sizeof o->sender, "%s", m->sender);
-        if (m->preview_len) memcpy(o->preview, m->preview, m->preview_len);
-        if (m->preview_len < CAP_MSG_PREVIEW) o->preview[m->preview_len] = '\0';  /* terminate: %s reads it, slot is reused */
-    }
+    for (i = 0; i < n; i++)
+        cap_feed_item_out(&out[i], &s->ring[(start + i) % CAP_FEED_MAX]);
     if (cap && cap->rt) dart_node_unlock((DartNode *)cap->rt);
     return n;
 }
@@ -2168,7 +2615,7 @@ static void cap_schema_poll(DartNode *node){
         DartTopic *live;
         const DartSchema *adopted;
         uint64_t have, pick = 0;
-        if (!s->used || s->kind == CAP_KIND_FUNCTION) continue;
+        if (!s->used || s->kind == CAP_KIND_FUNCTION || s->kind == CAP_KIND_TASK) continue;
         live = s->kind ? s->ch[1]
              : s->ch[s->reliable] ? s->ch[s->reliable] : s->ch[!s->reliable];
         if (!live) continue;
@@ -2196,9 +2643,9 @@ static void cap_schema_poll(DartNode *node){
 }
 
 /* the schema query for one of an entity's channels: the base name for topics and
-   variables (their primary channel IS the bare name), the mangled request or response
-   channel for a function. `rsp` asks a function for its response schema. */
-static int cap_entity_schema(const Capture *cap, const char *topic, int rsp, CapSchema *out){
+   variables (their primary channel IS the bare name), the mangled request/response
+   (functions and tasks) or progress (tasks) channel. which: 0 primary, 1 rsp, 2 prg. */
+static int cap_entity_schema(const Capture *cap, const char *topic, int which, CapSchema *out){
     DartNode *node = cap ? (DartNode *)cap->rt : NULL;
     const DartSchema *best; int n_adv = 0;
     char cn[DART_TOPIC_NAME_MAX + 8];
@@ -2206,8 +2653,9 @@ static int cap_entity_schema(const Capture *cap, const char *topic, int rsp, Cap
     memset(out, 0, sizeof *out);
     if (!node || !topic || !*topic) return 0;
     kind = cap_entity_kind(topic, NULL);
-    if (rsp && kind != CAP_KIND_FUNCTION) return 0;   /* only functions have a response shape */
-    cap_primary_channel_name(cn, sizeof cn, topic, kind, rsp);
+    if (which == 1 && kind != CAP_KIND_FUNCTION && kind != CAP_KIND_TASK) return 0;
+    if (which == 2 && kind != CAP_KIND_TASK) return 0;   /* only tasks have a progress shape */
+    cap_primary_channel_name(cn, sizeof cn, topic, kind, which);
     dart_node_lock(node);   /* the zero-copy peer view vs the service thread */
     best = cap_topic_pick_schema(node, cn, &out->hash, out->from, sizeof out->from,
                                  &n_adv, &out->hash_conflict);
@@ -2225,7 +2673,11 @@ int cap_topic_rsp_schema(const Capture *cap, const char *topic, CapSchema *out){
     return cap_entity_schema(cap, topic, 1, out);
 }
 
-int cap_topic_schema_dsl(const Capture *cap, const char *topic, int rsp, char *out, size_t out_cap){
+int cap_topic_prg_schema(const Capture *cap, const char *topic, CapSchema *out){
+    return cap_entity_schema(cap, topic, 2, out);
+}
+
+int cap_topic_schema_dsl(const Capture *cap, const char *topic, int which, char *out, size_t out_cap){
     DartNode *node = cap ? (DartNode *)cap->rt : NULL;
     DartSchema *sch;
     char cn[DART_TOPIC_NAME_MAX + 8];
@@ -2234,8 +2686,9 @@ int cap_topic_schema_dsl(const Capture *cap, const char *topic, int rsp, char *o
     if (out && out_cap) out[0] = '\0';
     if (!node || !topic || !*topic || !out || out_cap == 0) return 0;
     kind = cap_entity_kind(topic, NULL);
-    if (rsp && kind != CAP_KIND_FUNCTION) return 0;
-    cap_primary_channel_name(cn, sizeof cn, topic, kind, rsp);
+    if (which == 1 && kind != CAP_KIND_FUNCTION && kind != CAP_KIND_TASK) return 0;
+    if (which == 2 && kind != CAP_KIND_TASK) return 0;
+    cap_primary_channel_name(cn, sizeof cn, topic, kind, which);
     sch = cap_topic_schema_parse(node, cn);      /* full parsed schema (takes the node lock) */
     if (!sch) return 0;
     n = dart_schema_print(sch, out, out_cap);    /* the library spells the DSL */

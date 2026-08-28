@@ -61,6 +61,94 @@ static unsigned topic_period_ms(const char *path){
 static volatile sig_atomic_t g_run = 1;
 static void on_sig(int s){ (void)s; g_run = 0; }
 
+/* ---- the demo TASK: a slow lidar calibration, defined on lidar-driver and called by
+   perception every ~10s, so the explorer's task view shows live runs out of the box.
+   Single-threaded superloop: the handler defers, the main loop does one step per tick,
+   honoring cancel ({done,total} progress; cancel answers CANCELLED with the partial). */
+#define TASK_NAME "sensors/lidar/calibrate"
+static DartSchema   *task_req_s, *task_prg_s, *task_rsp_s;
+static DartFunction *task_def, *task_remote;
+static volatile uint64_t task_token;     /* the one live job (the handler answers "busy" else) */
+static unsigned task_done, task_total;
+static unsigned long long task_step_ms, task_next_call_ms;
+
+static void on_calibrate(DartRequest *req, void *user){
+    (void)user;
+    if (task_token){ dart_request_fail(req, "busy: a calibration is running", dart_bytes(NULL, 0)); return; }
+    task_total = 20;
+    if (req->schema){
+        unsigned s = (unsigned)dart_get_uint(req->data, req->schema, "sweeps");
+        if (s) task_total = s > 60 ? 60 : s;
+    }
+    task_done  = 0;
+    task_token = dart_request_defer(req);   /* implies RUNNING to the caller */
+}
+
+/* one calibration step per tick: progress {done,total}, cancel honored, OK at the end */
+static void task_def_step(unsigned long long t){
+    uint8_t b[16];
+    if (!task_def || !task_token || t < task_step_ms) return;
+    if (dart_function_cancelled(task_def, task_token)){
+        char msg[48];
+        snprintf(msg, sizeof msg, "stopped at %u/%u", task_done, task_total);
+        dart_function_complete(task_def, task_token, DART_CALL_CANCELLED, msg, dart_bytes(NULL, 0));
+        printf("calibrate: cancelled at %u/%u\n", task_done, task_total);
+        task_token = 0;
+        return;
+    }
+    task_done++;
+    dart_schema_message_default(task_prg_s, b, sizeof b);
+    dart_set_uint(b, sizeof b, task_prg_s, "done", task_done);
+    dart_set_uint(b, sizeof b, task_prg_s, "total", task_total);
+    dart_function_progress(task_def, task_token, dart_bytes(b, dart_schema_size(task_prg_s)));
+    if (task_done >= task_total){
+        dart_schema_message_default(task_rsp_s, b, sizeof b);
+        dart_set_uint(b, sizeof b, task_rsp_s, "ok", 1);
+        dart_set_uint(b, sizeof b, task_rsp_s, "points", task_total * 360u);
+        dart_function_complete(task_def, task_token, DART_CALL_OK, NULL,
+                               dart_bytes(b, dart_schema_size(task_rsp_s)));
+        printf("calibrate: done (%u sweeps)\n", task_total);
+        task_token = 0;
+    }
+    task_step_ms = t + 500;
+}
+
+static void on_calibrate_rsp(const DartResponse *r){
+    printf("calibrate call: status %d%s%.*s\n", (int)r->status,
+           r->message.len ? " " : "", (int)r->message.len,
+           r->message.data ? r->message.data : "");
+}
+
+/* the periodic caller (perception): one calibrate call every ~10s */
+static void task_caller_step(unsigned long long t){
+    uint8_t b[8];
+    if (!task_remote || t < task_next_call_ms) return;
+    dart_schema_message_default(task_req_s, b, sizeof b);
+    dart_set_uint(b, sizeof b, task_req_s, "sweeps", 14);
+    dart_function_call_async(task_remote, dart_bytes(b, dart_schema_size(task_req_s)),
+                             on_calibrate_rsp, NULL, NULL);
+    task_next_call_ms = t + 10000;
+}
+
+static int task_setup(DartNode *node, const char *profile){
+    DartAllocator *mem = (DartAllocator *)malloc(sizeof *mem);
+    int def = !strcmp(profile, "lidar-driver"), caller = !strcmp(profile, "perception");
+    if (!mem || (!def && !caller)){ free(mem); return 1; }
+    *mem = dart_allocator_dynamic(i_dart_plat_realloc, 0);
+    task_req_s = dart_schema_compile(dart_allocator_alloc, mem, "CalibrateRequest { sweeps: u32 }", NULL);
+    task_prg_s = dart_schema_compile(dart_allocator_alloc, mem, "CalibrateProgress { done: u32, total: u32 }", NULL);
+    task_rsp_s = dart_schema_compile(dart_allocator_alloc, mem, "CalibrateResult { ok: bool, points: u32 }", NULL);
+    if (!task_req_s || !task_prg_s || !task_rsp_s) return 0;
+    if (def)
+        task_def = dart_node_create_task_definition(node, TASK_NAME, task_req_s, task_prg_s,
+                                                    task_rsp_s, on_calibrate, NULL, NULL);
+    else
+        task_remote = dart_node_create_remote_task(node, TASK_NAME, task_req_s, task_prg_s,
+                                                   task_rsp_s, NULL);
+    task_next_call_ms = now_ms() + 3000;   /* first call once matching settles */
+    return def ? task_def != NULL : task_remote != NULL;
+}
+
 /* RELIABLE topics (matching data.js); everything else is best-effort. A topic's
    publisher and subscriber must agree, so this one lookup drives both. */
 static int reliable(const char *path){
@@ -153,12 +241,15 @@ int main(int argc, char **argv){
     setvbuf(stdout, NULL, _IONBF, 0);
     node = open_node(prof, domain, ifc, pubs, &n_pubs);
     if (!node) return 1;
+    if (!task_setup(node, prof->name)){ fprintf(stderr, "  task setup failed\n"); return 1; }
     printf("%s: up on domain %u (interface %s), publishing %d topic(s) -- Ctrl-C to stop\n",
            prof->name, domain, ifc, n_pubs);
 
     start_ms = now_ms();
     while (g_run){
         unsigned long long t = now_ms();
+        task_def_step(t);      /* lidar-driver: run the calibration job */
+        task_caller_step(t);   /* perception: call it every ~10s */
         for (i = 0; i < n_pubs; i++){
             if (t >= pubs[i].next_ms){
                 char buf[120];

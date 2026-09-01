@@ -1045,6 +1045,18 @@ static void tt_form_bool(AppState *app, const Palette *P, int i, int focused){
     }
 }
 
+/* a hash of every form value: what we last WROTE into the form, so a later prefill can
+   tell that the user has started typing and leave the form alone */
+static uint32_t tt_form_hash(const AppState *app, int n){
+    uint32_t h = 2166136261u; int i;
+    for (i = 0; i < n; i++){
+        const char *p = app->form_val[i];
+        for (; *p; p++){ h ^= (unsigned char)*p; h *= 16777619u; }
+        h ^= 0xffu; h *= 16777619u;      /* field separator: "ab","" must differ from "a","b" */
+    }
+    return h;
+}
+
 static void tt_form_reset(AppState *app, const CapSchema *sc, int n){
     int i;
     for (i = 0; i < n; i++){
@@ -1052,7 +1064,9 @@ static void tt_form_reset(AppState *app, const CapSchema *sc, int n){
         app->form_len[i] = (int)strlen(app->form_val[i]);
         ui_tb_reset(&app->tb_form[i]);
     }
-    app->form_focus = 0;
+    app->form_focus  = 0;
+    app->form_filled = 0;                /* a variable's current value may still seed these */
+    app->form_seed   = tt_form_hash(app, n);
     if (g_tb_focus == NULL && n > 0 && sc->fields[0].kind != CAP_K_BOOL &&
         sc->fields[0].kind != CAP_K_ENUM &&
         sc->fields[0].kind != CAP_K_STRUCT && sc->fields[0].kind != CAP_K_MAP){
@@ -1060,6 +1074,36 @@ static void tt_form_reset(AppState *app, const CapSchema *sc, int n){
         app->tb_form[0].anchor = 0;              /* ...replacing its prefilled default */
         app->tb_form[0].caret  = app->form_len[0];
     }
+}
+
+/* Seed a VARIABLE's form with the value it currently holds, so editing starts from the
+   live value instead of from zeros. The value lands a moment AFTER the topic is selected
+   (selecting subscribes, then the owner's retained value replays), so this retries every
+   frame until it arrives; it then stops for good, and a user edit before it arrives stops
+   it too, so neither the first value nor a later write can stomp what is being typed. A
+   field the capture could not spell in form syntax, or one whose name says the advertised
+   schema is not the one the value came from, keeps its default. */
+static void tt_form_prefill(AppState *app, const Topic *t, const CapSchema *sc, int n){
+    CapFormValue cur[UI_FORM_MAX];
+    int got, i;
+    if (app->form_filled || !app->cap || t->kind != CAP_KIND_VARIABLE) return;
+    if (tt_form_hash(app, n) != app->form_seed){ app->form_filled = 1; return; }   /* typed in */
+    got = cap_variable_form_values(app->cap, t->path, cur, n);
+    if (got <= 0) return;                        /* no value yet: try again next frame */
+    for (i = 0; i < got; i++){
+        if (!cur[i].value[0] || strlen(cur[i].value) >= UI_FORM_VAL) continue;
+        if (strcmp(cur[i].name, sc->fields[i].name)) continue;   /* a different schema's field */
+        snprintf(app->form_val[i], UI_FORM_VAL, "%s", cur[i].value);
+        app->form_len[i] = (int)strlen(app->form_val[i]);
+        ui_tb_reset(&app->tb_form[i]);
+        if (ui_tb_focused(&app->tb_form[i])){    /* the text changed under the caret: re-select
+                                                    it, so typing still replaces the value */
+            app->tb_form[i].anchor = 0;
+            app->tb_form[i].caret  = app->form_len[i];
+        }
+    }
+    app->form_filled = 1;
+    app->form_seed   = tt_form_hash(app, n);
 }
 
 static void tt_form_send(AppState *app, const Topic *t, int n){
@@ -1162,6 +1206,7 @@ static void topics_form(AppState *app, const Palette *P, const Topic *t, const C
         app->form_topic = app->sel_topic;
         tt_form_reset(app, sc, n);
     }
+    tt_form_prefill(app, t, sc, n);               /* a variable: start from its current value */
     app->form_n = n;
     {   const char *vals[UI_FORM_MAX];            /* live per-field validity (one schema parse) */
         for (i = 0; i < n; i++){ vals[i] = app->form_val[i]; valid[i] = 1; }

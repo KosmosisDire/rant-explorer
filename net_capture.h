@@ -355,6 +355,27 @@ int  cap_topic_schema_dsl(const Capture *cap, const char *topic, int which, char
 int  cap_variable_force_form(Capture *cap, const char *topic, const char *const *values, int n_values);
 int  cap_variable_unforce(Capture *cap, const char *topic);
 
+/* ------------------------------------------------- variable value -> publish-form text
+   A VARIABLE's newest value re-spelled in the syntax the publish form's inputs accept (the
+   inverse of the parsing cap_publish_form does), so a form can open on what the variable
+   currently holds instead of on zeros. One entry per flat schema field, in the order
+   cap_topic_schema reports; `name` lets a caller confirm the field it is filling really is
+   the one this value came from (an endpoint advertising a conflicting schema must not
+   prefill through it). */
+#define CAP_FORM_VAL 40    /* value text per field (mirrors the explorer's form box) */
+
+typedef struct {
+    char name[CAP_TOPIC_CAP];   /* the field's own name (cap_topic_schema's label for it) */
+    char value[CAP_FORM_VAL];   /* form syntax; "" = nothing to fill in (keep the default) */
+} CapFormValue;
+
+/* Copy up to `max` of `topic`'s newest VARIABLE value into out[] and return the count; 0
+   for anything but a variable that has received a decodable value. A field with no form
+   input of its own (a struct or map row) and one whose text will not FIT come back as "",
+   never truncated: an empty form field keeps the schema default, while half an array or
+   string would send a wrong value silently. */
+int  cap_variable_form_values(const Capture *cap, const char *topic, CapFormValue *out, int max);
+
 /* 1 while a send on `topic` is PARKED waiting for its match to resolve (a variable op or
    a best-effort publish fired while the announce/detail cycle was still
    verifying a candidate receiver). cap_poll flushes it the moment matching resolves and

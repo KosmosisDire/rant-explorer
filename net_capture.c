@@ -205,6 +205,11 @@ typedef struct {
     DartSchema  *rsp_schema;             /* FUNCTION/TASK: parsed response schema (ours; reply decode) */
     int          forced;                 /* VARIABLE: the newest value carried the FORCED flag */
     uint32_t     write_seq;              /* VARIABLE: the newest value's write counter */
+    /* VARIABLE: the newest value re-spelled in publish-form syntax, so the UI can open the
+       form on what the variable holds (cap_variable_form_values). Lazily allocated on the
+       first value, like the ring; a field the form cannot express stays "". */
+    CapFormValue *form_vals;
+    int           n_form_vals;           /* entries filled (0 = no decodable value yet) */
     /* TASK: entirely RAW wire, no pattern handle (the per-peer demux binds an identity to
        ONE local topic, so a remote handle's channels and raw twins cannot coexist; the
        taskx selftest pins the raw recipe). prg_ch taps the broadcast progress, req_raw
@@ -534,6 +539,102 @@ static void cap_schema_type_name(char *dst, size_t cap, const DartSchema *sch){
              && fi.name.len == 0 && fi.kind != DART_STRUCT)
         cap_field_type_str(dst, cap, &fi);
     else if (cap) dst[0] = '\0';
+}
+
+/* ---- value -> publish-form text: the exact inverse of cap_form_set, so a variable's
+   current value can seed the form that writes the next one. Display text will not do: the
+   feed quotes strings and brackets arrays, and it clamps silently, all of which would
+   compose a WRONG message on Send. Everything here either round-trips or renders nothing. */
+
+/* a float in the shortest form that parses back to the same value: %.7g / %.15g reads
+   naturally and covers almost everything, and the wider fallback always round-trips, so
+   sending a prefilled form never quietly rewrites the value it started from */
+static void cap_form_fmt_float(char *dst, size_t cap, double v, int is32){
+    snprintf(dst, cap, is32 ? "%.7g" : "%.15g", v);
+    if (is32 ? (float)strtod(dst, NULL) != (float)v : strtod(dst, NULL) != v)
+        snprintf(dst, cap, is32 ? "%.9g" : "%.17g", v);
+}
+
+/* an array's elements as the form spells them: comma-separated, no brackets, no quotes.
+   0 = the value has no form text (an unsupported element, or a string element holding the
+   separator itself, which the form has no way to express). */
+static int cap_form_fmt_elems(char *dst, int cap, DartBytes a, uint8_t elem,
+                              uint16_t count, uint16_t str_cap){
+    uint32_t esz = (elem == DART_STR) ? 2u + str_cap
+                                      : dart_schema_scalar_size((DartSchemaTypeKind)elem);
+    int at = 0;
+    uint16_t j;
+    if (!esz && count) return 0;
+    for (j = 0; j < count; j++){
+        const uint8_t *p = a.data + (size_t)j * esz;
+        if (j) at = cap_val_append(dst, cap, at, ", ");
+        switch ((DartSchemaTypeKind)elem){
+            case DART_U8:  at = cap_val_append(dst,cap,at,"%u",  p[0]); break;
+            case DART_U16: at = cap_val_append(dst,cap,at,"%u",  i_dart_le_r16(p)); break;
+            case DART_U32: at = cap_val_append(dst,cap,at,"%lu", (unsigned long)i_dart_le_r32(p)); break;
+            case DART_U64: at = cap_val_append(dst,cap,at,"%llu",(unsigned long long)i_dart_le_r64(p)); break;
+            case DART_I8:  at = cap_val_append(dst,cap,at,"%d",  (int)(int8_t)p[0]); break;
+            case DART_I16: at = cap_val_append(dst,cap,at,"%d",  (int)(int16_t)i_dart_le_r16(p)); break;
+            case DART_I32: at = cap_val_append(dst,cap,at,"%ld", (long)(int32_t)i_dart_le_r32(p)); break;
+            case DART_I64: at = cap_val_append(dst,cap,at,"%lld",(long long)(int64_t)i_dart_le_r64(p)); break;
+            case DART_F32: { uint32_t b = i_dart_le_r32(p); float  v; char f[40]; memcpy(&v,&b,4);
+                             cap_form_fmt_float(f, sizeof f, (double)v, 1);
+                             at = cap_val_append(dst,cap,at,"%s",f); } break;
+            case DART_F64: { uint64_t b = i_dart_le_r64(p); double v; char f[40]; memcpy(&v,&b,8);
+                             cap_form_fmt_float(f, sizeof f, v, 0);
+                             at = cap_val_append(dst,cap,at,"%s",f); } break;
+            case DART_BOOL: at = cap_val_append(dst,cap,at,"%s", p[0] ? "true" : "false"); break;
+            case DART_STR: { uint16_t l = i_dart_le_r16(p);
+                             if (l > str_cap) l = str_cap;
+                             if (memchr(p + 2, ',', l)) return 0;   /* the form's own separator */
+                             at = cap_val_append(dst,cap,at,"%.*s", (int)l, (const char *)p + 2); } break;
+            default: return 0;
+        }
+    }
+    return at < cap - 1;                     /* cap_val_append clamps at cap-1: that is a truncation */
+}
+
+/* One field's value in form syntax; 0 = it has none (a struct or map row, which the form
+   shows read-only) or the text does not FIT `cap`, where empty is the honest answer: an
+   empty form field keeps the schema default, a truncated one would send junk. */
+static int cap_form_fmt_field(char *dst, size_t cap, const DartSchema *s, uint16_t field,
+                              const DartSchemaFieldInfo *fi, const DartValue *v){
+    char buf[512];                           /* rendered full width, then taken only if it fits */
+    size_t len;
+    buf[0] = '\0';
+    switch ((DartSchemaTypeKind)fi->kind){
+        case DART_BOOL: snprintf(buf, sizeof buf, "%s", v->v.u ? "true" : "false"); break;
+        case DART_U8: case DART_U16: case DART_U32: case DART_U64:
+            snprintf(buf, sizeof buf, "%llu", (unsigned long long)v->v.u); break;
+        case DART_I8: case DART_I16: case DART_I32: case DART_I64:
+            snprintf(buf, sizeof buf, "%lld", (long long)v->v.i); break;
+        case DART_F32: case DART_F64:
+            cap_form_fmt_float(buf, sizeof buf, v->v.f, fi->kind == DART_F32); break;
+        case DART_ENUM: {                    /* the option NAME the dropdown lists, else the number */
+            DartString nm = dart_enum_name_of(s, field, v->v.i);
+            if (nm.len) snprintf(buf, sizeof buf, "%.*s", (int)nm.len, nm.data);
+            else        snprintf(buf, sizeof buf, "%lld", (long long)v->v.i);
+            break;
+        }
+        case DART_STR: case DART_VSTR:       /* unquoted: the box text IS the content */
+            snprintf(buf, sizeof buf, "%.*s", (int)v->bytes.len,
+                     v->bytes.data ? (const char *)v->bytes.data : "");
+            break;
+        case DART_ARR:
+            if (!cap_form_fmt_elems(buf, (int)sizeof buf, v->bytes, fi->elem, fi->count, fi->str_cap))
+                return 0;
+            break;
+        case DART_VARR:
+            if (!cap_form_fmt_elems(buf, (int)sizeof buf, v->bytes, fi->elem,
+                                    cap_varr_count(fi, v), fi->str_cap))
+                return 0;
+            break;
+        default: return 0;                   /* struct / map: no input of its own */
+    }
+    len = strlen(buf);
+    if (len >= cap) return 0;
+    memcpy(dst, buf, len + 1);
+    return 1;
 }
 
 /* reflect a message into per-field rows (every depth) + a one-line summary (top-level
@@ -874,6 +975,29 @@ static void cap_mini_update(CapSub *s, DartBytes d, const DartSchema *schema, co
     o->have = 1;
 }
 
+/* Re-spell a VARIABLE's newest value as publish-form text, so selecting it can open the
+   form on the value it holds. Only variables carry this: a stream's newest sample is
+   history, not a starting point for the next message. UI-thread only, like the ring. */
+static void cap_form_vals_update(CapSub *s, DartBytes data, const DartSchema *sch){
+    uint16_t i, nf;
+    if (!sch) return;
+    if (!s->form_vals){                  /* lazy, like the ring: an untouched variable costs nothing */
+        s->form_vals = (CapFormValue *)calloc(CAP_SCHEMA_FIELDS, sizeof *s->form_vals);
+        if (!s->form_vals) return;
+    }
+    nf = dart_schema_field_count(sch);
+    if (nf > CAP_SCHEMA_FIELDS) nf = CAP_SCHEMA_FIELDS;
+    for (i = 0; i < nf; i++){
+        DartSchemaFieldInfo fi; DartValue v;
+        CapFormValue *o = &s->form_vals[i];
+        o->name[0] = o->value[0] = '\0';
+        if (!dart_schema_field_at(sch, i, &fi) || !dart_get_value(data, sch, i, &v)) break;
+        cap_field_label(o->name, sizeof o->name, &fi);
+        cap_form_fmt_field(o->value, sizeof o->value, sch, i, &fi, &v);
+    }
+    s->n_form_vals = (int)i;             /* a field that would not decode ends the run */
+}
+
 /* append one message to a topic's ring (received or our own echo). Does not touch n_msgs. */
 static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t len, int mine,
                           const DartSchema *schema, uint64_t recv_us, uint64_t written_us){
@@ -891,6 +1015,10 @@ static void cap_ring_push(CapSub *s, DartString sender, const void *data, size_t
        (requests, replies, synthesized timeouts) never overwrite it */
     if (s->kind != CAP_KIND_FUNCTION && s->kind != CAP_KIND_TASK)
         cap_mini_update(s, dart_bytes(data, len), schema, m);
+    /* a variable's newest value also seeds its publish form (the form writes the NEXT value,
+       so it should start from the current one, not from zeros) */
+    if (s->kind == CAP_KIND_VARIABLE)
+        cap_form_vals_update(s, dart_bytes(data, len), schema);
 }
 
 static unsigned long long cap_now_ms(void){
@@ -1413,6 +1541,7 @@ void cap_stop(Capture *cap){
         free(cap_subs[i].ring);   cap_subs[i].ring = NULL; cap_subs[i].count = cap_subs[i].head = 0;
         free(cap_subs[i].pend_data); cap_subs[i].pend_data = NULL; cap_subs[i].pend_used = 0;
         free(cap_subs[i].prg_last); cap_subs[i].prg_last = NULL; cap_subs[i].prg_have = 0;
+        free(cap_subs[i].form_vals); cap_subs[i].form_vals = NULL; cap_subs[i].n_form_vals = 0;
         if (cap_subs[i].req_schema){ dart_schema_free(cap_subs[i].req_schema, cap_schema_alloc, NULL); cap_subs[i].req_schema = NULL; }
         if (cap_subs[i].rsp_schema){ dart_schema_free(cap_subs[i].rsp_schema, cap_schema_alloc, NULL); cap_subs[i].rsp_schema = NULL; }
         cap_subs[i].used = 0;
@@ -2264,6 +2393,18 @@ int cap_variable_unforce(Capture *cap, const char *topic){
     return 1;
 }
 
+/* The newest VARIABLE value in publish-form syntax (see the header). Written by the value
+   intake and read here, both on the UI thread (a topic feed is queued, so cap_poll's
+   dispatch owns it), so this needs no bracket of its own. */
+int cap_variable_form_values(const Capture *cap, const char *topic, CapFormValue *out, int max){
+    CapSub *s = (cap && cap->rt && topic) ? cap_sub_find(topic) : NULL;
+    int i, n;
+    if (!s || s->kind != CAP_KIND_VARIABLE || !s->form_vals || !out || max <= 0) return 0;
+    n = s->n_form_vals < max ? s->n_form_vals : max;
+    for (i = 0; i < n; i++) out[i] = s->form_vals[i];
+    return n;
+}
+
 int cap_topic_send_pending(const Capture *cap, const char *topic){
     const CapSub *s = (cap && cap->rt && topic) ? cap_sub_find(topic) : NULL;
     return s ? (int)s->pend_used : 0;
@@ -2650,6 +2791,7 @@ int cap_topic_clear(Capture *cap, const char *topic){
     s->rate_hz = 0.0; s->rate_prev_hr = 0.0; s->rate_prev_msgs = 0;
     s->jitter_last_hr = 0.0; s->jitter_mean_ms = 0.0; s->jitter_p90_ms = 0.0; s->jitter_n = 0;
     s->mini.have = 0;    /* the VALUE column clears with the feed (the schema cache keeps) */
+    free(s->form_vals); s->form_vals = NULL; s->n_form_vals = 0;   /* so does the form's seed */
     dart_node_unlock(node);
     cap_logf("CLEAR %s (feed + counters)", topic);
     return 1;

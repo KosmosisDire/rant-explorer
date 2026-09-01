@@ -42,12 +42,17 @@ typedef struct {
     int      compose_topic;   /* selected topic the draft belongs to (reset draft on change) */
 
     /* structured publish form (replaces the composer on a typed topic): one value string
-       per top-level schema field, prefilled with the type's default */
+       per top-level schema field, prefilled with the type's default -- or, for a VARIABLE,
+       with the value it currently holds, which lands a moment after the topic is selected
+       (selecting subscribes, then the owner's retained value replays) */
     char     form_val[UI_FORM_MAX][UI_FORM_VAL];
     int      form_len[UI_FORM_MAX];
     int      form_n;          /* fields shown this frame (the composer sets it) */
     int      form_focus;      /* focused field, or -1 (the free-text composer owns input) */
     int      form_topic;      /* sel_topic the values belong to; re-defaulted on change */
+    int      form_filled;     /* the variable's value has seeded the form (or the user typed
+                                 first): stop trying, so a later write never stomps an edit */
+    uint32_t form_seed;       /* hash of the values WE wrote, so an edit is recognizable */
 
     /* a message pulled out of the feed to inspect: a durable COPY (survives the feed ring
        overwriting the original), shown in the Inspect sidebar tab in place of the topic
@@ -154,6 +159,8 @@ static void app_init(AppState *a, const Dataset *data){
     a->form_n     = 0;
     a->form_focus = -1;
     a->form_topic = -1;
+    a->form_filled = 0;
+    a->form_seed   = 0;
     a->has_inspect_msg   = 0;
     a->inspect_msg_topic[0] = '\0';
     a->topic_filter_len   = 0;

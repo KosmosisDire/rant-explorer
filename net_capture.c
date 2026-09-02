@@ -35,10 +35,6 @@
                                         that advertises many topics is handled by the node's meta self-
                                         heal (it grows the accept bound + RX buffers and re-solicits). */
 #define CAP_LOG_LINES         400
-#define CAP_SCHEMA_STALE_US   5000000   /* conflict tiebreak: a rival publisher heard this much
-                                           more recently than the current pick is the live one
-                                           (past one 3s announce interval, well under the 12s
-                                           peer_timeout that would age the ghost out anyway) */
 /* CAP_LOG_LINE comes from net_capture.h (shared with the snapshot) */
 
 /* Ensure *arr can hold index `need` (0-based): grow it by doubling through realloc, so a
@@ -140,7 +136,7 @@ static void cap_schema_poll(DartNode *node);                                 /* 
    changed; cap_schema_poll then re-checks every adopted schema on the next UI frame */
 static int cap_schema_dirty;
 static unsigned long long cap_schema_next_ms;   /* slow periodic fallback: the conflict
-       tiebreak in cap_topic_pick_schema flips on a peer's growing SILENCE, which no
+       tiebreak in dart_node_mesh_schema flips on a peer's growing SILENCE, which no
        event marks, so a dirty flag alone would sit on a stale pick until peer_timeout */
 
 /* one observer-side topic the explorer is using: a ring of recent messages plus the DART
@@ -2893,122 +2889,12 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
     }
 }
 
-/* Pick a topic's MAIN schema: the widest compatible one advertised by any endpoint
-   (publisher OR subscriber), preferring a publisher since it owns the wire bytes. This is
-   the SINGLE source of truth for a topic's schema, so the schema DISPLAY (cap_topic_schema),
-   the TOPIC the explorer adopts to subscribe/publish (cap_sub_reconcile via
-   cap_topic_schema_parse), and therefore the feed's decode + column set all agree. Picking
-   the first-found schema instead let a subscriber advertising a SUBSET make the explorer
-   adopt (and decode every message down to) the narrower schema, while the inspector showed
-   the wider one -- the feed then offered only the subset's columns.
-   Returns the node-owned parsed schema (valid while the node lock is held; NULL = hash-only
-   or nobody advertises one). The node lock MUST be held by the caller. The optional
-   out-params report the winning hash, the source endpoint name, and the advertiser count /
-   structural-conflict flag (display only). */
-static const DartSchema *cap_topic_pick_schema(DartNode *node, const char *topic,
-                              uint64_t *out_hash, char *from, size_t from_cap,
-                              int *n_advertisers, int *hash_conflict){
-    const DartDiscoveryPeer *peers; uint16_t n_peers = 0, s;
-    size_t tlen = topic ? strlen(topic) : 0;
-    uint32_t want_hash;
-    const DartSchema *best = NULL;
-    int best_is_pub = 0, advertisers = 0, conflict = 0;
-    uint64_t best_hash = 0, best_heard = 0;
-    if (out_hash) *out_hash = 0;
-    if (from && from_cap) from[0] = '\0';
-    if (n_advertisers) *n_advertisers = 0;
-    if (hash_conflict) *hash_conflict = 0;
-    if (!node || tlen == 0) return NULL;
-    want_hash = (uint32_t)dart_topic_id(topic);
-    peers = dart_node_peers(node, &n_peers);
-    for (s = 0; s < n_peers; s++){
-        const DartDiscoveryPeer *dp = &peers[s];
-        DartInterestIter it; DartTopicEntry t;
-        uint16_t last_alias = 0xFFFF;   /* PUBSUB yields both directions: one schema per index */
-        if (dp->liveness != DART_PEER_ACTIVE) continue;   /* a DROPPED ghost (a restarted node's
-               old incarnation lingers until gone_timeout) must not feed the pick: its stale
-               schema would flag a false conflict and could win the adoption */
-        memset(&it, 0, sizeof it);
-        while (dart_node_peer_interest_next(dp, &it, &t)){
-            DartString nm; uint64_t hash = 0; const DartSchema *sch;
-            int take = 0;
-            if (t.hash != want_hash) continue;          /* cheap prefilter before the O(topics) name lookup */
-            if (t.index == last_alias) continue;        /* second direction of a PUBSUB entry */
-            last_alias = t.index;
-            /* any endpoint (publisher OR subscriber) is authoritative about its schema:
-               a subscriber-in-charge topic advertises the shape its generic publisher fills */
-            nm = dart_node_peer_topic_name(node, dp->id, t.index);
-            if (nm.len != tlen || memcmp(nm.data, topic, tlen) != 0) continue;
-            sch = dart_node_peer_topic_schema(node, dp->id, t.index, &hash);
-            if (!hash) continue;                        /* untyped endpoint */
-            if (advertisers == 0){                      /* first advertiser: adopt it */
-                advertisers = 1; take = 1;
-            } else if (hash == best_hash){              /* identical schema: agree */
-                advertisers++;
-                /* upgrade the shown source to a publisher (owns the wire) or, if we only
-                   had the hash before, to the parsed form so the field list can render */
-                take = (t.is_pub && !best_is_pub) || (sch && !best);
-            } else if (best && sch){
-                /* DIFFERENT hash but structurally compatible is NOT a conflict: subset
-                   binding lets a narrower reader consume a wider writer (dart_schema_subset,
-                   the same gate the C matcher runs). Take the WIDER schema, preferring a
-                   publisher since it owns the actual wire bytes. */
-                int best_narrower = dart_schema_subset(best, sch);   /* best subset of sch: sch is wider */
-                int new_narrower  = dart_schema_subset(sch, best);   /* sch subset of best: best is wider */
-                if (!best_narrower && !new_narrower){
-                    /* neither reads the other: real conflict. A PUBLISHER's schema still
-                       beats a subscriber's (it owns the wire bytes; adopting a stale
-                       subscriber's shape would make us refuse the live writer too), and a
-                       publisher heard CLEARLY more recently beats one gone silent: a
-                       crash-restarted node's dead incarnation stays ACTIVE-listed until
-                       peer_timeout, but it stopped announcing the moment it died, while
-                       two genuinely live rivals both announce every interval and never
-                       drift a whole CAP_SCHEMA_STALE_US apart (no pick flapping). */
-                    conflict = 1;
-                    if (!(t.is_pub && !best_is_pub)
-                        && !(t.is_pub == best_is_pub
-                             && dp->last_heard_us > best_heard + CAP_SCHEMA_STALE_US))
-                        continue;
-                    take = 1;
-                } else {
-                    take = (t.is_pub && !best_is_pub)                    /* publisher wins the wire */
-                        || (t.is_pub == best_is_pub && best_narrower);   /* same role: the wider wins */
-                }
-                advertisers++;
-            } else {                                    /* one side hash-only: cannot prove subset */
-                conflict = 1;
-                continue;
-            }
-            if (take){
-                best = sch; best_is_pub = t.is_pub; best_hash = hash;
-                best_heard = dp->last_heard_us;
-                if (from && from_cap)
-                    snprintf(from, from_cap, "%.*s", (int)dp->name.len, dp->name.data ? dp->name.data : "");
-            }
-        }
-    }
-    if (out_hash)      *out_hash      = best_hash;
-    if (n_advertisers) *n_advertisers = advertisers;
-    if (hash_conflict) *hash_conflict = conflict;
-    return best;
-}
-
-/* the topic's MAIN schema (see cap_topic_pick_schema) as a freeable parsed copy: the
-   cached one is node-owned, so hand back a reparse of its canonical wire. The caller frees
-   it via cap_schema_alloc. NULL when nobody advertises one (or details are still in
-   flight). Used for the TOPIC the explorer adopts, so it decodes at the same width the
-   inspector shows. */
+/* The topic's MAIN schema as a freeable parsed copy (the library resolves which advertiser
+   to believe: see dart_node_mesh_schema). The SAME resolver backs cap_entity_schema, so the
+   schema DISPLAY, the TOPIC we adopt, and the feed's decode + column set all agree. NULL
+   when nobody advertises one, or while details are still in flight. */
 static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic){
-    const DartSchema *best; DartSchema *copy = NULL;
-    if (!node || !topic || !*topic) return NULL;
-    dart_node_lock(node);   /* the zero-copy peer view + node-owned schema vs the service thread */
-    best = cap_topic_pick_schema(node, topic, NULL, NULL, 0, NULL, NULL);
-    if (best){
-        DartBytes wire = dart_schema_wire(best);
-        copy = dart_schema_parse(wire.data, wire.len, cap_schema_alloc, NULL);
-    }
-    dart_node_unlock(node);
-    return copy;
+    return dart_node_mesh_schema_copy(node, topic, NULL, cap_schema_alloc, NULL);
 }
 
 /* A publisher that restarts with a CHANGED schema strands any topic we already adopted:
@@ -3039,9 +2925,10 @@ static void cap_schema_poll(DartNode *node){
         adopted = dart_topic_schema(live);
         if (!adopted) continue;             /* generic: decodes any writer, nothing to migrate */
         have = dart_schema_hash(adopted);
-        dart_node_lock(node);   /* the zero-copy peer view vs the service thread */
-        cap_topic_pick_schema(node, s->name, &pick, NULL, 0, NULL, NULL);
-        dart_node_unlock(node);
+        {   DartSchemaSource src;                 /* takes the node lock itself */
+            dart_node_mesh_schema(node, s->name, &src);
+            pick = src.hash;
+        }
         if (!pick || pick == have) continue;   /* nobody advertises one, or still current */
         if (s->ch[0])   dart_topic_set_role(s->ch[0],   DART_INACTIVE);
         if (s->ch[1])   dart_topic_set_role(s->ch[1],   DART_INACTIVE);
@@ -3064,7 +2951,7 @@ static void cap_schema_poll(DartNode *node){
    (functions and tasks) or progress (tasks) channel. which: 0 primary, 1 rsp, 2 prg. */
 static int cap_entity_schema(const Capture *cap, const char *topic, int which, CapSchema *out){
     DartNode *node = cap ? (DartNode *)cap->rt : NULL;
-    const DartSchema *best; int n_adv = 0;
+    const DartSchema *best; DartSchemaSource src;
     char cn[DART_TOPIC_NAME_MAX + 8];
     uint8_t kind;
     memset(out, 0, sizeof *out);
@@ -3073,13 +2960,16 @@ static int cap_entity_schema(const Capture *cap, const char *topic, int which, C
     if (which == 1 && kind != CAP_KIND_FUNCTION && kind != CAP_KIND_TASK) return 0;
     if (which == 2 && kind != CAP_KIND_TASK) return 0;   /* only tasks have a progress shape */
     cap_primary_channel_name(cn, sizeof cn, topic, kind, which);
-    dart_node_lock(node);   /* the zero-copy peer view vs the service thread */
-    best = cap_topic_pick_schema(node, cn, &out->hash, out->from, sizeof out->from,
-                                 &n_adv, &out->hash_conflict);
-    out->n_advertisers = n_adv;
+    dart_node_lock(node);   /* the pick AND the node-owned schema we read the fields from */
+    best = dart_node_mesh_schema(node, cn, &src);
+    out->hash          = src.hash;
+    out->n_advertisers = src.advertisers;
+    out->hash_conflict = src.conflict;
+    snprintf(out->from, sizeof out->from, "%.*s", (int)src.from.len,
+             src.from.data ? src.from.data : "");
     if (best) cap_schema_fields(out, best);             /* cached parsed schema: field list */
     dart_node_unlock(node);
-    return n_adv > 0;
+    return src.advertisers > 0;
 }
 
 int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){

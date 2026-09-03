@@ -50,6 +50,10 @@ static Clay_String nf_bytesu(uint64_t b){     /* the u64 twin (RSS can pass LONG
     if (b < 1024u * 1024u * 1024u)  return ui_fmt("%.1f MB", (double)b / (1024.0 * 1024.0));
     return ui_fmt("%.2f GB", (double)b / (1024.0 * 1024.0 * 1024.0));
 }
+static Clay_String nf_rtt(uint32_t us, uint32_t samples){   /* "1.24 ms"; no samples -> dash */
+    if (!samples) return ui_str(ND_DASH);
+    return us >= 100000u ? ui_fmt("%.0f ms", us / 1e3) : ui_fmt("%.2f ms", us / 1e3);
+}
 static Clay_String nf_clock(uint64_t wall_us){   /* the sender's wall clock as local HH:MM:SS */
     time_t t = (time_t)(wall_us / 1000000u);
     struct tm *lt = wall_us ? localtime(&t) : NULL;
@@ -95,6 +99,10 @@ static void node_list_row(AppState *app, const Palette *P, const Node *nd, int i
         if (nd->state == NODE_JOINING)
             CLAY_TEXT(CLAY_STRING("joining"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_SMALL),
                                                                 .textColor = P->amber, .wrapMode = CLAY_TEXT_WRAP_NONE }));
+        else if (nd->disc.rtt_samples)   /* the measured round trip from here */
+            CLAY_TEXT(nf_rtt(nd->disc.rtt_us, nd->disc.rtt_samples),
+                      CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL),
+                                         .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
     }
 }
 
@@ -257,6 +265,24 @@ static void nodes_runtime_sections(const Palette *P,
                                                                                 : "(no text)")
                                           : ui_str(ND_DASH));
         }
+        /* the node's OWN view of its peers: the round trip it measured to each, and the
+           matched lanes each way. Where a slow link or a stalled peer shows up first. */
+        ui_section_label(P, CLAY_STRING("PEERS  (round trip as the node measures it)"));
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
+               .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
+               .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+            int i;
+            if (ms->n_peer_rows == 0) node_kv_single(P, CLAY_STRING("Peers"), CLAY_STRING("none"));
+            for (i = 0; i < ms->n_peer_rows; i++){
+                const CapMetaPeer *pr = &ms->peer_rows[i];
+                node_kv_row(P, ui_fmt("%s%s", pr->name, pr->active ? "" : " (dropped)"),
+                               pr->rtt_samples ? ui_fmt("%.2f ms  +/- %.2f  (min %.2f, %u samples)",
+                                                        pr->rtt_us / 1e3, pr->rtt_jitter_us / 1e3,
+                                                        pr->rtt_min_us / 1e3, pr->rtt_samples)
+                                               : CLAY_STRING("no reliable traffic measured yet"),
+                               CLAY_STRING("Lanes"), ui_fmt("%u out, %u in", pr->publish_to, pr->receive_from));
+            }
+        }
         ui_section_label(P, CLAY_STRING("PROCESS"));
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
                .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
@@ -341,6 +367,18 @@ static void nodes_detail(AppState *app, const Palette *P){
                    .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
                 node_kv_row(P, CLAY_STRING("Fragment size"), nf_bytes(nd->disc.frag_size_bytes),
                                CLAY_STRING("Announce blob"), nf_bytes(nd->disc.blob_bytes));
+            }
+
+            /* ===== LINK: what OUR node's reliable traffic measured on the path to it ===== */
+            ui_section_label(P, CLAY_STRING("LINK  (measured from here)"));
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
+                   .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
+                   .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
+                node_kv_row(P, CLAY_STRING("Round trip"), nf_rtt(nd->disc.rtt_us, nd->disc.rtt_samples),
+                               CLAY_STRING("Jitter"),     nf_rtt(nd->disc.rtt_jitter_us, nd->disc.rtt_samples));
+                node_kv_row(P, CLAY_STRING("Fastest"),    nf_rtt(nd->disc.rtt_min_us, nd->disc.rtt_samples),
+                               CLAY_STRING("Samples"),    nd->disc.rtt_samples ? nf_grp((long)nd->disc.rtt_samples)
+                                                                              : CLAY_STRING("none yet"));
             }
 
             /* ===== RUNTIME: the node's own internals, served by its @dart/meta endpoint

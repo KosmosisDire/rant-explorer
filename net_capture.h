@@ -92,6 +92,7 @@ typedef struct {
     uint16_t port;           /* advertised unicast data port (discovery) */
     uint16_t frag;           /* advertised UDP fragment size (announce metadata) */
     uint16_t meta_len;       /* size of the announce overlay we received (announce metadata) */
+    uint32_t rtt_us, rtt_jitter_us, rtt_min_us, rtt_samples;   /* OUR node's measured round trip to it */
     /* the peer's advertised entities, grown to its actual topic count (no fixed ceiling): a
        high-water heap buffer owned by the snapshot, reused across frames. A typical node
        advertises a handful; a many-topic node grows this once and it stays. */
@@ -458,6 +459,13 @@ typedef struct {
     uint32_t subs, pubs;              /* matched subscribers / publishers at the node */
     uint32_t drops;                   /* its consumer-queue drops */
 } CapMetaTopic;
+#define CAP_META_PEERS 32             /* per-peer rows kept from the snapshot */
+typedef struct {
+    char     name[CAP_NAME_CAP];
+    int      active;
+    uint32_t publish_to, receive_from;   /* matched lanes toward / from that peer */
+    uint32_t rtt_us, rtt_jitter_us, rtt_min_us, rtt_samples;   /* the NODE'S measured round trip to it */
+} CapMetaPeer;
 typedef struct {
     int      valid;                   /* >= 1 snapshot decoded for the watched node */
     int      failing;                 /* consecutive unanswered polls (endpoint absent/slow) */
@@ -482,6 +490,9 @@ typedef struct {
     /* topics section */
     int      n_topic_rows;
     CapMetaTopic topic_rows[CAP_META_TOPICS];
+    /* peers section: the node's own view of its peers (its RTT to each) */
+    int      n_peer_rows;
+    CapMetaPeer peer_rows[CAP_META_PEERS];
 } CapMetaStats;
 void cap_meta_watch(Capture *cap, const char *node_name);
 int  cap_meta_stats(const Capture *cap, CapMetaStats *out);   /* 1 = watching (read out->valid) */

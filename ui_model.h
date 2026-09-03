@@ -32,6 +32,8 @@ typedef struct {
     /* announce metadata (the transport overlay, decoded by our node) */
     int    frag_size_bytes;
     int    blob_bytes;        /* observed overlay size */
+    /* the link as measured from here: our node's reliable traffic to this peer (RTT) */
+    uint32_t rtt_us, rtt_jitter_us, rtt_min_us, rtt_samples;
 } DiscInfo;
 
 typedef struct {

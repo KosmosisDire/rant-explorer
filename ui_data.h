@@ -137,6 +137,8 @@ static void ui_data_build(Dataset *D, const CapSnapshot *snap){
         /* announce metadata: real, decoded by our node from the peer's overlay */
         n->disc.frag_size_bytes     = cn->frag;       /* real (advertised) */
         n->disc.blob_bytes          = cn->meta_len;   /* real: observed overlay size */
+        n->disc.rtt_us = cn->rtt_us; n->disc.rtt_jitter_us = cn->rtt_jitter_us;   /* real: measured from here */
+        n->disc.rtt_min_us = cn->rtt_min_us; n->disc.rtt_samples = cn->rtt_samples;
 
         for (k = 0; k < cn->n_pub && n->n_pubs < UI_MAX_NODE_TOPICS; k++){
             int ti = uid_topic_for(cn->pub[k].name, &n_top);

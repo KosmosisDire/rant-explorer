@@ -81,6 +81,7 @@ typedef struct {
     int      meta_stale;   /* the peer advertises newer state than the node holds yet */
     uint16_t frag;
     uint16_t meta_len;     /* always 0 now: the overlay length is not a reflected fact */
+    uint32_t rtt_us, rtt_jitter_us, rtt_min_us, rtt_samples;   /* our node's measured round trip to it */
     char     name[DART_NODE_NAME_MAX + 1];
     char     ip[48];       /* "a.b.c.d" or "[v6]" */
     uint16_t port;
@@ -1654,6 +1655,28 @@ static void cap_meta_on_reply(const DartResponse *r){
                 tr->drops    = (uint32_t)cap_map_u64(e.bytes, "q_dropped");
             }
         }
+        cap_meta.n_peer_rows = 0;
+        if (dart_map_get(info, "peers", &v)){
+            uint16_t cnt = dart_map_array_count(v.bytes), i;
+            for (i = 0; i < cnt && cap_meta.n_peer_rows < CAP_META_PEERS; i++){
+                DartValue e, nv;
+                CapMetaPeer *pr;
+                if (!dart_map_array_at(v.bytes, i, &e) || e.kind != DART_MAP) continue;
+                pr = &cap_meta.peer_rows[cap_meta.n_peer_rows++];
+                pr->name[0] = '\0';
+                if (dart_map_get(e.bytes, "name", &nv) && nv.bytes.data){
+                    size_t tl = nv.bytes.len < sizeof pr->name - 1 ? nv.bytes.len : sizeof pr->name - 1;
+                    memcpy(pr->name, nv.bytes.data, tl); pr->name[tl] = '\0';
+                }
+                pr->active        = dart_map_get(e.bytes, "active", &nv) && nv.kind == DART_BOOL && nv.v.u != 0;
+                pr->publish_to    = (uint32_t)cap_map_u64(e.bytes, "publish_to");
+                pr->receive_from  = (uint32_t)cap_map_u64(e.bytes, "receive_from");
+                pr->rtt_us        = (uint32_t)cap_map_u64(e.bytes, "rtt_us");
+                pr->rtt_jitter_us = (uint32_t)cap_map_u64(e.bytes, "rtt_jitter_us");
+                pr->rtt_min_us    = (uint32_t)cap_map_u64(e.bytes, "rtt_min_us");
+                pr->rtt_samples   = (uint32_t)cap_map_u64(e.bytes, "rtt_samples");
+            }
+        }
     }
 }
 
@@ -2538,6 +2561,8 @@ static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartPeerInfo *pi)
     p->have_meta  = (pi->epoch || pi->fragment_size) ? 1 : 0;
     p->meta_stale = pi->catching_up ? 1 : 0;
     p->frag       = pi->fragment_size;
+    p->rtt_us = pi->rtt_us; p->rtt_jitter_us = pi->rtt_jitter_us;
+    p->rtt_min_us = pi->rtt_min_us; p->rtt_samples = pi->rtt_samples;
     p->meta_len   = 0;
     snprintf(p->name, sizeof p->name, "%.*s", (int)pi->name.len, pi->name.data ? pi->name.data : "");
     {   /* "ip:port": split at the last colon */
@@ -2666,6 +2691,8 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         n->meta_stale = p->meta_stale;
         n->frag       = p->frag;
         n->meta_len   = p->meta_len;
+        n->rtt_us = p->rtt_us; n->rtt_jitter_us = p->rtt_jitter_us;
+        n->rtt_min_us = p->rtt_min_us; n->rtt_samples = p->rtt_samples;
         n->port       = p->port;
         n->updates    = p->updates;
         n->observed_s = (double)(now - p->first_seen_ms) / 1000.0;

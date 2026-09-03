@@ -76,14 +76,13 @@ typedef struct {
     uint32_t     local_id;
     int          seen_frame;   /* the current snapshot found it ACTIVE in the node's peer table */
 
-    /* cached facts: discovery-level (name/addr) + announce-metadata (frag/interest) */
-    int      have_meta;
-    int      meta_stale;   /* peer advertises a newer blob version than the one we hold (re-fetch pending) */
+    /* cached facts from the node's peer view */
+    int      have_meta;    /* the node has decoded its announce (an epoch or frag exists) */
+    int      meta_stale;   /* the peer advertises newer state than the node holds yet */
     uint16_t frag;
-    uint16_t meta_len;
+    uint16_t meta_len;     /* always 0 now: the overlay length is not a reflected fact */
     char     name[DART_NODE_NAME_MAX + 1];
-    uint8_t  ip[16];
-    uint8_t  ip_len;
+    char     ip[48];       /* "a.b.c.d" or "[v6]" */
     uint16_t port;
     /* advertised entities, grown to the peer's actual topic count (no fixed ceiling). The
        buffers are high-water heap allocations, preserved across a slot reclaim (see
@@ -92,8 +91,8 @@ typedef struct {
     int      n_sub, sub_cap;
     CapTopic *pub;
     CapTopic *sub;
-    uint32_t topics_epoch;   /* dart_node_peer_interest_epoch the pub/sub lists were last built
-                                from: the node bumps it on ANY reflected change (interest apply,
+    uint32_t topics_epoch;   /* DartPeerInfo.epoch the pub/sub lists were last built from: the
+                                node bumps it on ANY reflected change (interest apply,
                                 external-interest assembly, names paging in), so it is the one
                                 cache key -- no event handling, no version watching */
 
@@ -130,14 +129,15 @@ static DartNode *cap_node;
 
 static void *cap_schema_alloc(void *user, void *ptr, size_t size);          /* defined below */
 static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic);/* defined below */
+static DartSchema *cap_entity_schema_copy(DartNode *node, const char *topic, int which); /* defined below */
 static void cap_schema_poll(DartNode *node);                                 /* defined below */
 
 /* set by cap_on_event whenever the topology (and so a topic's advertised schema) may have
    changed; cap_schema_poll then re-checks every adopted schema on the next UI frame */
 static int cap_schema_dirty;
-static unsigned long long cap_schema_next_ms;   /* slow periodic fallback: the conflict
-       tiebreak in dart_node_mesh_schema flips on a peer's growing SILENCE, which no
-       event marks, so a dirty flag alone would sit on a stale pick until peer_timeout */
+static unsigned long long cap_schema_next_ms;   /* slow periodic fallback: the mesh's
+       provider ranking flips on a peer's growing SILENCE, which no event marks, so a
+       dirty flag alone would sit on a stale pick until peer_timeout */
 
 /* one observer-side topic the explorer is using: a ring of recent messages plus the DART
    topic(s) wiring it up. A topic's reliability is FIXED at creation, but our wanted
@@ -181,6 +181,7 @@ typedef struct {
     int          reliable;               /* reliability of the currently live topic (0/1) */
     uint8_t      kind;                   /* CAP_KIND_* entity kind, resolved from the peer view at
                                             first use (0 = plain topic). Locked in once channels exist. */
+    uint64_t     generation;             /* the entity's mesh generation the channels were adopted at */
     char         name[DART_TOPIC_NAME_MAX + 1];
     DartTopic *ch[2];                  /* [0] best-effort, [1] reliable; NULL until first needed.
                                           For a VARIABLE ch[1] is the value channel (subscribe side);
@@ -1090,12 +1091,6 @@ static void cap_logf(const char *fmt, ...){
     if (cap_node) dart_node_unlock(cap_node);
 }
 
-static void cap_fmt_ip(char *buf, size_t n, const uint8_t *ip, uint8_t ip_len){
-    if (ip_len == 4)       snprintf(buf, n, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
-    else if (ip_len == 16) snprintf(buf, n, "%02x%02x:..:%02x%02x", ip[0], ip[1], ip[14], ip[15]);
-    else                   snprintf(buf, n, "(no address)");
-}
-
 static CapPeer *cap_peer_find(uint32_t id){
     int i;
     for (i = 0; i < CAP_MAX_PEERS; i++)
@@ -1887,14 +1882,11 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
     if (s->kind == CAP_KIND_FUNCTION){
         if (s->publishing) s->subscribed = 1;   /* calling implies watching the call log */
         if ((s->subscribed || s->publishing) && !s->fn){
-            char cn[DART_TOPIC_NAME_MAX + 8];
             DartSchema *req, *rsp;
             /* the provider's schemas: our request channel must pass its schema gate, and
                the reply decode needs the response shape */
-            cap_primary_channel_name(cn, sizeof cn, s->name, CAP_KIND_FUNCTION, 0);
-            req = cap_topic_schema_parse(node, cn);
-            cap_primary_channel_name(cn, sizeof cn, s->name, CAP_KIND_FUNCTION, 1);
-            rsp = cap_topic_schema_parse(node, cn);
+            req = cap_entity_schema_copy(node, s->name, 0);
+            rsp = cap_entity_schema_copy(node, s->name, 1);
             s->fn = dart_node_create_remote_function(node, s->name, req, rsp, NULL);
             if (!s->fn){
                 if (req) dart_schema_free(req, cap_schema_alloc, NULL);
@@ -1923,7 +1915,7 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
                never stall the task */
             DartSchema *prg;
             snprintf(cn, sizeof cn, "%s@prg", s->name);
-            prg = cap_topic_schema_parse(node, cn);
+            prg = cap_entity_schema_copy(node, s->name, 2);
             s->prg_ch = i_dart_node_create_pattern_topic(node, cn, trole, prg,
                      &(DartTopicOpts){ .qos = { .reliability = DART_BEST_EFFORT } },
                      DART_KIND_TASK_PRG, CAP_PRG_PREFIX, 0, 0, NULL, NULL);
@@ -1954,7 +1946,7 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
                run's cancel button happens. */
             DartSchema *req;
             snprintf(cn, sizeof cn, "%s@req", s->name);
-            req = cap_topic_schema_parse(node, cn);
+            req = cap_entity_schema_copy(node, s->name, 0);
             s->req_raw = i_dart_node_create_pattern_topic(node, cn, DART_PUB_ONLY, req,
                      &(DartTopicOpts){ .qos = { .reliability = DART_RELIABLE } },
                      DART_KIND_TASK_REQ, CAP_REQ_PREFIX, 0, 0, NULL, NULL);
@@ -2480,12 +2472,11 @@ int cap_task_runs(const Capture *cap, const char *topic, CapTaskRun *out, int ma
                 break;
             }
         {   /* caller_lo -> a discovered peer's uuid low-32 -> its name */
-            uint16_t n_peers = 0, p;
-            const DartDiscoveryPeer *peers = dart_node_peers(node, &n_peers);
-            for (p = 0; p < n_peers; p++)
-                if (i_dart_le_r32(peers[p].uuid) == r->caller_lo && peers[p].name.len){
-                    snprintf(o->caller, sizeof o->caller, "%.*s",
-                             (int)peers[p].name.len, peers[p].name.data);
+            DartIter it; DartPeerInfo pi;
+            memset(&it, 0, sizeof it);
+            while (dart_node_peers_next(node, &it, &pi))
+                if (i_dart_le_r32(pi.uuid) == r->caller_lo && pi.name.len){
+                    snprintf(o->caller, sizeof o->caller, "%.*s", (int)pi.name.len, pi.name.data);
                     break;
                 }
         }
@@ -2526,7 +2517,7 @@ static void cap_endpoint_fill(CapTopic *e, const DartEntityInfo *ei){
     if (ei->name.data) snprintf(e->name, sizeof e->name, "%.*s", (int)ei->name.len, ei->name.data);
     else               snprintf(e->name, sizeof e->name, "0x%08x", (unsigned)ei->hash);
     /* a placeholder name resolves itself: the arriving details bump the interest epoch */
-    e->index       = ei->index;
+    e->index       = 0;
     e->reliable    = ei->reliable;
     e->kind        = (uint8_t)ei->kind;
     e->writable    = ei->writable;
@@ -2537,43 +2528,39 @@ static void cap_endpoint_fill(CapTopic *e, const DartEntityInfo *ei){
     e->incomplete  = ei->incomplete;
 }
 
-/* copy one ACTIVE peer's facts out of the node's zero-copy view into its observer record:
-   discovery-level name/addr, then the peer's advertised ENTITIES via the
-   patterns layer's canonical reflection walk (dart_node_peer_entity_next), so pattern
-   channels arrive already folded into functions and variables and this TU never
-   sees the @-mangling. Each direction's list grows to the peer's actual topic count
-   (cap_grow), so there is no fixed ceiling. */
-static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer *dp){
-    DartEntityIter it; DartEntityInfo ei;
-    uint16_t frag = dart_node_peer_frag(dp);
+/* copy one ACTIVE peer's facts out of the node's peer view into its observer record, then
+   its advertised ENTITIES via the node's reflection walk (dart_node_entities_next), so
+   pattern channels arrive already folded and this TU never sees the @-mangling. Each
+   direction's list grows to the peer's actual entity count (cap_grow). */
+static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartPeerInfo *pi){
+    DartIter it; DartEntityInfo ei;
     p->seen_frame = 1;
-    p->have_meta  = (dp->meta.data && dp->meta.len) ? 1 : 0;
-    p->meta_stale = (dp->adv_meta_version > dp->meta_version) ? 1 : 0;
-    p->frag       = frag;
-    p->meta_len   = (uint16_t)dp->meta.len;
-    memcpy(p->ip, dp->addr.ip, 16);
-    p->ip_len = dp->addr.ip_len;
-    p->port   = dp->addr.port;
-    snprintf(p->name, sizeof p->name, "%.*s", (int)dp->name.len, dp->name.data ? dp->name.data : "");
-
-    /* Rebuilding the interest list re-fetches every topic name from the node's detail cache,
-       which is O(topics) per peer PER FRAME -- crippling at many-thousand-topic scale. The
-       node's interest EPOCH is the one cache key: it bumps on every reflected change (a
-       re-advertise, an external interest assembling, names paging in from the detail
-       exchange), so skip the walk while it is unchanged and keep the cached lists.
-       cap_snapshot still copies them out each frame; only this fetch is throttled. */
-    {   uint32_t epoch = dart_node_peer_interest_epoch(dp);
-        if (epoch == p->topics_epoch) return;
-        p->topics_epoch = epoch;
+    p->have_meta  = (pi->epoch || pi->fragment_size) ? 1 : 0;
+    p->meta_stale = pi->catching_up ? 1 : 0;
+    p->frag       = pi->fragment_size;
+    p->meta_len   = 0;
+    snprintf(p->name, sizeof p->name, "%.*s", (int)pi->name.len, pi->name.data ? pi->name.data : "");
+    {   /* "ip:port": split at the last colon */
+        size_t n = pi->address.len, cut = n;
+        while (cut > 0 && pi->address.data[cut - 1] != ':') cut--;
+        if (cut > 0){
+            snprintf(p->ip, sizeof p->ip, "%.*s", (int)(cut - 1), pi->address.data);
+            p->port = (uint16_t)atoi(pi->address.data + cut);
+        } else { p->ip[0] = '\0'; p->port = 0; }
     }
+
+    /* Rebuilding the lists walks every entity, O(topics) per peer PER FRAME at many-
+       thousand-topic scale. The peer's EPOCH is the one cache key: it bumps on every
+       reflected change, so skip the walk while it is unchanged and keep the cached lists.
+       cap_snapshot still copies them out each frame; only this fetch is throttled. */
+    if (pi->epoch == p->topics_epoch) return;
+    p->topics_epoch = pi->epoch;
 
     p->n_pub = p->n_sub = 0;
     memset(&it, 0, sizeof it);
-    while (dart_node_peer_entity_next(node, dp->id, &it, &ei)){
-        /* provides = the entity's source side (publisher / provider / owner / emitter);
-           consumes = its sink side. An entity on both sides lands in both lists. Names
-           come from the detail cache (fetch_details fills it within an RTT); the hash is
-           the placeholder until then. */
+    while (dart_node_entities_next(node, pi->id, &it, &ei)){
+        /* provides = the entity's source side (publisher / provider / owner); consumes =
+           its sink side. An entity on both sides lands in both lists. */
         if (ei.provides && cap_grow(&p->pub, &p->pub_cap, p->n_pub, sizeof *p->pub))
             cap_endpoint_fill(&p->pub[p->n_pub++], &ei);
         if (ei.consumes && cap_grow(&p->sub, &p->sub_cap, p->n_sub, sizeof *p->sub))
@@ -2584,8 +2571,6 @@ static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartDiscoveryPeer
 void cap_snapshot(const Capture *cap, CapSnapshot *out){
     DartNode *node = (DartNode *)cap->rt;
     unsigned long long now = cap_now_ms();
-    const DartDiscoveryPeer *peers;
-    uint16_t slot, n_peers = 0;
     int i, k;
 
     /* Do NOT memset the whole snapshot: the per-node entity buffers are grown high-water
@@ -2659,14 +2644,16 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         si->mini = s->mini;                     /* newest value, compact (the VALUE column) */
     }
 
-    /* pull the node's zero-copy peer view (it decodes the overlay for us) and refresh each
-       ACTIVE peer's observer record; anything else (dropped, gone, evicted) is freed and
-       leaves the UI. The grown pub/sub buffers stay with the slot for reuse (cap_peer_get). */
+    /* walk the node's peer view and refresh each ACTIVE peer's observer record; anything
+       else (dropped, gone, evicted) is freed and leaves the UI. The grown pub/sub buffers
+       stay with the slot for reuse (cap_peer_get). */
     for (i = 0; i < CAP_MAX_PEERS; i++) cap_peers[i].seen_frame = 0;
-    peers = dart_node_peers(node, &n_peers);
-    for (slot = 0; slot < n_peers; slot++)
-        if (peers[slot].liveness == DART_PEER_ACTIVE)
-            cap_peer_refresh(node, cap_peer_get(peers[slot].id), &peers[slot]);
+    {   DartIter it; DartPeerInfo pi;
+        memset(&it, 0, sizeof it);
+        while (dart_node_peers_next(node, &it, &pi))
+            if (pi.liveness == DART_PEER_ACTIVE)
+                cap_peer_refresh(node, cap_peer_get(pi.id), &pi);
+    }
     for (i = 0; i < CAP_MAX_PEERS; i++)
         if (cap_peers[i].used && !cap_peers[i].seen_frame) cap_peers[i].used = 0;
 
@@ -2684,7 +2671,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         n->observed_s = (double)(now - p->first_seen_ms) / 1000.0;
         n->age_s      = p->last_change_ms ? (double)(now - p->last_change_ms) / 1000.0 : -1.0;
         snprintf(n->name, sizeof n->name, "%s", p->name);
-        cap_fmt_ip(n->ip, sizeof n->ip, p->ip, p->ip_len);
+        snprintf(n->ip, sizeof n->ip, "%s", p->ip);
 
         /* grow the node's snapshot buffers to the peer's actual counts (high-water, reused
            across frames), then copy (memcpy, not snprintf: the name is already a NUL-
@@ -2889,24 +2876,52 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
     }
 }
 
-/* The topic's MAIN schema as a freeable parsed copy (the library resolves which advertiser
-   to believe: see dart_node_mesh_schema). The SAME resolver backs cap_entity_schema, so the
-   schema DISPLAY, the TOPIC we adopt, and the feed's decode + column set all agree. NULL
-   when nobody advertises one, or while details are still in flight. */
-static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic){
-    return dart_node_mesh_schema_copy(node, topic, NULL, cap_schema_alloc, NULL);
+/* The mesh's view of the entity behind `topic` (1 + *out): kind from the peer lists we
+   already hold, the rest from dart_node_mesh_find. Views into node state: bracket use with
+   the node lock when they outlive the call. */
+static int cap_entity_lookup(DartNode *node, const char *topic, DartEntityInfo *out){
+    uint8_t kind = cap_entity_kind(topic, NULL);
+    DartEntityKind ek = kind == CAP_KIND_FUNCTION ? DART_ENTITY_FUNCTION
+                      : kind == CAP_KIND_VARIABLE ? DART_ENTITY_VARIABLE
+                      : kind == CAP_KIND_TASK     ? DART_ENTITY_TASK : DART_ENTITY_TOPIC;
+    return dart_node_mesh_find(node, ek, topic, out);
 }
 
-/* A publisher that restarts with a CHANGED schema strands any topic we already adopted:
+/* the schema of one channel (which: 0 primary, 1 rsp, 2 prg) of the entity behind `topic`,
+   as a freeable parsed copy: the provider's declaration (the mesh's pick), NULL when nobody
+   advertises one or while details are still in flight. The SAME resolver backs the schema
+   DISPLAY, the topics we adopt and the feed decode, so they can never disagree. */
+static DartSchema *cap_entity_schema_copy(DartNode *node, const char *topic, int which){
+    DartEntityInfo ei; const DartSchema *sch; DartSchema *copy = NULL;
+    dart_node_lock(node);   /* one bracket: the pick AND the wire it copies from */
+    if (cap_entity_lookup(node, topic, &ei)){
+        sch = which == 1 ? ei.rsp_schema : which == 2 ? ei.progress_schema : ei.schema;
+        if (sch) copy = dart_schema_copy(sch, cap_schema_alloc, NULL);
+    }
+    dart_node_unlock(node);
+    return copy;
+}
+
+/* the primary schema of a topic / variable / function request / task request */
+static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic){
+    return cap_entity_schema_copy(node, topic, 0);
+}
+
+/* the mesh generation the entity currently stands at (0 = not advertised) */
+static uint64_t cap_entity_generation(DartNode *node, const char *topic){
+    DartEntityInfo ei;
+    return cap_entity_lookup(node, topic, &ei) ? ei.generation : 0;
+}
+
+/* A provider that restarts with a CHANGED schema strands any topic we already adopted:
    a DART topic's schema is immutable for its lifetime, so the old adoption would refuse
-   the new writer forever (a fresh subscriber would pair fine). When the mesh's picked
-   schema no longer hashes to what a topic's live channel adopted, retire the channels
-   (set INACTIVE: the transport re-resolves same-identity twins toward the live one) and
-   re-create them through cap_sub_reconcile, which adopts the current pick. Runs on the
-   UI frame only after an event marked the topology dirty, so steady state costs one
-   flag test. Functions are skipped: a caller handle cannot be retired, and its schemas
-   ride the mangled request/response channels. Each re-adoption permanently retires two
-   topic slots (topics are append-only), which the node's growing reserve absorbs. */
+   the new writer forever (a fresh subscriber would pair fine). When the entity's mesh
+   GENERATION moved since we adopted, retire the channels (set INACTIVE: the transport
+   re-resolves same-identity twins toward the live one) and re-create them through
+   cap_sub_reconcile, which adopts the current pick. Runs on the UI frame only after an
+   event marked the topology dirty, so steady state costs one flag test. Functions are
+   skipped: a caller handle cannot be retired, and its schemas ride the mangled
+   request/response channels. */
 static void cap_schema_poll(DartNode *node){
     unsigned long long now = cap_now_ms();
     int i;
@@ -2916,20 +2931,14 @@ static void cap_schema_poll(DartNode *node){
     for (i = 0; i < CAP_MAX_SUBS; i++){
         CapSub *s = &cap_subs[i];
         DartTopic *live;
-        const DartSchema *adopted;
-        uint64_t have, pick = 0;
+        uint64_t gen;
         if (!s->used || s->kind == CAP_KIND_FUNCTION || s->kind == CAP_KIND_TASK) continue;
         live = s->kind ? s->ch[1]
              : s->ch[s->reliable] ? s->ch[s->reliable] : s->ch[!s->reliable];
         if (!live) continue;
-        adopted = dart_topic_schema(live);
-        if (!adopted) continue;             /* generic: decodes any writer, nothing to migrate */
-        have = dart_schema_hash(adopted);
-        {   DartSchemaSource src;                 /* takes the node lock itself */
-            dart_node_mesh_schema(node, s->name, &src);
-            pick = src.hash;
-        }
-        if (!pick || pick == have) continue;   /* nobody advertises one, or still current */
+        gen = cap_entity_generation(node, s->name);
+        if (!gen || gen == s->generation) continue;   /* nobody advertises it, or still current */
+        if (!s->generation){ s->generation = gen; continue; }   /* first sight: the baseline */
         if (s->ch[0])   dart_topic_set_role(s->ch[0],   DART_INACTIVE);
         if (s->ch[1])   dart_topic_set_role(s->ch[1],   DART_INACTIVE);
         if (s->set_ch)  dart_topic_set_role(s->set_ch,  DART_INACTIVE);
@@ -2938,38 +2947,38 @@ static void cap_schema_poll(DartNode *node){
         s->index[0] = s->index[1] = 0;
         dart_node_unlock(node);
         if (cap_sub_reconcile(s, node, s->reliable))
-            cap_logf("%s re-adopted a changed schema (id %08x%08x -> %08x%08x)", s->name,
-                     (unsigned)(have >> 32), (unsigned)have,
-                     (unsigned)(pick >> 32), (unsigned)pick);
+            cap_logf("%s re-adopted a changed schema (generation %08x%08x -> %08x%08x)", s->name,
+                     (unsigned)(s->generation >> 32), (unsigned)s->generation,
+                     (unsigned)(gen >> 32), (unsigned)gen);
         else
             cap_logf("%s schema changed but re-adoption FAILED (topic create)", s->name);
+        s->generation = gen;
     }
 }
 
-/* the schema query for one of an entity's channels: the base name for topics and
-   variables (their primary channel IS the bare name), the mangled request/response
-   (functions and tasks) or progress (tasks) channel. which: 0 primary, 1 rsp, 2 prg. */
+/* the schema query for one of an entity's channels: which 0 primary (topic / variable value /
+   request), 1 response (functions, tasks), 2 progress (tasks) */
 static int cap_entity_schema(const Capture *cap, const char *topic, int which, CapSchema *out){
     DartNode *node = cap ? (DartNode *)cap->rt : NULL;
-    const DartSchema *best; DartSchemaSource src;
-    char cn[DART_TOPIC_NAME_MAX + 8];
+    DartEntityInfo ei; const DartSchema *best = NULL; int found;
     uint8_t kind;
     memset(out, 0, sizeof *out);
     if (!node || !topic || !*topic) return 0;
     kind = cap_entity_kind(topic, NULL);
     if (which == 1 && kind != CAP_KIND_FUNCTION && kind != CAP_KIND_TASK) return 0;
     if (which == 2 && kind != CAP_KIND_TASK) return 0;   /* only tasks have a progress shape */
-    cap_primary_channel_name(cn, sizeof cn, topic, kind, which);
     dart_node_lock(node);   /* the pick AND the node-owned schema we read the fields from */
-    best = dart_node_mesh_schema(node, cn, &src);
-    out->hash          = src.hash;
-    out->n_advertisers = src.advertisers;
-    out->hash_conflict = src.conflict;
-    snprintf(out->from, sizeof out->from, "%.*s", (int)src.from.len,
-             src.from.data ? src.from.data : "");
-    if (best) cap_schema_fields(out, best);             /* cached parsed schema: field list */
+    found = cap_entity_lookup(node, topic, &ei);
+    if (found){
+        best = which == 1 ? ei.rsp_schema : which == 2 ? ei.progress_schema : ei.schema;
+        out->hash          = which == 1 ? ei.rsp_schema_hash : which == 2 ? ei.progress_schema_hash : ei.schema_hash;
+        out->n_advertisers = ei.providers + ei.consumers;
+        out->hash_conflict = ei.conflict;
+        snprintf(out->from, sizeof out->from, "%.*s", (int)ei.from.len, ei.from.data ? ei.from.data : "");
+        if (best) cap_schema_fields(out, best);             /* interned parsed schema: field list */
+    }
     dart_node_unlock(node);
-    return src.advertisers > 0;
+    return found && (ei.providers + ei.consumers) > 0;
 }
 
 int cap_topic_schema(const Capture *cap, const char *topic, CapSchema *out){
@@ -2986,20 +2995,19 @@ int cap_topic_prg_schema(const Capture *cap, const char *topic, CapSchema *out){
 
 int cap_topic_schema_dsl(const Capture *cap, const char *topic, int which, char *out, size_t out_cap){
     DartNode *node = cap ? (DartNode *)cap->rt : NULL;
-    DartSchema *sch;
-    char cn[DART_TOPIC_NAME_MAX + 8];
+    DartEntityInfo ei; const DartSchema *sch = NULL;
     uint8_t kind;
-    uint32_t n;
+    uint32_t n = 0;
     if (out && out_cap) out[0] = '\0';
     if (!node || !topic || !*topic || !out || out_cap == 0) return 0;
     kind = cap_entity_kind(topic, NULL);
     if (which == 1 && kind != CAP_KIND_FUNCTION && kind != CAP_KIND_TASK) return 0;
     if (which == 2 && kind != CAP_KIND_TASK) return 0;
-    cap_primary_channel_name(cn, sizeof cn, topic, kind, which);
-    sch = cap_topic_schema_parse(node, cn);      /* full parsed schema (takes the node lock) */
-    if (!sch) return 0;
-    n = dart_schema_print(sch, out, out_cap);    /* the library spells the DSL */
-    dart_schema_free(sch, cap_schema_alloc, NULL);
+    dart_node_lock(node);
+    if (cap_entity_lookup(node, topic, &ei))
+        sch = which == 1 ? ei.rsp_schema : which == 2 ? ei.progress_schema : ei.schema;
+    if (sch) n = dart_schema_print(sch, out, out_cap);    /* the library spells the DSL */
+    dart_node_unlock(node);
     return (int)n;
 }
 
@@ -3012,12 +3020,10 @@ int cap_form_validate(const Capture *cap, const char *topic, const char *const *
                       int n_values, unsigned char *valid){
     DartNode *node = cap ? (DartNode *)cap->rt : NULL;
     DartSchema *sch; uint8_t *buf; size_t size; uint16_t i, nf;
-    char cn[DART_TOPIC_NAME_MAX + 8];
     int j;
     for (j = 0; j < n_values; j++) if (valid) valid[j] = 1;   /* default: don't flag */
     if (!node || !topic || !values) return 0;
-    cap_primary_channel_name(cn, sizeof cn, topic, cap_entity_kind(topic, NULL), 0);
-    sch = cap_topic_schema_parse(node, cn);   /* a function's form fills its REQUEST schema */
+    sch = cap_topic_schema_parse(node, topic);   /* a function's form fills its REQUEST schema */
     if (!sch) return 0;                                       /* no schema: nothing to judge against */
     size = dart_schema_msg_min(sch) + CAP_FORM_SLACK;
     buf = (uint8_t *)malloc(size);

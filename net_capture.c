@@ -1139,6 +1139,7 @@ static CapMetaStats       cap_meta;                      /* latest decode (lock-
 static uint32_t           cap_meta_gen;                  /* bumped per watch change */
 static uint32_t           cap_meta_req_gen;              /* generation the in-flight call belongs to */
 static int                cap_meta_inflight;
+static uint32_t           cap_meta_polls;      /* every 5th poll asks for the topics section */
 static unsigned long long cap_meta_last_ms;              /* last request time */
 static unsigned long long cap_meta_recv_ms;              /* when the snapshot arrived (0 = never) */
 static uint64_t           cap_meta_prev_cpu, cap_meta_prev_wall;   /* CPU%% deltas */
@@ -1633,9 +1634,9 @@ static void cap_meta_on_reply(const DartResponse *r){
             cap_meta_prev_cpu  = cap_meta.cpu_us;
             cap_meta_prev_wall = wall;
         }
-        cap_meta.n_topic_rows = 0;
-        if (dart_map_get(info, "topics", &v)){
+        if (dart_map_get(info, "topics", &v)){   /* absent when this poll did not ask: rows stand */
             uint16_t cnt = dart_map_array_count(v.bytes), i;
+            cap_meta.n_topic_rows = 0;
             for (i = 0; i < cnt && cap_meta.n_topic_rows < CAP_META_TOPICS; i++){
                 DartValue e, nv;
                 CapMetaTopic *tr;
@@ -1698,9 +1699,18 @@ static void cap_meta_poll(DartNode *node){
     cap_meta_last_ms = now;
     cap_meta_inflight = 1;
     cap_meta_req_gen = cap_meta_gen;
-    if (dart_function_call_async(fn, dart_bytes(NULL, 0), cap_meta_on_reply, NULL,
-                                 &(DartCallOpts){ .provider = pid }) != DART_OK)
-        cap_meta_inflight = 0;
+    {   /* ask only for what this poll needs: the node/proc/peers sections every time (a few
+           hundred bytes), the per-topic counters every 5th poll. That section is O(topics)
+           to build and ~250 B per topic on the wire, so on a node advertising thousands of
+           topics it was hundreds of KB every second for a panel that shows a few rows. */
+        uint8_t req[4];
+        uint32_t mask = DART_META_NODE | DART_META_PROC | DART_META_PEERS;
+        if ((cap_meta_polls++ % 5u) == 0) mask |= DART_META_TOPICS;
+        i_dart_le_w32(req, mask);
+        if (dart_function_call_async(fn, dart_bytes(req, sizeof req), cap_meta_on_reply, NULL,
+                                     &(DartCallOpts){ .provider = pid }) != DART_OK)
+            cap_meta_inflight = 0;
+    }
 }
 
 void cap_meta_watch(Capture *cap, const char *node_name){

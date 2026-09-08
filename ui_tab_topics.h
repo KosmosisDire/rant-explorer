@@ -1,18 +1,5 @@
-/* Topics tab: topic tree (264) + center feed (grow) + right sidebar (332, only when open)
-   that tabs between Publish (the default) and Inspect. Wired to live discovery: the tree, each
-   topic's reliability, and its publisher/subscriber node lists are real (from the announce
-   interest blobs). The center FEED is live too: SELECTING a topic subscribes to it
-   (app_select_topic -> cap_subscribe; the pills and the tree menu still toggle it by hand) and
-   messages show as they arrive, newest at the bottom, auto-scrolling
-   while the user is parked there. A topic's status light is its subscription state: green
-   subscribed, red dropping/erroring, hollow grey not subscribed. The feed is a TABLE: columns
-   are the message's (flattened) fields, rows are samples, with a sticky header; clicking a row
-   copies that sample into the Inspect tab, which shows its full decoded field hierarchy from a
-   durable copy that survives the feed ring recycling. The Publish tab hosts the message
-   composer (free-text, or a structured form on a typed topic). Durability/history/deadline QoS
-   ride the data plane out of band and are never observable here, so the Inspect tab just
-   doesn't show them.
-   Requires ui_tree.h, ui_widgets.h, ui_model.h, ui_app.h, net_capture.h. */
+/* The Topics tab: the topic tree, the center feed table and the right sidebar tabbing
+   between Publish and Inspect. Selecting a topic subscribes to it (spec/explorer.md). */
 #ifndef UI_TAB_TOPICS_H
 #define UI_TAB_TOPICS_H
 
@@ -21,13 +8,11 @@ static CapFeedItem tt_feed[CAP_FEED_MAX];
 static int         tt_feed_n, tt_subscribed, tt_sub_error, tt_sub_reliable;
 static int         tt_send_pending;   /* a send is parked on the forming match (spinner) */
 static uint32_t    tt_msgs, tt_drops;
-static CapSchema   tt_feed_schema[2];   /* the topic's schemas, for picking the feed's column
-                                           templates: [0] the primary one (a FUNCTION's request),
-                                           [1] a function's RESPONSE (empty for every other kind) */
+static CapSchema   tt_feed_schema[2];   /* the feed's column template schemas: [0] the primary,
+                                           [1] a function's response, empty for other kinds */
 
-/* entity glyph for a topic's kind: the capture layer folds pattern channels through the
-   canonical reflection walk, so a function or variable arrives as ONE entity and this
-   is a straight kind -> icon map. Returns 1 if it drew. Colored per family for a quick scan. */
+/* the entity glyph for a topic's kind, a straight kind to icon map since the capture layer
+   folds pattern channels. Returns 1 if it drew. Colored per family for a quick scan. */
 static int tt_kind_icon(const Palette *P, int kind){
     IconId id; Clay_Color c;
     switch (kind){
@@ -62,8 +47,8 @@ static const char *tt_send_verb(const Topic *t){
 /* a function/task entity: the feed is a call log (request + reply groups, directed rows) */
 static int tt_call_kind(int kind){ return kind == CAP_KIND_FUNCTION || kind == CAP_KIND_TASK; }
 
-/* a freshly received message blinks the status light full green for this long (seconds);
-   between messages it settles back to the dim subscribed green. */
+/* a fresh message blinks the status light full green for this many seconds, then it
+   settles back to the dim subscribed green */
 #define TT_FLASH_S 0.12
 
 /* 1 if a subscribed topic received a message within the flash window (a live count-up, so
@@ -78,7 +63,7 @@ static void tt_status_dot(const Palette *P, int sub_state, int flash){
     if (sub_state == 0){ ui_dot(UISC(7), UI_NONE, P->faint); return; }
     if (sub_state == 2){ ui_dot(UISC(7), P->red, UI_NONE); return; }
     if (flash) ui_dot(UISC(7), P->green, UI_NONE);          /* a message just arrived */
-    else { Clay_Color g = P->green; g.a = 90; ui_dot(UISC(7), g, UI_NONE); }   /* subscribed, idle */
+    else { Clay_Color g = P->green; g.a = 90; ui_dot(UISC(7), g, UI_NONE); }
 }
 
 /* copy a payload preview as printable ASCII (non-printable bytes become '.') into dst */
@@ -91,9 +76,8 @@ static void tt_sanitize(char *dst, int cap, const char *src, int n){
     dst[j] = '\0';
 }
 
-/* the topic filter box: a bare text box in the search row. Click to focus, a
-   click anywhere else or Enter unfocuses, Escape or the X clears. The tree
-   hides rows whose topic doesn't match (path or endpoint node name). */
+/* the topic filter box: click to focus, a click elsewhere or Enter unfocuses, Escape or
+   the X clears. The tree hides rows whose topic does not match. */
 static void ui_filter_box(AppState *app, const Palette *P, Clay_String hint){
     int focused = ui_tb_focused(&app->tb_filter), act;
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(30)) },
@@ -141,13 +125,11 @@ static Clay_String tt_rel_word(int reliable){
 
 static const char tt_filter_menu_tok;   /* &this = the category-filter menu's owner token */
 
-/* the category-filter checklist: grouped Kind / Reliability / State checkboxes (a disabled
-   row heads each group), plus a "Clear filters" row when anything is set. Toggling a box
-   keeps the menu open (ui_menu's checklist behaviour); the tree rebuild picks up the change
-   next frame. Drawn each frame; idle unless open. */
+/* the category filter checklist grouped Kind, Reliability and State, plus a clear row when
+   anything is set. Toggling keeps the menu open. Drawn each frame, idle unless open. */
 static void tt_filter_menu(AppState *app, const Palette *P){
     UiMenuItem items[16];
-    unsigned   bit[16];              /* the bit each row toggles; 0 = a non-toggle row (header / clear) */
+    unsigned   bit[16];              /* the bit each row toggles, 0 = a non toggle row */
     int n = 0, hit;
     if (!ui_menu_is_open(&tt_filter_menu_tok)) return;
     /* a group header: a dimmed, non-clickable label */
@@ -182,8 +164,8 @@ static void tt_filter_menu(AppState *app, const Palette *P){
 
 /* ============================================================= left: topic tree */
 
-/* the tree is a table: the name column (indented) plus fixed stat columns. These are the
-   stat-column widths (unscaled px); the name column measures to fit its content. */
+/* the tree is a table: the indented name column plus fixed stat columns. These are the
+   stat column widths in unscaled px, the name column measures to fit. */
 #define TT_COL_DOT    14
 #define TT_COL_VALUE  116
 #define TT_COL_RATE   58
@@ -207,14 +189,14 @@ static float tt_caption_cw(void){
 
 static Clay_String tt_fit(const char *s, int budget);   /* defined with the feed cells below */
 
-/* publish rate for the tree's Rate column; dash-ish handling is done by the caller */
+/* the publish rate for the tree's Rate column, the caller handles the dash */
 static Clay_String tt_rate(double hz){
     if (hz <= 0.0)   return ui_str(ND_DASH);
     if (hz < 10.0)   return ui_fmt("%.1f Hz", hz);
     if (hz < 1000.0) return ui_fmt("%.0f Hz", hz);
     return ui_fmt("%.1fk Hz", hz / 1000.0);
 }
-/* p90 jitter for the tree's Jitter column; ms is < 0 for "not enough samples yet" */
+/* the p90 jitter for the tree's Jitter column, ms below 0 = not enough samples */
 static Clay_String tt_jitter(double ms){
     if (ms < 0.0)    return ui_str(ND_DASH);
     if (ms < 10.0)   return ui_fmt("%.2f ms", ms);
@@ -230,10 +212,8 @@ static void tt_stat_cell(const Palette *P, float w, Clay_String value, Clay_Colo
     }
 }
 
-/* the VALUE column: the newest received value, rendered compactly at intake (net_capture's
-   mini preview). Most kinds are text; a Color draws its swatch beside the hex, a Matrix a
-   per-cell heat grid (brightness = |cell| / max, red = negative). Values ride the data
-   plane, so a dash shows until the topic is subscribed and a message arrives. */
+/* the VALUE column: the newest received value rendered compactly at intake. A Color
+   draws its swatch beside the hex, a Matrix a per cell heat grid. A dash until subscribed. */
 static void tt_value_cell(const Palette *P, const TreeRow *row, int live, float cw){
     const CapMiniPreview *mp = (row->has_topic && live && row->topic->mini.have)
                                ? &row->topic->mini : NULL;
@@ -244,9 +224,8 @@ static void tt_value_cell(const Palette *P, const TreeRow *row, int live, float 
             CLAY_TEXT(ui_str(ND_DASH), CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_CAPTION),
                                                           .textColor = P->faint, .wrapMode = CLAY_TEXT_WRAP_NONE }));
         } else if (mp->std == CAP_STD_COLOR){
-            /* swatch over the classic transparency checkerboard: the two checker shades are
-               pre-blended with the value here, so quadrants are plain filled rects (an opaque
-               color blends to a solid swatch, no separate path) */
+            /* the swatch over the transparency checkerboard: the two checker shades are pre
+               blended with the value, so the quadrants are plain filled rects */
             float af = (float)mp->rgba[3] / 255.0f;
             float r  = (float)mp->rgba[0], g = (float)mp->rgba[1], b = (float)mp->rgba[2];
             Clay_Color cl = { r * af + 255.0f * (1.0f - af), g * af + 255.0f * (1.0f - af),
@@ -333,8 +312,8 @@ static const char *tt_seg(const char *p, char *out, int cap){
     out[n] = '\0';
     return p;
 }
-/* 1 if `topic` is a strict descendant of `branch` in segment terms; separator-agnostic, so a
-   "a.b" topic matches under the tree's "a/b" branch path (the tree splits on both). */
+/* 1 if topic is a strict descendant of branch in segment terms, separator agnostic, so an
+   "a.b" topic matches under the tree's "a/b" branch */
 static int tt_under(const char *topic, const char *branch){
     char bs[CAP_TOPIC_CAP], ts[CAP_TOPIC_CAP];
     const char *bp = branch, *tp = topic;
@@ -396,16 +375,15 @@ static void tt_subtree_counts(const Dataset *D, const char *self, const char *br
 
 static const char tt_tree_menu_tok;   /* &this = the tree menu's owner token */
 static char tt_menu_branch[96];        /* the right-clicked node's tree path (subtree scan key) */
-static char tt_menu_self[96];          /* its own topic path, or "" if a pure namespace / function */
-static int  tt_menu_desc_count;        /* subscribable descendant topics (excludes the self topic) */
+static char tt_menu_self[96];   /* its own topic path, "" for a pure namespace or function */
+static int  tt_menu_desc_count;   /* subscribable descendant topics, excluding the self topic */
 
-/* the tree's per-row menu: "Subscribe"/"Unsubscribe" for the row's own topic, and (for a branch)
-   "Subscribe All (N)" / "Unsubscribe All (N)" over its whole subtree. Each item is shown only
-   when it would act on something, so it is never a no-op. Drawn each frame; idle unless open. */
+/* the tree's per row menu: Subscribe or Unsubscribe for the row's topic, and for a branch
+   the All variants over its subtree. Items show only when they would act. */
 static void tt_tree_menu(AppState *app, const Palette *P){
     const Dataset *D = app->data;
     UiMenuItem items[3];
-    char       act[3];               /* 's' self toggle, 'a' subscribe subtree, 'u' unsubscribe subtree */
+    char       act[3];   /* 's' self toggle, 'a' subscribe subtree, 'u' unsubscribe subtree */
     int n = 0, hit, self_idx, subscribed, total = 0, sub_cnt = 0;
     if (!ui_menu_is_open(&tt_tree_menu_tok)) return;
     self_idx   = tt_menu_self[0] ? tt_find_topic(D, tt_menu_self) : -1;
@@ -436,27 +414,22 @@ static void tt_tree_menu(AppState *app, const Palette *P){
     }
 }
 
-/* name_col = the reserved left-region width in px (caret zone + gap + name text, == the
-   panel's name_max); cw = the mono-small char advance. The name is content-sized with no
-   horizontal clip (a per-row clip would blow Clay's ~10 scroll-container slots, so we
-   truncate like the feed cells do), so it MUST be trimmed to what fits, else a name wider
-   than the clamped budget grows the GROW row past the fixed-width panel and spills the
-   stat columns + scrollbar off the sidebar's right edge. */
+/* name_col is the reserved name region width in px and cw the mono char advance. The name
+   is content sized with no clip, so it must be trimmed to what fits or the row spills. */
 static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, int idx,
                            float name_col, float cw, float val_cw, float gap){
     const Dataset *D = app->data;
     int sel  = row->has_topic && app->sel_topic >= 0 && app->sel_topic < D->n_topics
                && row->topic == &D->topics[app->sel_topic];
-    int live = row->has_topic && row->topic->sub_state != 0;         /* rate/jitter need the data plane */
+    int live = row->has_topic && row->topic->sub_state != 0;   /* rate and jitter need data */
     CLAY({ .id = CLAY_IDI("tree_row", (uint32_t)idx),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(29)) },
                        .padding = { .right = UISCI(10) }, .childGap = UISCI(TT_COL_GAP),
                        .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } },
            .backgroundColor = sel ? P->accent_bg : UI_NONE,
            .border = { .width = { sel ? UISCI(2) : 0, 0, 0, 0, 0 }, .color = P->accent } }) {
-        /* caret zone: spans the indent + caret. A click here toggles collapse and is
-           consumed, so it doesn't also select the row below. The indent is left padding,
-           so the chevron stays centered after it. */
+        /* the caret zone spans the indent and the caret. A click here toggles collapse and is
+           consumed, so it does not also select the row. */
         CLAY({ .id = CLAY_IDI("tree_caret", (uint32_t)idx),
                .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(10 + row->depth * 15 + 24)), .height = CLAY_SIZING_GROW(0) },
                            .padding = { .left = UISCI(10 + row->depth * 15) },
@@ -466,23 +439,21 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
                 ui_icon(row->open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12, P->dim);
             }
         }
-        /* topic glyph: a plain topic shows the hash (a named channel); a function or
-           variable shows its type icon instead (tt_kind_icon maps the kind). A namespace
-           branch has no topic and shows nothing here. */
+        /* the topic glyph: a plain topic shows the hash, a function or variable its type icon.
+           A namespace branch has no topic and shows nothing. */
         if (row->has_topic){
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(18)), .height = CLAY_SIZING_GROW(0) },
                                .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
                 tt_kind_icon(P, row->topic->kind);
             }
         }
-        /* name: a branch (has children) gets a trailing '/' so a namespace reads as a
-           path segment; dim when it's a pure namespace, normal when it's a topic */
+        /* the name: a branch gets a trailing '/' so a namespace reads as a path segment, dim
+           when it is a pure namespace and normal when it is a topic */
         CLAY({ .id = CLAY_IDI("tree_name", (uint32_t)idx),
                .layout = { .sizing = { .height = CLAY_SIZING_GROW(0) },
                            .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
-            /* px left for the text = the name region minus this row's caret zone, the gap,
-               and (for a topic) the kind glyph. Truncate to that many mono chars so the
-               row can never grow wider than the panel (see the header comment above). */
+            /* px left for the text = the name region minus this row's caret zone, the gap and
+               the kind glyph. Truncate to that many mono chars so the row never outgrows it. */
             float text_px = name_col - UISC(10 + row->depth * 15 + 24) - gap
                           - (row->has_topic ? UISC(18) + gap : 0.0f);
             int budget = (cw > 0.0f && text_px > cw) ? (int)(text_px / cw) : 1;
@@ -491,21 +462,20 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
                                          .textColor = row->has_topic ? P->text : P->dim,
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
         }
-        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* spacer: right-anchor the stat columns */
+        CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
         /* status dot: live subscription state (green subscribed, red dropping, grey not) */
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(TT_COL_DOT)) },
                            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {
             if (row->has_topic) tt_status_dot(P, row->topic->sub_state, tt_recent(row->topic));
         }
-        /* Value / Rate / Jitter: ride the data plane, so real only while subscribed (dash otherwise) */
+        /* Value, Rate and Jitter ride the data plane, so real only while subscribed */
         tt_value_cell(P, row, live, val_cw);
         tt_stat_cell(P, UISC(TT_COL_RATE), live ? tt_rate(row->topic->rate_hz) : ui_str(ND_DASH),
                      live && row->topic->rate_hz > 0.0 ? P->dim : P->faint);
         tt_stat_cell(P, UISC(TT_COL_JITTER), live ? tt_jitter(row->topic->jitter_p90_ms) : ui_str(ND_DASH),
                      live && row->topic->jitter_p90_ms >= 0.0 ? P->dim : P->faint);
-        /* right-click opens the subscribe menu: "Subscribe" for the row's own topic, and/or
-           "Subscribe All (N)" when the subtree holds subscribable descendants. Nothing to
-           offer (a lone function, an empty namespace) means no menu. */
+        /* right click opens the subscribe menu: Subscribe for the row's topic and Subscribe All
+           when the subtree holds subscribable descendants. Nothing to offer means no menu. */
         if (Clay_Hovered() && g_right_pressed){
             int has_self = row->has_topic && tt_subscribable(row->topic);
             int desc     = tt_count_descendants(D, row->path);
@@ -517,8 +487,8 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
             }
             g_right_pressed = false;
         }
-        /* whole-row click selects the topic (the caret already consumed its own click);
-           a pure namespace has nothing to select, so a click toggles its collapse */
+        /* a whole row click selects the topic, the caret consumed its own click. A pure
+           namespace has nothing to select, so a click toggles its collapse */
         if (Clay_Hovered() && g_pointer_pressed){
             if (row->has_topic){
                 app_select_topic(app, D, (int)(row->topic - D->topics));
@@ -537,7 +507,7 @@ static void topic_tree_row(AppState *app, const Palette *P, const TreeRow *row, 
 static void tt_commit_new_topic(AppState *app){
     if (app->new_topic_len > 0){
         ui_data_add_user_topic(app->new_topic);
-        if (app->cap) cap_declare_publish(app->cap, app->new_topic);   /* advertise pub interest now */
+        if (app->cap) cap_declare_publish(app->cap, app->new_topic);   /* advertise pub now */
         snprintf(app->select_topic, sizeof app->select_topic, "%s", app->new_topic);
     }
     app->adding_topic  = 0;
@@ -578,9 +548,8 @@ static void tt_new_topic_input(AppState *app, const Palette *P){
 static void topics_tree(AppState *app, const Palette *P){
     const Dataset *D = app->data;
     int n = ui_tree_build(app), i;
-    /* virtualization window: only rows in (or a few rows around) the viewport become Clay
-       elements. Scroll data reflects the previous frame's layout (scrollPosition->y <= 0,
-       0 = top); on the very first frame it is absent, so fall back to a generous top slice. */
+    /* the virtualization window: only rows near the viewport become Clay elements. Scroll
+       data reflects the previous frame, and on the first frame a generous top slice stands in. */
     Clay_ScrollContainerData sd =
         Clay_GetScrollContainerData(Clay_GetElementId(CLAY_STRING("topics_tree_scroll")));
     float row_h  = UISC(29);
@@ -595,13 +564,8 @@ static void topics_tree(AppState *app, const Palette *P){
     if (first > n) first = n;
     last = first + vis;
     if (last > n) last = n;
-    /* fit the panel to its content: widest name column (indent + measured text) plus the fixed
-       stat columns, clamped so one long name can't blow it out. Measure across the WHOLE tree,
-       every segment in ut_pool (rows off-screen and rows inside collapsed branches included), so
-       the panel width stays put as you scroll or expand/collapse. tt_name_w (TTF, uncached) is far
-       too slow to call for all thousands of nodes, so rank cheaply by label length + indent and
-       measure only the few longest candidates (the width clamps at 300 px, so an exact winner is
-       not needed). */
+    /* fit the panel to its content across the whole tree, ranking by label length and
+       measuring only the few longest candidates, clamped at 300 px (spec/explorer.md) */
     float gap        = UISC(TT_COL_GAP);
     float data_block = UISC(TT_COL_DOT) + UISC(TT_COL_VALUE) + UISC(TT_COL_RATE)
                      + UISC(TT_COL_JITTER) + gap * 4;
@@ -610,7 +574,7 @@ static void topics_tree(AppState *app, const Palette *P){
     {
         int cand[TT_NAME_CAND], key[TT_NAME_CAND], nc = 0, j, mi;
         for (i = 1; i < ut_n; i++){                       /* skip node 0, the implicit root */
-            int k = (int)strlen(ut_pool[i].name) + ut_pool[i].depth * 2;   /* proxy: chars + indent */
+            int k = (int)strlen(ut_pool[i].name) + ut_pool[i].depth * 2;   /* chars plus indent */
             if (nc < TT_NAME_CAND){ cand[nc] = i; key[nc] = k; nc++; continue; }
             for (mi = 0, j = 1; j < nc; j++) if (key[j] < key[mi]) mi = j; /* evict the smallest */
             if (k > key[mi]){ cand[mi] = i; key[mi] = k; }
@@ -621,8 +585,7 @@ static void topics_tree(AppState *app, const Palette *P){
             float w;
             snprintf(lbl, sizeof lbl, "%s%s", u->name, u->n_children > 0 ? "/" : "");
             w = UISC(10 + u->depth * 15 + 24) + gap + tt_name_w(lbl);
-            /* a topic row prefixes a kind glyph (hash for a plain topic, the type icon for a
-               function or variable), so reserve the same width the row subtracts from its
+            /* a topic row prefixes a kind glyph, so reserve the width the row subtracts from its
                text budget, else its name gets trimmed. A namespace branch has none. */
             if (u->topic >= 0) w += UISC(18) + gap;
             if (w > name_max) name_max = w;
@@ -631,8 +594,8 @@ static void topics_tree(AppState *app, const Palette *P){
     if (name_max > UISC(300)) name_max = UISC(300);
     panel_w = name_max + gap + data_block + UISC(10) + UISC(16);   /* right pad + breathing room */
     if (panel_w < UISC(300)) panel_w = UISC(300);                  /* keep filter + add usable */
-    float name_cw = tt_name_w("0000000000") / 10.0f;   /* mono-small char advance, for the name trim */
-    float val_cw  = tt_caption_cw();                   /* mono-caption advance, for the VALUE trim */
+    float name_cw = tt_name_w("0000000000") / 10.0f;   /* mono small advance, for the name trim */
+    float val_cw  = tt_caption_cw();   /* mono caption advance, for the VALUE trim */
     CLAY({ .id = CLAY_ID("topics_tree"),
            .layout = { .sizing = { .width = CLAY_SIZING_FIXED(panel_w), .height = CLAY_SIZING_GROW(0) },
                        .layoutDirection = CLAY_TOP_TO_BOTTOM },
@@ -644,8 +607,8 @@ static void topics_tree(AppState *app, const Palette *P){
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(8),
                                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
                 ui_filter_box(app, P, CLAY_STRING("Filter topics..."));
-                /* category filter: a funnel button that toggles the checklist menu; accented
-                   while any category filter is active so it reads as "on" */
+                /* the category filter: a funnel button toggling the checklist menu, accented while
+                   any category filter is active */
                 if (ui_icon_button(P, ICON_FILTER, 15, 30,
                                    (app->topic_cats || ui_menu_is_open(&tt_filter_menu_tok)) ? P->accent : P->dim,
                                    P->text)){
@@ -672,9 +635,8 @@ static void topics_tree(AppState *app, const Palette *P){
                                       ? CLAY_STRING("no topics match")
                                       : CLAY_STRING("no topics discovered"));
             else {
-                /* virtualized: emit only rows [first,last); fixed-height spacers stand in
-                   for the rest, so the total content height and the scrollbar are unchanged.
-                   Row ids stay keyed to the global index i, so they are stable across frames. */
+                /* virtualized: emit only rows [first, last) and fixed height spacers for the
+                   rest, so the content height is unchanged. Row ids key on the global index. */
                 if (first > 0)
                     CLAY({ .id = CLAY_ID("topics_tree_vtop"),
                            .layout = { .sizing = { .width  = CLAY_SIZING_GROW(0),
@@ -696,30 +658,8 @@ static void topics_tree(AppState *app, const Palette *P){
     }
 }
 
-/* ============================================================ center: feed (table)
-
-   The feed is a TABLE: columns are the message's fields (flattened, so a nested member reads
-   pos.x), rows are samples (newest at the bottom). The header is sticky: it is a sibling
-   ABOVE the scroll body sharing the same column widths, so the columns line up while the body
-   scrolls. The first TT_TABLE_COLS fields show by default; right-click the header for a
-   checklist of every column, the fixed time/sender ones included (field picks are re-seeded
-   per topic, the time/sender toggles persist). A schema-less topic falls
-   back to a single "payload" column. The shown field columns stretch to fill the table width
-   (measured from the previous frame's laid-out body). Clicking a row copies that sample into
-   the inspector (the full decode). Cell text is truncated to its (now dynamic) column width: a
-   per-cell clip would overflow Clay's 10-slot scroll-container array, and the full value is
-   always one click away in the inspector. Any header overrun on a narrow window is hidden by
-   the (later-drawn, opaque) drawer or clipped at the window edge.
-
-   TWO SCHEMAS, ONE TABLE. A FUNCTION feed interleaves our calls (the request schema) with the
-   replies (the response schema), and a field index means something different in each, so one
-   column template would print reply values under request column names. The columns are instead
-   the UNION of the two field sets, each column TAGGED with its group (0 = primary/request,
-   1 = response) and named with a req./rsp. prefix; a row fills only its own group's cells and
-   leaves the other group blank, with a divider line at the boundary. Rows stay one per wire
-   message in arrival order, so chronology is exactly the feed's. Every other kind has one
-   group and renders as before. A row that carries no decode at all (a "call failed: TIMEOUT"
-   entry) shows its text across the field area instead of a line of dashes. */
+/* The center feed table: columns are the flattened fields, rows are samples, the header is
+   sticky, and a function feed unions two schemas tagged by group (spec/explorer.md). */
 
 #define TT_TABLE_COLS 6    /* fields shown by default (right-click the header to change) */
 #define TT_GROUP_COLS 3    /* ...per group when a feed has two (a function's req + rsp) */
@@ -732,17 +672,14 @@ static void topics_tree(AppState *app, const Palette *P){
 
 #define TT_MAX_COLS (CAP_MSG_FIELDS * 2)   /* both groups' fields (see the section comment) */
 
-/* a flattened column -> its fields[] index, within its group */
+/* a flattened column to its fields[] index within its group */
 typedef struct { char name[80]; int fidx; int grp; } TblCol;
 static TblCol tt_cols[TT_MAX_COLS];   /* every column (drives the right-click menu) */
 static TblCol tt_vis[TT_MAX_COLS];    /* the visible subset, in column order (drives the table) */
 static int    tt_seeded_cols;         /* columns the visible set has been seeded against */
 
-/* append group `grp`'s columns (from a template decoded message) to cols[] at `at`, returning
-   the new count: each non-struct field becomes a column named `prefix` + its dotted path
-   (pos.x), keyed to its fields[] index (stable across samples of one schema, since every
-   message enumerates the schema in the same depth-first order). A struct field contributes
-   only its name as a path prefix. `prefix` is NULL on a single-group feed. */
+/* append group grp's columns from a template message to cols[] at at, returning the new
+   count: each non struct field is a column named prefix plus its dotted path. */
 static int tt_build_columns(const CapFeedItem *m, TblCol *cols, int at, int maxcols,
                             const char *prefix, int grp){
     static char stack[CAP_MSG_FIELDS][CAP_TOPIC_CAP];   /* ancestor field names, by depth */
@@ -769,10 +706,8 @@ static int tt_build_columns(const CapFeedItem *m, TblCol *cols, int at, int maxc
     return n;
 }
 
-/* which column group a sample fills. Its own decode decides it (the root type + field count
-   the writer declared, matched against the two advertised schemas); a sample that matches
-   neither -- an undecoded outcome line, or a subset publisher -- falls back to the direction,
-   which on a function feed is exact: our echoed call is `mine`, a reply never is. */
+/* which column group a sample fills: its own decode decides, and a sample matching
+   neither falls back to the direction, which on a function feed is exact. */
 static int tt_msg_group(const CapFeedItem *m, int n_grp){
     int g;
     if (n_grp < 2) return 0;
@@ -784,10 +719,8 @@ static int tt_msg_group(const CapFeedItem *m, int n_grp){
     return m->mine ? 0 : 1;
 }
 
-/* the feed sample whose decode drives group `g`'s columns: one matching that group's advertised
-   schema by preference (a sender publishing a SUBSET of it must not narrow the columns), else
-   the newest decoded sample on that side. -1 = nothing decoded to build the group from (its
-   columns appear once the first such message lands). */
+/* the feed sample whose decode drives group g's columns: one matching the advertised
+   schema by preference, else the newest decoded sample on that side. -1 = none yet. */
 static int tt_template(int g, int n_grp){
     const CapSchema *sc = &tt_feed_schema[g];
     int j;
@@ -801,10 +734,8 @@ static int tt_template(int g, int n_grp){
     return -1;
 }
 
-/* a string truncated to `budget` characters, always copied into the frame pool (so callers
-   may pass a local buffer). Keeps a fixed-width cell's text from overrunning into its
-   neighbour. A cut never splits a UTF-8 sequence (a stray continuation byte would render
-   as a broken glyph: the mini previews carry a degree sign). */
+/* a string truncated to budget characters, copied into the frame pool. A cut never
+   splits a UTF-8 sequence, since the mini previews carry a degree sign. */
 static Clay_String tt_fit(const char *s, int budget){
     int len = (int)strlen(s);
     if (budget < 1) budget = 1;
@@ -839,11 +770,8 @@ static void tt_cell_grow(const Palette *P, const char *text, Clay_Color col){
     }
 }
 
-/* the sticky header row: the fixed time/sender columns (each hideable from the header
-   menu) then a header cell per shown field, the group boundary marked by a divider.
-   `field_w` is the stretched column width so the fields fill the table. `raw` (a schema-less
-   topic) shows a single payload column instead.
-   Right-clicking the row opens the column checklist menu at the cursor. */
+/* the sticky header row: the fixed time and sender columns, then a header cell per shown
+   field with the group boundary marked. raw shows a single payload column. */
 static void tt_table_header(AppState *app, const Palette *P, const TblCol *cols, int n_show,
                             float field_w, int field_budget, int time_budget, int from_budget,
                             int raw){
@@ -864,12 +792,8 @@ static void tt_table_header(AppState *app, const Palette *P, const TblCol *cols,
     }
 }
 
-/* one sample row: the shown fixed columns then a cell per shown field (its decoded value,
-   or "-" when a message lacks it), field cells stretched to `field_w`. Cells of the OTHER
-   group (on a two-group function feed) stay blank: this row is a call or a reply, never both.
-   `raw`, and any row with no decode at all, shows its payload/outcome text across the field
-   area instead. Clicking copies the sample into the inspector; the inspected sample is
-   highlighted. */
+/* one sample row: the fixed columns then a cell per shown field, the other group's cells
+   blank. A row with no decode shows its text across the field area. Clicking inspects. */
 static void tt_table_row(AppState *app, const Palette *P, const char *topic, const CapFeedItem *m,
                          int idx, const TblCol *cols, int n_show, float field_w,
                          int field_budget, int time_budget, int from_budget, int kind, int raw,
@@ -883,8 +807,8 @@ static void tt_table_row(AppState *app, const Palette *P, const char *topic, con
         Clay_String cs = nf_clock_ms(m->wall_us);
         snprintf(tbuf, sizeof tbuf, "%.*s", (int)cs.length, cs.chars);
     }
-    /* the sender, direction-marked on a call log ("> " = our call, "< " = the reply);
-       a FORCED variable value carries its pin marker with the writer */
+    /* the sender, direction marked on a call log with "> " for our call and "< " for
+       the reply. A forced variable value carries its pin marker */
     snprintf(fbuf, sizeof fbuf, "%s%s%s",
              tt_call_kind(kind) ? (m->mine ? "> " : "< ") : "",
              m->sender,
@@ -930,9 +854,8 @@ static void tt_table_row(AppState *app, const Palette *P, const char *topic, con
     }
 }
 
-/* the header's right-click column menu: the generic ui_menu in checklist form, owned by
-   tt_cols (one feed table exists at a time). The fixed time/sender columns lead, then every
-   field; a click toggles visibility and the menu stays open for the next toggle. */
+/* the header's right click column menu, the generic ui_menu in checklist form owned by
+   tt_cols. The fixed columns lead, then every field. A click toggles and keeps it open. */
 static void tt_col_menu(AppState *app, const Palette *P, const TblCol *cols, int n_cols){
     UiMenuItem items[TT_MAX_COLS + 2];
     int c, n = 0, hit;
@@ -985,9 +908,8 @@ static void tt_form_set_val(AppState *app, int i, const char *v){
     ui_tb_reset(&app->tb_form[i]);   /* the buffer changed under the box */
 }
 
-/* live element count of an array value, for the "n/count" hint. Whitespace/comma runs for
-   numeric elements; comma-separated segments for strings (which may contain spaces). This
-   is only a display cue; cap_form_validate is the authoritative accept test. */
+/* the live element count of an array value for the "n/count" hint, a display cue only.
+   cap_form_validate is the authoritative accept test. */
 static int tt_count_elems(const CapSchemaField *f, const char *s){
     int n = 0;
     if (f->elem == CAP_K_STR){
@@ -1076,13 +998,8 @@ static void tt_form_reset(AppState *app, const CapSchema *sc, int n){
     }
 }
 
-/* Seed a VARIABLE's form with the value it currently holds, so editing starts from the
-   live value instead of from zeros. The value lands a moment AFTER the topic is selected
-   (selecting subscribes, then the owner's retained value replays), so this retries every
-   frame until it arrives; it then stops for good, and a user edit before it arrives stops
-   it too, so neither the first value nor a later write can stomp what is being typed. A
-   field the capture could not spell in form syntax, or one whose name says the advertised
-   schema is not the one the value came from, keeps its default. */
+/* Seed a variable's form with the value it holds, retrying every frame until it lands
+   and stopping for good then, or on a user edit (spec/explorer.md). */
 static void tt_form_prefill(AppState *app, const Topic *t, const CapSchema *sc, int n){
     CapFormValue cur[UI_FORM_MAX];
     int got, i;
@@ -1120,17 +1037,14 @@ static void tt_form_force(AppState *app, const Topic *t, int n){
     cap_variable_force_form(app->cap, t->path, vals, n);
 }
 
-/* one field: name | type-aware input | type, nested members indented. A bool gets a
-   toggle, a string/array gets a validated text box with an "n/cap" counter, a numeric
-   scalar a validated text box; the box + type turn red when the typed value won't parse
-   (`valid` comes from cap_form_validate). A struct row is a read-only group header
-   (members are the inputs). Returns the text box's action bits (Enter, Tab, ...). */
+/* one field: name, a type aware input and the type, nested members indented. A bool gets
+   a toggle, others a validated text box turning red when the value will not parse. */
 static int tt_form_field_row(AppState *app, const Palette *P, const CapSchemaField *f, int i, int valid){
     int is_struct = (f->kind == CAP_K_STRUCT || f->kind == CAP_K_MAP);   /* read-only rows */
     int is_bool   = (f->kind == CAP_K_BOOL);
     int is_enum   = (f->kind == CAP_K_ENUM);
     int has_val   = app->form_val[i][0] != '\0';
-    int bad       = !is_struct && !is_bool && !is_enum && has_val && !valid;   /* typed, but won't parse */
+    int bad       = !is_struct && !is_bool && !is_enum && has_val && !valid;
     int show_count = (f->kind == CAP_K_STR || f->kind == CAP_K_ARR
                    || f->kind == CAP_K_VSTR || f->kind == CAP_K_VARR);
     int act = 0;
@@ -1146,8 +1060,8 @@ static int tt_form_field_row(AppState *app, const Palette *P, const CapSchemaFie
         if (is_bool){
             tt_form_bool(app, P, i, app->form_focus == i && g_tb_focus == NULL);
         } else if (is_enum){
-            /* the enum's options -> a dropdown; the current pick is whichever variant name
-               the field's value holds (form_val is a variant name, set here or by default) */
+            /* the enum's options as a dropdown. The current pick is whichever variant name
+               the field's value holds */
             const char *opts[CAP_ENUM_VARIANTS];
             int k, sel = -1, picked;
             for (k = 0; k < f->n_variants; k++){
@@ -1159,7 +1073,7 @@ static int tt_form_field_row(AppState *app, const Palette *P, const CapSchemaFie
             if (picked >= 0){
                 tt_form_set_val(app, i, f->variants[picked]);
                 app->form_focus = i; app->adding_topic = 0;
-                ui_tb_blur_all();               /* keyboard "focus" is this enum row now, no text box */
+                ui_tb_blur_all();   /* keyboard focus is this enum row now, no text box */
             }
         } else if (!is_struct){
             act = ui_textbox(P, CLAY_IDI("form_tb", (uint32_t)i), &app->tb_form[i],
@@ -1195,9 +1109,8 @@ static int tt_form_field_row(AppState *app, const Palette *P, const CapSchemaFie
     return act;
 }
 
-/* the structured composer: the message type name, one input per schema field (nested members
-   indented) prefilled with defaults, then a Send button under them. Enter or Send publishes
-   (empty fields keep the canonical default zero). */
+/* the structured composer: the type name, one prefilled input per schema field with
+   nested members indented, then a Send button. Enter or Send publishes. */
 static void topics_form(AppState *app, const Palette *P, const Topic *t, const CapSchema *sc){
     int i, n = sc->n_fields < UI_FORM_MAX ? sc->n_fields : UI_FORM_MAX;
     int send = 0, tab = 0, tab_from = -1;
@@ -1257,9 +1170,8 @@ static void topics_form(AppState *app, const Palette *P, const Topic *t, const C
             }
         }
         if (send) tt_form_send(app, t, n);
-        /* Send: its own row under the fields (right-aligned), not boxed in a card. A
-           writable, forceable variable also gets the debug override pair: Force pins the
-           form's value at the owner (writes absorb until Unforce releases it). */
+        /* Send on its own right aligned row under the fields. A writable, forceable variable
+           also gets the debug override pair, Force and Unforce. */
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .padding = { .top = UISCI(4) },
                            .childGap = UISCI(8) } }) {
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
@@ -1280,9 +1192,8 @@ static void topics_form(AppState *app, const Palette *P, const Topic *t, const C
     }
 }
 
-/* The message composer, hosted in the Publish sidebar tab: a wrapping multi-line text box
-   that grows in height with the text (then scrolls) plus a Send button. Enter sends,
-   shift+Enter inserts a newline. Focused by default so you can just type. */
+/* The message composer in the Publish sidebar: a wrapping multi line text box that grows
+   with the text, then scrolls, plus a Send button. Enter sends, shift Enter breaks. */
 static void topics_composer(AppState *app, const Palette *P, const Topic *t){
     static CapSchema tt_form_schema;   /* the selected topic's advertised schema, per frame */
     int can, act;
@@ -1310,7 +1221,7 @@ static void topics_composer(AppState *app, const Palette *P, const Topic *t){
                                            .placeholder = CLAY_STRING("Type a message, Enter to send"),
                                            .fam = FAM_MONO, .wt = WT_REG, .sz = FS_SMALL,
                                            .bg = P->panel2, .border = P->border, .border_focus = P->accent });
-        if (ui_tb_focused(&app->tb_compose)) app->adding_topic = 0;   /* a click here exits add mode */
+        if (ui_tb_focused(&app->tb_compose)) app->adding_topic = 0;   /* exits add mode */
         if ((act & UI_TB_SUBMIT) && can) tt_do_send(app, t->path);
         if (act & UI_TB_CANCEL){
             app->compose_len = 0; app->compose[0] = '\0';
@@ -1327,7 +1238,7 @@ static void topics_composer(AppState *app, const Palette *P, const Topic *t){
 static CapTaskCall tt_task_call;                 /* the selected task's own-call state, per frame */
 static CapTaskRun  tt_task_runs[CAP_TASK_RUNS];  /* observed runs off the @prg tap, per frame */
 
-/* DartCallStatus display words (net_capture hands the numeric status; no DART types here) */
+/* DartCallStatus display words. net_capture hands the numeric status, no DART types here */
 static const char *tt_call_status_word(int status){
     switch (status){
         case 0: return "OK";
@@ -1356,7 +1267,7 @@ static int tt_cancel_pill(const Palette *P, int enabled){
                    enabled ? P->amber : P->faint, P->panel2, P->border2, UISC(24)) && enabled;
 }
 
-/* one field of the latest progress update (name then value; nested members indented) */
+/* one field of the latest progress update, name then value, nested members indented */
 static void tt_task_prg_field(const Palette *P, const CapMsgField *f, int idx){
     CLAY({ .id = CLAY_IDI("task_prg_field", (uint32_t)idx),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(20)) },
@@ -1399,10 +1310,8 @@ static void tt_task_run_row(AppState *app, const Palette *P, const Topic *t,
     }
 }
 
-/* the task panel between the control row and the call log: our own call's live state
-   (phase, decoded latest progress, terminal outcome, cancel) then every run observed on
-   the broadcast @prg tap, each with its own cancel. Progress semantics are schema-defined,
-   so updates render as decoded fields, never an invented percentage bar. */
+/* the task panel between the control row and the call log: our own call's live state,
+   then every run observed on the @prg tap. Progress renders as decoded fields. */
 static void topics_task_panel(AppState *app, const Palette *P, const Topic *t){
     int have  = app->cap ? cap_task_call_state(app->cap, t->path, &tt_task_call) : 0;
     int n_run = app->cap ? cap_task_runs(app->cap, t->path, tt_task_runs, CAP_TASK_RUNS) : 0;
@@ -1517,10 +1426,8 @@ static void topics_feed(AppState *app, const Palette *P){
                 CLAY_TEXT(ui_fmt("%d subscribers", t->n_subs + t->self_sub),
                           CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_REG, FS_CAPTION), .textColor = P->dim, .wrapMode = CLAY_TEXT_WRAP_NONE }));
             }
-            /* control row: subscribe toggle + live subscription status. A FUNCTION has no
-               subscribe: replies are DIRECTED to their caller, so there is nothing to
-               passively receive; the feed is this explorer's own call log, opened by the
-               first Call. */
+            /* the control row: the subscribe toggle and the live status. A function has no
+               subscribe, its feed is this explorer's own call log opened by the first Call. */
             CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .childGap = UISCI(12),
                                .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
                 if (t->kind == CAP_KIND_FUNCTION){
@@ -1561,9 +1468,8 @@ static void topics_feed(AppState *app, const Palette *P){
                     CLAY_TEXT(CLAY_STRING("SENDING..."),
                               CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_SEMI, FS_CAPTION),
                                                  .textColor = P->amber, .wrapMode = CLAY_TEXT_WRAP_NONE }));
-                /* Clear (right edge): drop this topic's stored messages and every count
-                   derived from them. The subscription stays live, so the feed refills from
-                   the next message. Only offered while there is something to clear. */
+                /* Clear at the right edge: drop this topic's stored messages and every derived
+                   count. The subscription stays live. Offered only while there is something. */
                 if (tt_feed_n > 0 || tt_msgs > 0 || tt_drops > 0){
                     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
                     if (ui_pill(P, CLAY_STRING("Clear"), FAM_SANS, WT_SEMI, FS_SMALL,
@@ -1584,14 +1490,8 @@ static void topics_feed(AppState *app, const Palette *P){
                                     : tt_subscribed ? CLAY_STRING("waiting for messages...")
                                                     : CLAY_STRING("subscribe to see live messages"));
             } else {
-                /* columns come from a decoded sample of the topic's advertised schema (the
-                   widest compatible one, exactly what the inspector shows via cap_topic_schema),
-                   not merely the newest decoded sample: a subscriber publishing a SUBSET of the
-                   schema must not narrow the available columns to its fewer fields. A FUNCTION
-                   has TWO schemas and both become column groups (see the section comment); every
-                   other kind has one. A schema-less feed shows one payload column. A group's
-                   fields[] index maps 1:1 across every sample of that group's schema, so the
-                   columns drive every row. */
+                /* columns come from a decoded sample of the advertised schema, not merely the
+                   newest sample, so a subset publisher never narrows them (spec/explorer.md) */
                 int   n_cols = 0, c, n_vis = 0, raw, n_grp = 1, tmpl;
                 int   field_budget, time_budget, from_budget;
                 float mono_adv = tt_name_w("00000000") / 8.0f;
@@ -1600,9 +1500,8 @@ static void topics_feed(AppState *app, const Palette *P){
                 time_budget = (int)((UISC(TT_TIME_W) - UISC(TT_CELL_PADL + 2)) / mono_adv);
                 if (time_budget < 1) time_budget = 1;
 
-                /* the group schemas (both accessors zero *out when the topic advertises none).
-                   Two groups only where the response shape genuinely DIFFERS: a function whose
-                   reply repeats the request type is one set of columns, not two identical ones. */
+                /* the group schemas, both accessors zero *out when none is advertised. Two
+                   groups only where the response shape differs from the request. */
                 if (!app->cap || !cap_topic_schema(app->cap, t->path, &tt_feed_schema[0]))
                     memset(&tt_feed_schema[0], 0, sizeof tt_feed_schema[0]);
                 if (!app->cap || !tt_call_kind(t->kind)
@@ -1618,10 +1517,8 @@ static void topics_feed(AppState *app, const Palette *P){
                     n_cols = tt_build_columns(&tt_feed[tmpl], tt_cols, n_cols, TT_MAX_COLS,
                                               "rsp.", 1);
 
-                /* seed the visible set when the topic changes; thereafter the right-click menu
-                   owns it. Columns that appear LATER are seeded too (a function's response
-                   columns only exist once the first reply decodes, and must not be born hidden),
-                   which leaves the user's existing toggles alone. */
+                /* seed the visible set when the topic changes, then the menu owns it. Columns that
+                   appear later are seeded too, so response columns are never born hidden. */
                 if (app->col_vis_topic != app->sel_topic){
                     app->col_vis_topic = app->sel_topic;
                     if (ui_menu_is_open(tt_cols)) ui_menu_close();
@@ -1645,14 +1542,10 @@ static void topics_feed(AppState *app, const Palette *P){
                 }
                 for (c = 0; c < n_cols; c++)
                     if (app_col_visible(app, tt_cols[c].name)) tt_vis[n_vis++] = tt_cols[c];
-                raw = (n_cols == 0);   /* schema-less: one payload column. all fields off: just time */
+                raw = (n_cols == 0);   /* no schema: one payload column, no fields: just time */
 
-                /* stretch the field columns to fill the AVAILABLE table width, derived from
-                   STABLE references (window - tree - drawer - feed padding) rather than the
-                   feed's own laid-out width. Fixed-width cells set the feed's minimum width, so
-                   measuring the feed would pin it wide and it could never shrink on a resize
-                   (pushing the fixed drawer off-screen) -- a feedback loop this sidesteps. The
-                   tree is a fixed-width panel, so its measured width is unaffected by overflow. */
+                /* stretch the field columns to the available width derived from stable references,
+                   not the feed's own laid out width, which would pin it wide (spec/explorer.md) */
                 {   Clay_ElementData td = Clay_GetElementData(Clay_GetElementId(CLAY_STRING("topics_tree")));
                     float drawer_w = app->drawer_open ? UISC(TT_DRAWER_W) : 0.0f;
                     if (td.found)
@@ -1676,7 +1569,7 @@ static void topics_feed(AppState *app, const Palette *P){
                        .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
                     tt_table_header(app, P, tt_vis, n_vis, field_w, field_budget, time_budget,
                                     from_budget, raw);
-                    /* scrolling body, newest at the bottom; topics_feed_autoscroll keeps it pinned */
+                    /* the scrolling body, newest at the bottom. The autoscroll keeps it pinned */
                     CLAY({ .id = CLAY_ID("topics_feed_scroll"),
                            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                                        .layoutDirection = CLAY_TOP_TO_BOTTOM },
@@ -1704,8 +1597,7 @@ static void topics_drawer_tab(AppState *app, const Palette *P, Clay_String label
                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
            .backgroundColor = active ? P->accent_bg : UI_NONE,
            .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)) }) {
-        if (Clay_Hovered() && g_pointer_pressed) app->drawer_tab = tab;   /* the message view keeps
-            its selection across tab switches; the "Topic" back control clears it */
+        if (Clay_Hovered() && g_pointer_pressed) app->drawer_tab = tab;
         CLAY_TEXT(label, CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_SEMI, FS_SMALL),
                                             .textColor = active ? P->accent : P->dim,
                                             .wrapMode = CLAY_TEXT_WRAP_NONE }));
@@ -1738,7 +1630,7 @@ static void topic_qos_cell(const Palette *P, Clay_String label, Clay_String valu
     }
 }
 
-/* a publisher/subscriber row: node dot + name + locator; click jumps to the node */
+/* a publisher or subscriber row: node dot, name and locator. A click jumps to the node */
 static void topic_node_chip(AppState *app, const Palette *P, int nidx, const char *idtag, int idx){
     const Node *nd = &app->data->nodes[nidx];
     CLAY({ .id = CLAY_SIDI(ui_str(idtag), (uint32_t)idx),
@@ -1791,12 +1683,10 @@ static void topic_schema_field_row(const Palette *P, const CapSchemaField *f, in
     }
 }
 
-/* the selected topic's advertised message schema (from any endpoint: pub or sub). The query
-   prefilters each peer's interest by topic hash, so it is cheap even at many-thousand-topic
-   scale and runs live every frame (no cache, no staleness). */
-static CapSchema tt_schema[3];          /* [0] request/primary, [1] response, [2] a task's
-                                           progress: Clay renders the frame's text AFTER the
-                                           sections fill, so each needs its own strings */
+/* the selected topic's advertised schema from any endpoint. The query prefilters each
+   peer's interest by hash, so it runs live every frame with no cache. */
+static CapSchema tt_schema[3];   /* [0] the primary, [1] the response, [2] a task progress. Clay
+                                    renders text after the sections fill, so each has its own */
 static char      tt_dsl[8192];          /* scratch for the DSL handed to the clipboard */
 static int       tt_dsl_copied_topic = -1;   /* which topic's Copy DSL was last clicked */
 static uint32_t  tt_dsl_copied_ms;      /* when, for the brief "Copied" flash */
@@ -1926,8 +1816,8 @@ static void topics_inspect(AppState *app, const Palette *P, const Topic *t){
     ui_scrollbar(P, CLAY_ID("topics_inspect_scroll"));
 }
 
-/* the Publish sidebar tab: the message composer (free-text, or the structured form for a
-   typed topic) that used to live pinned under the feed, now hosted in the drawer */
+/* the Publish sidebar tab: the message composer, free text or the structured form for a
+   typed topic */
 static void topics_publish(AppState *app, const Palette *P, const Topic *t){
     CLAY({ .id = CLAY_ID("topics_publish_scroll"),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
@@ -1945,9 +1835,8 @@ static void topics_publish(AppState *app, const Palette *P, const Topic *t){
 
 /* ====================================================== right: inspect a message */
 
-/* one field of a decoded message: name (indented by depth) then its value. A struct field
-   is a group header (its members follow, indented); scalars/arrays show their value, which
-   wraps so a long array is shown in full rather than clipped. */
+/* one field of a decoded message, the name indented by depth then its value. A struct is
+   a group header, and a value wraps so a long array shows in full. */
 static void tt_msg_field_row(const Palette *P, const CapMsgField *f, int idx){
     int is_struct = !strcmp(f->value, "{...}");   /* the decoder folds a struct's own value */
     CLAY({ .id = CLAY_IDI("msg_field", (uint32_t)idx),
@@ -1981,9 +1870,8 @@ static void tt_msg_meta_row(const Palette *P, Clay_String label, Clay_String val
     }
 }
 
-/* the Inspect sidebar tab showing a message picked from the feed: a back control, the source
-   topic, a meta card (from / time / size / type), then the full decoded field hierarchy (or
-   the raw payload for a schema-less sender). Reads the durable copy in app->inspect_msg. */
+/* the Inspect sidebar tab for a message picked from the feed: a back control, the topic, a
+   meta card and the full decoded field hierarchy, read from the durable copy. */
 static void topics_msg_inspect(AppState *app, const Palette *P){
     const CapFeedItem *m = &app->inspect_msg;
     int f;
@@ -2060,8 +1948,8 @@ static void topics_drawer(AppState *app, const Palette *P){
     const Dataset *D = app->data;
     const Topic *t = (D && D->n_topics && app->sel_topic >= 0 && app->sel_topic < D->n_topics)
                      ? &D->topics[app->sel_topic] : NULL;
-    /* an inspected message belongs to one topic; drop it if the selection moved elsewhere so
-       the durable copy never shows against the wrong (or no) topic */
+    /* an inspected message belongs to one topic, so drop it if the selection moved
+       elsewhere and the copy never shows against the wrong topic */
     if (app->has_inspect_msg && (!t || strcmp(app->inspect_msg_topic, t->path) != 0))
         app->has_inspect_msg = 0;
     CLAY({ .id = CLAY_ID("topics_drawer"),
@@ -2086,10 +1974,7 @@ static void topics_tab(AppState *app, const Palette *P){
 }
 
 /* Keep the feed glued to the newest message while the user is parked at the bottom. Runs
-   AFTER Clay_EndLayout (the scroll container's content/size are final then) and writes Clay's
-   stored scroll position for the next frame. The user scrolling up unlocks the pin; scrolling
-   back to the bottom re-locks it; selecting another topic resets to pinned. Content growing
-   (new messages) does not move Clay's stored offset, so it never reads as a user scroll. */
+   after Clay_EndLayout and writes Clay's stored scroll position for the next frame. */
 static void topics_feed_autoscroll(AppState *app){
     Clay_ScrollContainerData d;
     float max_scroll, y;
@@ -2108,7 +1993,7 @@ static void topics_feed_autoscroll(AppState *app){
     if (app->feed_pinned){
         if (y > app->feed_prev_scroll_y + 1.0f) app->feed_pinned = 0;   /* user pulled up: unlock */
     } else if (-y >= max_scroll - 2.0f){
-        app->feed_pinned = 1;                                           /* back at bottom: re-lock */
+        app->feed_pinned = 1;   /* back at the bottom, re lock */
     }
     if (app->feed_pinned) y = -max_scroll;
     d.scrollPosition->y = y;

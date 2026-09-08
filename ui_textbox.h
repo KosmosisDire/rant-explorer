@@ -1,29 +1,5 @@
-/* A general text box: retained per-field state (UiTbState) + an immediate-mode
-   draw call (ui_textbox), built on Clay + SDL3_ttf.
-
-   Feature set: caret + selection (mouse drag, double-click word, triple-click
-   line, shift+click, shift+arrows/Home/End/Page), clipboard (ctrl+C/X/V plus
-   shift+Del, ctrl+Ins, shift+Ins, and a right-click menu), word hops
-   (ctrl+arrows) and word deletes (ctrl+Backspace/Delete), line and document
-   Home/End, PageUp/Down, ctrl+A, undo/redo (ctrl+Z, ctrl+Y, ctrl+shift+Z),
-   UTF-8-safe editing throughout. On macOS the GUI key stands in for ctrl.
-
-   Sizing: fill_w fills the parent, else the box FITS its text between w_min and
-   w_max. Text wider than the box scrolls horizontally under the caret (wrap=0)
-   or wraps at the box width (wrap=1). A multiline box grows with its lines from
-   h_min to h_max, then scrolls vertically (mouse wheel included). bare=1 strips
-   the chrome (background/border/padding) so a caller's styled row can host it.
-
-   Plumbing: the SDL event loop calls ui_tb_events_reset() before polling and
-   feeds ui_tb_feed_key / ui_tb_feed_text / ui_tb_click_count; once the pointer
-   state is known, main routes the wheel (ui_tb_wheel_hit) and calls
-   ui_tb_frame(). The focused box consumes the queue when its ui_textbox call
-   draws; unconsumed keys stay available to callers via ui_tb_take_key. Focus is
-   one global slot: clicking a box takes it, clicking anywhere else drops it,
-   ui_tb_focus / ui_tb_blur move it by hand. The caller owns the byte buffer
-   (NUL-terminated; len maintained through the in/out param) and it must outlive
-   the frame (Clay stores string views into it).
-   Requires clay.h, SDL3, SDL3_ttf, ui_theme.h, ui_fonts.h, ui_widgets.h. */
+/* A general text box: retained per field state plus an immediate mode draw call over Clay
+   and SDL3_ttf, with selection, clipboard, word hops and undo (spec/explorer.md). */
 #ifndef UI_TEXTBOX_H
 #define UI_TEXTBOX_H
 
@@ -50,12 +26,12 @@ typedef struct {
     int   tab_inserts;        /* Tab types spaces instead of returning UI_TB_TAB */
     int   bare;               /* no chrome: the caller's container is the visual box */
     int   read_only;          /* caret/selection/copy work, edits are refused */
-    int   fill_w;             /* width fills the parent; else FIT the text in w_min..w_max */
-    float w_min, w_max;       /* css px (fit mode); w_max 0 = unbounded */
-    float h_min, h_max;       /* css px; multiline grows h_min..h_max then scrolls (0 = one line) */
+    int   fill_w;   /* the width fills the parent, else it fits the text in w_min to w_max */
+    float w_min, w_max;       /* css px in fit mode, w_max 0 = unbounded */
+    float h_min, h_max;   /* css px. Multiline grows h_min to h_max then scrolls, 0 = one line */
     float pad_x, pad_y;       /* css px inner padding (chrome mode) */
     float radius;             /* css px corner radius (chrome mode) */
-    Clay_Color bg, border, border_focus;   /* chrome colors; alpha 0 = palette defaults */
+    Clay_Color bg, border, border_focus;   /* chrome colors, alpha 0 = the palette defaults */
 } UiTextBoxOpts;
 
 /* undo/redo: two snapshot stacks in fixed arenas, allocated on first edit.
@@ -68,7 +44,7 @@ typedef struct {
 } UiTbUndo;
 
 typedef struct {
-    int   caret, anchor;       /* byte offsets; equal = no selection */
+    int   caret, anchor;       /* byte offsets, equal = no selection */
     int   last_caret;          /* caret after the last edit (undo run coalescing) */
     float pref_x;              /* remembered x for up/down runs (<0 = derive from caret) */
     float scroll_x, scroll_y;  /* content px scrolled off the top-left */
@@ -107,7 +83,7 @@ static void ui_tb_feed_text(const char *t){
     while (t && *t && g_tb_nev < UI_TB_EVQ){
         UiTbEv *e = &g_tb_ev[g_tb_nev++];
         size_t n = strlen(t), take = n < sizeof e->text - 1 ? n : sizeof e->text - 1;
-        while (take > 0 && take < n && ((unsigned char)t[take] & 0xC0) == 0x80) take--;  /* char boundary */
+        while (take > 0 && take < n && ((unsigned char)t[take] & 0xC0) == 0x80) take--;
         if (take == 0) take = 1;
         memcpy(e->text, t, take); e->text[take] = '\0';
         e->key = 0; e->mod = 0; e->used = 0;
@@ -124,8 +100,8 @@ static void ui_tb_frame(bool held, float wheel){
     g_tb_n_scrollable = 0;   /* refilled as the boxes draw */
 }
 
-/* is the pointer over a box that scrolls vertically? (main then gives it the
-   wheel instead of the Clay scroll containers; uses last frame's set) */
+/* is the pointer over a box that scrolls vertically? main then gives it the wheel
+   instead of the Clay scroll containers, using last frame's set */
 static int ui_tb_wheel_hit(float x, float y){
     int i;
     for (i = 0; i < g_tb_n_scrollable; i++)
@@ -169,7 +145,7 @@ static int ui_tb_take_key(SDL_Keycode key, SDL_Keymod need){
     return 0;
 }
 
-/* the platform's shortcut modifier; AltGr (ctrl+alt) types text, not shortcuts */
+/* the platform's shortcut modifier. AltGr types text, not shortcuts */
 static int ui_tb_prim(SDL_Keymod m){
 #ifdef __APPLE__
     return (m & SDL_KMOD_GUI) != 0;
@@ -254,9 +230,8 @@ static void ui_tb_stack_pop(UiTbSnap *snaps, int *n, int *bytes, const char *are
     *anchor = s.anchor <= m ? s.anchor : m;
 }
 
-/* snapshot the pre-edit state. Same-kind edits at the caret within 900 ms
-   coalesce into one undo step ('t' typing, 'b' backspace, 'd' delete; 'p'
-   paste/cut never coalesces). */
+/* snapshot the pre edit state. Same kind edits at the caret within 900 ms coalesce into
+   one undo step, typing, backspace and delete apart, and a paste never coalesces. */
 static void ui_tb_record(UiTbState *st, const char *buf, int len, char op){
     UiTbUndo *u = st->undo;
     int coalesce;
@@ -294,9 +269,8 @@ static void ui_tb_del_range(UiTbState *st, char *buf, int *len, int a, int b){
     st->caret = st->anchor = a;
 }
 
-/* filter + splice text in at the caret (any selection already removed). \r is
-   dropped, \t becomes a space, \n survives only in multiline, other control
-   bytes are dropped. Clamps to cap-1 at a UTF-8 boundary. */
+/* filter and splice text in at the caret. \r is dropped, \t becomes a space, \n survives
+   only in multiline, other control bytes drop. Clamps to cap-1 at a UTF-8 boundary. */
 static int ui_tb_do_insert(UiTbState *st, char *buf, int cap, int *len,
                            const char *src, int n, int multiline){
     char sb[128], *tmp = sb;
@@ -335,7 +309,7 @@ static void ui_tb_copy_range(const char *buf, int a, int b){
     free(t);
 }
 
-/* shared by ctrl+V / shift+Ins / the context menu; sel already resolved */
+/* shared by ctrl+V, shift+Ins and the context menu. sel is already resolved */
 static int ui_tb_do_paste(UiTbState *st, char *buf, int cap, int *len, int s0, int s1, int multiline){
     char *ct = SDL_GetClipboardText();
     int did = 0;
@@ -430,10 +404,8 @@ static int ui_tb_hit(TTF_Font *f, const char *buf, float x, float y, float line_
     return ui_tb_hit_line(f, buf, li, x);
 }
 
-/* the box's right-click menu: the generic ui_menu with the clipboard actions.
-   Runs BEFORE the box lays out its lines: its actions edit the buffer, and
-   Clay keeps views into it, so all edits must land before any text is
-   declared. Returns 1 when it edited the buffer. */
+/* the box's right click menu with the clipboard actions. Runs before the box lays out
+   its lines, since Clay keeps views into the buffer. Returns 1 when it edited. */
 static int ui_tb_menu_draw(const Palette *P, UiTbState *st, char *buf, int cap, int *len,
                            const UiTextBoxOpts *o){
     int s0 = st->caret < st->anchor ? st->caret : st->anchor;
@@ -527,7 +499,7 @@ static int ui_textbox(const Palette *P, Clay_ElementId id, UiTbState *st,
                 }
                 st->pref_x = -1.0f; st->ensure = 1; st->blink_t0 = g_now_ms;
                 g_pointer_pressed = false;              /* consumed: outer click handlers skip it */
-            } else if (ui_tb_focused(st) && !on_menu){  /* a menu-item click must not blur its box */
+            } else if (ui_tb_focused(st) && !on_menu){   /* a menu click must not blur its box */
                 ui_tb_blur(st);
             }
         }
@@ -536,7 +508,7 @@ static int ui_textbox(const Palette *P, Clay_ElementId id, UiTbState *st,
             int s1 = st->caret > st->anchor ? st->caret : st->anchor;
             int at = ui_tb_hit(font, buf, px, py, line_h);
             ui_tb_focus(st);
-            if (at < s0 || at > s1 || s0 == s1) st->caret = st->anchor = at;   /* keep a hit selection */
+            if (at < s0 || at > s1 || s0 == s1) st->caret = st->anchor = at;   /* keeps a hit */
             ui_menu_open(st, g_pointer_x, g_pointer_y);
             st->blink_t0 = g_now_ms;
             g_right_pressed = false;
@@ -773,7 +745,7 @@ static int ui_textbox(const Palette *P, Clay_ElementId id, UiTbState *st,
         g_tb_n_scrollable++;
     }
 
-    /* ---- emit: chrome box > clip > line rows; selection + caret float over ---- */
+    /* emit: the chrome box, the clip, the line rows, with selection and caret floating over */
     {
         int s0 = st->caret < st->anchor ? st->caret : st->anchor;
         int s1 = st->caret > st->anchor ? st->caret : st->anchor;
@@ -811,7 +783,7 @@ static int ui_textbox(const Palette *P, Clay_ElementId id, UiTbState *st,
                             if (b >= a){
                                 float x0 = ui_tb_w(font, buf + L.start, a - L.start);
                                 float x1 = b >= L.end ? L.w : ui_tb_w(font, buf + L.start, b - L.start);
-                                if (s1 > L.end && i + 1 < g_tb_nlines) x1 += nl_w * 0.5f;   /* the newline */
+                                if (s1 > L.end && i + 1 < g_tb_nlines) x1 += nl_w * 0.5f;
                                 if (x1 > x0 + 0.5f)
                                     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(x1 - x0),
                                                                    .height = CLAY_SIZING_FIXED(line_h) } },
@@ -850,20 +822,8 @@ static int ui_textbox(const Palette *P, Clay_ElementId id, UiTbState *st,
     return act;
 }
 
-/* ---- generic dropdown with type-to-search (a select box + a floating option list) ----
-
-   Closed: a select box shows options[sel] (or "..." when out of range) with a chevron.
-   It is sized to the WIDEST option, and the open list is given that same width, so the
-   box and the list line up. A click opens the list; the box then becomes a SEARCH FIELD
-   and the list shows only the options whose name contains the query (case-insensitive).
-   The list (ui_menu) caps its height and scrolls when there are many options. Returns the
-   option index picked THIS frame, or -1; the caller applies it. Draw every frame; the box
-   is always drawn, the list only while open. `width` (css px) pins the width; 0 = fit the
-   widest option. Options past UI_DROPDOWN_MAX are not shown.
-
-   The generic parts (width fit, height cap/scroll, anchor-aware dismiss) live in ui_menu;
-   only the search field itself is here, since it needs the text box. One dropdown is open
-   at a time, so a single shared search buffer + text-box state serve them all. */
+/* The generic dropdown with type to search: a select box sized to the widest option that
+   becomes a search field while its list is open (spec/explorer.md). */
 #define UI_DROPDOWN_MAX 256
 static char        g_dd_query[128];
 static int         g_dd_query_len = 0;
@@ -903,7 +863,7 @@ static int ui_dropdown(const Palette *P, const void *owner, Clay_ElementId id,
             float ow = ui_text_w_css(options[i], (int)strlen(options[i]), FAM_MONO, WT_REG, FS_SMALL);
             if (ow > mx) mx = ow;
         }
-        w_css = mx + 8.0f + 6.0f + 6.0f + 11.0f + 6.0f;   /* pad_l + gap + spacer gap + chevron + pad_r */
+        w_css = mx + 8.0f + 6.0f + 6.0f + 11.0f + 6.0f;   /* pad_l, gap, spacer, chevron, pad_r */
         if (w_css < 90.0f) w_css = 90.0f;
     }
 
@@ -927,12 +887,11 @@ static int ui_dropdown(const Palette *P, const void *owner, Clay_ElementId id,
             CLAY_TEXT((sel >= 0 && sel < n) ? ui_str(options[sel]) : CLAY_STRING("..."),
                       CLAY_TEXT_CONFIG({ UI_FONT(FAM_MONO, WT_REG, FS_SMALL), .textColor = P->text,
                                          .wrapMode = CLAY_TEXT_WRAP_NONE }));
-            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}   /* chevron to the right */
+            CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) } } }) {}
             ui_icon(ICON_CHEVRON_DOWN, 11, P->dim);
         }
-        /* box-level click (after the children, so the search box consumes its own press
-           first): closed -> open + arm the search; open (a press that missed the field,
-           e.g. the chevron) -> close */
+        /* the box level click after the children, so the search box consumes its own press
+           first: closed opens and arms the search, open closes on a press that missed */
         if (Clay_Hovered() && g_pointer_pressed){
             g_pointer_pressed = false;
             if (open) ui_menu_close();
@@ -955,7 +914,7 @@ static int ui_dropdown(const Palette *P, const void *owner, Clay_ElementId id,
         for (i = 0; i < n; i++){
             if (!ui_dd_match(options[i], g_dd_query)) continue;
             items[m] = (UiMenuItem){ .label = ui_str(options[i]), .enabled = 1 };
-            if (i == sel) items[m].keys = CLAY_STRING("\xE2\x97\x8f");   /* a dot marks the current pick */
+            if (i == sel) items[m].keys = CLAY_STRING("\xE2\x97\x8f");   /* a dot marks the pick */
             map[m] = i; m++;
         }
         if (m == 0){                    /* keep the panel a stable width with a disabled hint */

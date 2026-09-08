@@ -1,16 +1,10 @@
-/* Display data model for the explorer. These structs mirror what dart.h exposes
-   at runtime; the UI renders from them and never holds widget state of its own.
-   Store raw numbers, format at draw time. Every field here is either wire data
-   (from a peer's discovery announce / announce metadata / topic traffic) or
-   real observer-side derivation of that wire data (rates, ages, counts); there
-   are no hardcoded or fabricated fields. */
+/* The display data model. The UI renders from these structs and holds no widget state of
+   its own. Every field is wire data or a real observer side derivation of it. */
 #ifndef UI_MODEL_H
 #define UI_MODEL_H
 
-/* Two distinct axes, sized apart so the big one doesn't bloat the other:
-   NODE_TOPICS = topics ONE node may publish or subscribe (its endpoint list; the
-   thing you scale to observe a many-topic node). ENDPOINTS = nodes on ONE topic
-   (its pub/sub list), bounded by the node count (CAP_SNAP_NODES), never by topics. */
+/* Two axes sized apart: NODE_TOPICS is the topics one node may publish or subscribe, and
+   ENDPOINTS the nodes on one topic, bounded by the node count. */
 #define UI_MAX_NODE_TOPICS 16000
 #define UI_MAX_ENDPOINTS      64
 
@@ -50,9 +44,8 @@ typedef struct {
 
     int pubs[UI_MAX_NODE_TOPICS]; int n_pubs;   /* indices into topics[] */
     int subs[UI_MAX_NODE_TOPICS]; int n_subs;
-    /* this node's own offered/requested reliability per endpoint, parallel to
-       pubs[]/subs[] (the Topic carries one topic-level value; a dot in the node's
-       pub/sub list wants the node's own QoS). 1 = reliable, 0 = best-effort. */
+    /* this node's own offered or requested reliability per endpoint, parallel to
+       pubs[] and subs[]. 1 = reliable, 0 = best effort */
     unsigned char pub_rel[UI_MAX_NODE_TOPICS];
     unsigned char sub_rel[UI_MAX_NODE_TOPICS];
 
@@ -64,42 +57,35 @@ typedef struct {
 } Qos;
 
 typedef struct {
-    char path[96];               /* "sensors/lidar/points"; the tree (ui_tree.h) groups
-                                     segments split on '/' OR '.' */
+    char path[96];   /* "sensors/lidar/points". The tree groups segments split on '/' or '.' */
     int  kind;                   /* CAP_KIND_*: plain topic, or a function/variable/task ENTITY */
     int  writable;               /* variable: an owner advertises a set channel */
-    int  forceable;              /* variable: an owner advertises allow_force (force/unforce permitted) */
-    int  cancellable;            /* task: the provider honors cancel (attrs; gates the cancel buttons) */
+    int  forceable;   /* variable: an owner advertises allow_force */
+    int  cancellable;   /* task: the provider honors cancel, which gates the cancel buttons */
     int  exclusive;              /* task: declared serialization (attrs) */
     int  multi;                  /* task: redundant providers intended (attrs) */
     int  incomplete;             /* pattern half-pair (a diagnosable misadvertisement) */
     Qos  qos;
     int  pubs[UI_MAX_ENDPOINTS]; int n_pubs;   /* node indices */
     int  subs[UI_MAX_ENDPOINTS]; int n_subs;
-    unsigned char pub_rel[UI_MAX_ENDPOINTS];   /* each publisher's offered reliability (parallel to pubs[]) */
-    unsigned char sub_rel[UI_MAX_ENDPOINTS];   /* each subscriber's requested reliability (parallel to subs[]) */
+    unsigned char pub_rel[UI_MAX_ENDPOINTS];   /* each publisher's offered reliability */
+    unsigned char sub_rel[UI_MAX_ENDPOINTS];   /* each subscriber's requested reliability */
 
     double rate_hz;
     double last_age_s;
-    double jitter_p90_ms;        /* p90 inter-arrival jitter (ms), smoothed over the topic's whole
-                                     observed lifetime, not just the visible feed; < 0 = not enough
-                                     samples yet (rides the data plane, so real only while subscribed) */
-    CapMiniPreview mini;         /* newest received value, compact (the tree's VALUE column;
-                                     rides the data plane like rate/jitter) */
+    double jitter_p90_ms;        /* p90 inter arrival jitter in ms over the topic's whole observed
+                                    lifetime. Below 0 = not enough samples, real only while subscribed */
+    CapMiniPreview mini;   /* the newest received value, compact, for the tree's VALUE column */
 
-    int    reliable;             /* the DISPLAYED QoS: reliable iff every live endpoint (publisher
-                                    offered + subscriber requested) is reliable, so a topic with
-                                    only a reliable subscriber still reads reliable. */
-    int    has_qos;              /* any endpoint (pub OR sub) declares a reliability, so the badge
-                                    is meaningful; 0 = no endpoints yet, show a dash. */
-    int    reliable_recommend;   /* the reliability to subscribe AS: reliable only if every
-                                    publisher offers it (a mix downgrades to best effort,
-                                    since a reliable sub would refuse the best-effort
-                                    publisher). -1 = no publishers (default best effort). */
+    int    reliable;             /* the displayed QoS: reliable iff every live endpoint is reliable,
+                                    so a lone reliable subscriber still reads reliable */
+    int    has_qos;              /* any endpoint declares a reliability so the badge is meaningful,
+                                    0 = no endpoints yet, show a dash */
+    int    reliable_recommend;   /* the reliability to subscribe as: reliable only if every
+                                    publisher offers it, since a reliable sub refuses. -1 = none */
 
-    /* live subscription state (the explorer can join a topic's data plane on demand), for
-       the tree status light: 0 = not subscribed (grey), 1 = subscribed & healthy (green),
-       2 = subscribed but dropping/erroring (red). The feed reads live counts directly. */
+    /* live subscription state for the tree light: 0 = not subscribed, grey. 1 = subscribed
+       and healthy, green. 2 = dropping or erroring, red. */
     int    sub_state;
     /* the explorer's OWN role on this topic (peer lists above are discovery-only): whether we
        publish/subscribe and at what reliability, so the topic reflects what we advertise. */
@@ -109,16 +95,15 @@ typedef struct {
     int    self_sub_reliable;
 } Topic;
 
-/* everything the UI draws from; counts let the tab bar show "Nodes 6" etc. */
+/* everything the UI draws from. The counts let the tab bar show "Nodes 6" */
 typedef struct {
     const Machine  *machines; int n_machines;
     const Node     *nodes;    int n_nodes;
     const Topic    *topics;   int n_topics;
 } Dataset;
 
-/* derived topic tree, built from the topic paths (see NUKLEAR_SPEC section 3).
-   A node can be both a namespace and a topic, so topic is attached to interior
-   nodes too. Builder lands with the Topics tab. */
+/* the derived topic tree built from the topic paths. A node can be both a namespace and
+   a topic, so topic is attached to interior nodes too. */
 typedef struct {
     const char  *name;       /* leaf segment label */
     const char  *path;       /* accumulated path (key for the expand/collapse set) */

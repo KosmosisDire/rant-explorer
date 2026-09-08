@@ -1,20 +1,5 @@
-/* demo_scene: one node of the handoff sample mesh, by profile name. Run six of
-   these (one per profile) and the DART Explorer shows a populated node list and a
-   nice hierarchical topic tree (sensors/lidar/..., robot/..., planning/...,
-   diagnostics/...). It DECLARES pub/sub interest (the tree is built from the discovery
-   announces) and also PUBLISHES a small readable payload on each of its pub topics at a
-   per-topic rate, so the explorer's live feed shows real messages once you subscribe.
-
-   ONE NODE PER PROCESS on purpose: several DART discovery participants in a single
-   process all share the rendezvous port (7400, SO_REUSEADDR), and unicast blob
-   replies to that shared port get delivered to the wrong co-bound socket, so peers
-   show up nameless. Separate processes (like dart_test does) avoid that.
-
-   Build (from the repo root):
-     gcc -std=c99 -Wall -Idist explore/demo_scene.c -o demo_scene.exe -lws2_32 -lbcrypt -lwinmm
-     cc  -std=c99 -Wall -Idist explore/demo_scene.c -o demo_scene -lrt          (POSIX)
-   Run one: ./demo_scene <profile> [--domain N] [--if IP]
-     profiles: perception planner lidar-driver camera-driver controller logger */
+/* One node of the sample mesh, by profile name. Run one per profile and the explorer shows
+   a populated node list and topic tree. One node per process (spec/explorer.md). */
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0601          /* GetTickCount64 */
 #endif
@@ -52,19 +37,17 @@ typedef struct {
 
 /* per-topic publish cadence: motion fast, scans medium, status slow */
 static unsigned topic_period_ms(const char *path){
-    if (strstr(path, "pose") || strstr(path, "odom") || strstr(path, "cmd_vel")) return 100;  /* 10 Hz */
-    if (strstr(path, "points") || strstr(path, "image"))                         return 200;  /*  5 Hz */
-    if (strstr(path, "health") || strstr(path, "info") || strstr(path, "heartbeat")) return 1000; /* 1 Hz */
+    if (strstr(path, "pose") || strstr(path, "odom") || strstr(path, "cmd_vel")) return 100;
+    if (strstr(path, "points") || strstr(path, "image"))                         return 200;
+    if (strstr(path, "health") || strstr(path, "info") || strstr(path, "heartbeat")) return 1000;
     return 500;  /* 2 Hz: goal / path / diagnostics */
 }
 
 static volatile sig_atomic_t g_run = 1;
 static void on_sig(int s){ (void)s; g_run = 0; }
 
-/* ---- the demo TASK: a slow lidar calibration, defined on lidar-driver and called by
-   perception every ~10s, so the explorer's task view shows live runs out of the box.
-   Single-threaded superloop: the handler defers, the main loop does one step per tick,
-   honoring cancel ({done,total} progress; cancel answers CANCELLED with the partial). */
+/* The demo task: a slow lidar calibration defined on lidar-driver and called by perception
+   every 10 s. A single threaded superloop: the handler defers, the main loop steps. */
 #define TASK_NAME "sensors/lidar/calibrate"
 static DartSchema   *task_req_s, *task_prg_s, *task_rsp_s;
 static DartFunction *task_def, *task_remote;
@@ -149,7 +132,7 @@ static int task_setup(DartNode *node, const char *profile){
     return def ? task_def != NULL : task_remote != NULL;
 }
 
-/* RELIABLE topics (matching data.js); everything else is best-effort. A topic's
+/* the reliable topics, matching data.js. Everything else is best effort. A topic's
    publisher and subscriber must agree, so this one lookup drives both. */
 static int reliable(const char *path){
     static const char *rel[] = {

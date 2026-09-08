@@ -1,23 +1,17 @@
-/* Topic tree: build a segment tree from the topics' paths (segments split on '/' OR
-   '.', either works as a namespace separator) and flatten it into TreeRow[] honoring
-   the app's expanded-branch set (branches are collapsed by default). This is the C port of buildTree()/flatten() in the
-   handoff's data.js. A node can be both a namespace and a topic (e.g. "diagnostics"
-   with child "diagnostics/heartbeat"), so an interior node carries a Topic* when one
-   exists. Rebuilt each frame before the tree renders; the pools are static, so the
-   TreeRow name/path pointers stay valid for the frame. Requires ui_model.h
-   (Dataset/TreeRow) and ui_app.h (the collapsed set). */
+/* The topic tree: a segment tree from the topic paths, split on '/' or '.', flattened into
+   TreeRow[] honoring the expanded set. A node can be both a namespace and a topic. */
 #ifndef UI_TREE_H
 #define UI_TREE_H
 
 #define UT_MAX_NODES (UID_MAX_TOPICS * 4)   /* segments can outnumber topics (namespaces) */
-#define UT_HASH      131072                  /* power of two, >= 2*UT_MAX_NODES (128000): (parent,seg)->node map */
+#define UT_HASH      131072   /* a power of two over 2x UT_MAX_NODES, the (parent, seg) node map */
 
 typedef struct {
     char name[CAP_TOPIC_CAP];   /* one path segment */
     char path[96];              /* accumulated path to this segment */
     int  topic;                 /* index into Dataset.topics, or -1 for a pure namespace */
     int  parent;                /* owning node, or -1 for the root */
-    int  depth;                 /* 0 = top level (matches ut_flatten's row depth); root is -1 */
+    int  depth;                 /* 0 = top level, the root is -1 */
     int  first_child, last_child, next_sibling, n_children;
 } UtNode;
 
@@ -25,7 +19,7 @@ static UtNode  ut_pool[UT_MAX_NODES];
 static int     ut_n;
 static TreeRow ut_rows[UT_MAX_NODES];
 static int     ut_n_rows;
-static int     ut_slot[UT_HASH];          /* (parent,seg) hash -> node index, -1 empty; reset per build */
+static int     ut_slot[UT_HASH];   /* (parent, seg) hash to node index, -1 empty, reset per build */
 static int     ut_order[UT_MAX_NODES];    /* topic indices sorted by path (drives sibling order) */
 
 static uint32_t ut_child_key(int parent, const char *seg){
@@ -35,10 +29,8 @@ static uint32_t ut_child_key(int parent, const char *seg){
     return h;
 }
 
-/* find (or create) the child of `parent` named `seg`. Lookup is O(1) via ut_slot; on a miss the
-   child is appended at the tail. Siblings therefore render in the order topics are fed in, which
-   ut_build makes alphabetical by walking topics path-sorted (so same-prefix topics arrive adjacent
-   and their new segments append in order) -- no per-insert sibling scan, which was O(n^2). */
+/* find or create the child of parent named seg, O(1) via ut_slot with a miss appended at
+   the tail. ut_build feeds topics path sorted, so siblings land alphabetical with no scan. */
 static int ut_child(int parent, const char *seg, const char *fullpath){
     uint32_t h = ut_child_key(parent, seg) & (UT_HASH - 1);
     int c;
@@ -46,7 +38,7 @@ static int ut_child(int parent, const char *seg, const char *fullpath){
         if (ut_pool[c].parent == parent && !strcmp(ut_pool[c].name, seg)) return c;
         h = (h + 1) & (UT_HASH - 1);
     }
-    if (ut_n >= UT_MAX_NODES) return parent;   /* pool full: fold into parent (degrade, don't crash) */
+    if (ut_n >= UT_MAX_NODES) return parent;   /* pool full: fold into the parent */
     { int nc = ut_n++;
       memset(&ut_pool[nc], 0, sizeof ut_pool[nc]);
       snprintf(ut_pool[nc].name, sizeof ut_pool[nc].name, "%s", seg);
@@ -85,9 +77,8 @@ static int ut_strcasestr(const char *hay, const char *needle){
     return 0;
 }
 
-/* a topic passes the text filter if its path, any endpoint node's name, or its advertised
-   schema type name contains the text. The schema lookup is a live peer scan, so it is done
-   last (only when the cheaper checks miss) and only when a capture is available. */
+/* a topic passes the text filter if its path, an endpoint node's name or its schema type
+   name contains the text. The schema lookup is a live peer scan, so it runs last. */
 static int ut_topic_match(const Dataset *D, const Topic *tp, const char *filter, const Capture *cap){
     int i;
     if (ut_strcasestr(tp->path, filter)) return 1;
@@ -105,12 +96,12 @@ static int ut_topic_match(const Dataset *D, const Topic *tp, const char *filter,
 
 static int ut_n_matched;   /* topics that passed the filter this build */
 
-/* filter = the text filter (NULL = none); cats = the category-filter bitmask (0 = none);
-   cap backs the schema-name text match (NULL = skip it). */
+/* filter = the text filter, NULL = none. cats = the category bitmask, 0 = none. cap
+   backs the schema name match, NULL = skip it. */
 static void ut_build(const Dataset *D, const char *filter, const Capture *cap, unsigned cats){
     int t, no = 0;
     ut_n = 1;                                  /* node 0 = implicit root */
-    memset(ut_slot, 0xFF, sizeof ut_slot);     /* 0xFF bytes = -1 ints: empty the (parent,seg) map */
+    memset(ut_slot, 0xFF, sizeof ut_slot);   /* 0xFF bytes = -1 ints, an empty map */
     memset(&ut_pool[0], 0, sizeof ut_pool[0]);
     ut_pool[0].topic = -1; ut_pool[0].parent = -1; ut_pool[0].depth = -1;
     ut_pool[0].first_child = ut_pool[0].last_child = ut_pool[0].next_sibling = -1;
@@ -118,7 +109,7 @@ static void ut_build(const Dataset *D, const char *filter, const Capture *cap, u
     for (t = 0; t < D->n_topics && no < UT_MAX_NODES; t++){
         const Topic *tp = &D->topics[t];
         if (cats && !app_topic_cat_match(tp, cats)) continue;         /* category filter (cheap) */
-        if (filter && !ut_topic_match(D, tp, filter, cap)) continue;  /* text filter (may scan schemas) */
+        if (filter && !ut_topic_match(D, tp, filter, cap)) continue;   /* text filter */
         ut_order[no++] = t;
     }
     ut_n_matched = no;
@@ -150,7 +141,7 @@ static void ut_flatten(const AppState *app, const Dataset *D, int node, int dept
     int c;
     for (c = ut_pool[node].first_child; c != -1; c = ut_pool[c].next_sibling){
         int is_branch = ut_pool[c].n_children > 0;
-        int filtering = app->topic_filter_len != 0 || app->topic_cats != 0;   /* any filter forces branches open */
+        int filtering = app->topic_filter_len != 0 || app->topic_cats != 0;
         int collapsed = is_branch && !filtering && !app_is_expanded(app, ut_pool[c].path);
         TreeRow *r;
         if (ut_n_rows >= UT_MAX_NODES) return;
@@ -166,7 +157,7 @@ static void ut_flatten(const AppState *app, const Dataset *D, int node, int dept
     }
 }
 
-/* (re)build the flattened tree for this frame; returns the row count */
+/* rebuild the flattened tree for this frame, returns the row count */
 static int ui_tree_build(const AppState *app){
     const Dataset *D = app->data;
     ut_n_rows = 0;

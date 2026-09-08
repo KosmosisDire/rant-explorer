@@ -1,10 +1,10 @@
-/* The single app-state struct. Every widget is re-emitted from this each frame;
-   Clay is immediate-mode and holds no retained state of ours. */
+/* The single app state struct. Every widget is re emitted from it each frame, since Clay
+   is immediate mode and holds no retained state of ours. */
 #ifndef UI_APP_H
 #define UI_APP_H
 
 typedef enum { TAB_TOPICS, TAB_NODES } Tab;
-typedef enum { DRAWER_PUBLISH, DRAWER_INSPECT } DrawerTab;   /* the Topics right-sidebar tabs, in display order */
+typedef enum { DRAWER_PUBLISH, DRAWER_INSPECT } DrawerTab;   /* the sidebar tabs, in order */
 
 #define UI_MAX_EXPANDED 128    /* tracked expanded tree branches (default = collapsed) */
 #define UI_COMPOSE_MAX   1024  /* bytes the message composer accepts (fits one fragment) */
@@ -15,19 +15,15 @@ typedef struct {
     int  theme_dark;          /* 1 dark, 0 light */
     Tab  tab;
 
-    /* Selection is keyed by IDENTITY (node id / topic path): the dataset is rebuilt
-       every frame and its ORDER shifts as peers and topics come and go, so a bare
-       index would silently move to a different item. The index fields below are the
-       per-frame resolution of the identity (-1 = the selected item is currently
-       absent; it reselects if the same identity returns), redone after each
-       ui_data_build in the main loop. */
+    /* Selection is keyed by identity, since the dataset is rebuilt and reordered every
+       frame. The index fields are this frame's resolution, -1 = absent (spec/explorer.md). */
     int  sel_node;            /* index into data->nodes, resolved from sel_node_id  */
     int  sel_topic;           /* index into data->topics, resolved from sel_topic_path */
     char sel_node_id[32];     /* the selected node's id ("" = index-only default) */
     char sel_topic_path[96];  /* the selected topic's path ("" = nothing selected) */
 
-    unsigned nodelog_mask;    /* Nodes-tab log sidebar level filter: bits (1 << DartLogLevel)
-                                 for error/warn/info; all three on by default */
+    unsigned nodelog_mask;    /* the Nodes tab log sidebar level filter, bits (1 << DartLogLevel),
+                                 all three on by default */
 
     int        drawer_open;   /* Topics right sidebar (Inspect / Publish) */
     DrawerTab  drawer_tab;    /* which sidebar tab is showing */
@@ -41,59 +37,50 @@ typedef struct {
     int      compose_len;
     int      compose_topic;   /* selected topic the draft belongs to (reset draft on change) */
 
-    /* structured publish form (replaces the composer on a typed topic): one value string
-       per top-level schema field, prefilled with the type's default -- or, for a VARIABLE,
-       with the value it currently holds, which lands a moment after the topic is selected
-       (selecting subscribes, then the owner's retained value replays) */
+    /* the structured publish form on a typed topic: one value string per top level field,
+       prefilled with the default, or for a variable with the value it holds once it lands */
     char     form_val[UI_FORM_MAX][UI_FORM_VAL];
     int      form_len[UI_FORM_MAX];
     int      form_n;          /* fields shown this frame (the composer sets it) */
     int      form_focus;      /* focused field, or -1 (the free-text composer owns input) */
-    int      form_topic;      /* sel_topic the values belong to; re-defaulted on change */
+    int      form_topic;      /* the sel_topic the values belong to, re defaulted on change */
     int      form_filled;     /* the variable's value has seeded the form (or the user typed
                                  first): stop trying, so a later write never stomps an edit */
     uint32_t form_seed;       /* hash of the values WE wrote, so an edit is recognizable */
 
-    /* a message pulled out of the feed to inspect: a durable COPY (survives the feed ring
-       overwriting the original), shown in the Inspect sidebar tab in place of the topic
-       overview. Cleared when the selected topic changes or the user backs out. */
+    /* a message pulled out of the feed to inspect, a durable copy that survives the ring
+       overwriting the original. Cleared when the selected topic changes. */
     CapFeedItem inspect_msg;
     int         has_inspect_msg;
     char        inspect_msg_topic[CAP_TOPIC_CAP];   /* topic the copied message came from */
 
-    /* topic-tree filter (the search box above the tree): rows whose topic path, any
-       endpoint node name, or schema type name doesn't contain this substring
-       (case-insensitive) are hidden */
+    /* the topic tree filter: rows whose path, endpoint node name or schema type name lacks
+       this substring, case insensitive, are hidden */
     char     topic_filter[CAP_TOPIC_CAP];
     int      topic_filter_len;
 
-    /* topic-tree CATEGORY filter (the funnel button by the filter box): a bitmask of
-       TT_CAT_* checkboxes. 0 = show every topic. The bits fall into three groups
-       (kind / QoS / state); within the kind and QoS groups checked bits are OR'd
-       (a topic can't be two kinds at once), and every other predicate is AND'd, so
-       e.g. Functions+Variables+Reliable shows (function OR variable) AND reliable. */
+    /* the topic tree category filter, a bitmask of TT_CAT_* checkboxes, 0 = every topic. Bits
+       within the kind and QoS groups are OR'd, the groups are AND'd. */
     unsigned topic_cats;
 
     /* "add a topic" input (the + by the filter): type a name to publish to a new topic */
     int      adding_topic;    /* 1 = the new-topic name field is showing */
     char     new_topic[CAP_TOPIC_CAP];
     int      new_topic_len;
-    char     select_topic[CAP_TOPIC_CAP]; /* pending: select this topic once it appears in the list */
+    char     select_topic[CAP_TOPIC_CAP];   /* pending: select this topic once it appears */
 
     /* text-box widget state, one per editable field (ui_textbox.h owns the semantics) */
     UiTbState tb_filter, tb_new_topic, tb_compose;
     UiTbState tb_form[UI_FORM_MAX];
 
-    /* Topics feed auto-scroll: stick to the newest message at the bottom while the user
-       is parked there; a scroll up unlocks it, returning to the bottom re-locks. */
+    /* the feed auto scroll: stick to the newest message while the user is parked at the
+       bottom, a scroll up unlocks it, returning to the bottom re locks */
     int      feed_pinned;       /* 1 = glued to the bottom */
     int      feed_sel_topic;    /* selected topic the pin state belongs to (reset on change) */
     float    feed_prev_scroll_y;/* the scroll offset we left set last frame (detects user scroll) */
 
-    /* message-feed table columns: a set of VISIBLE field-name hashes. Right-click the header
-       to toggle a field; seeded to the first few fields when the selected topic changes (and
-       for columns that appear later). Sized for TWO schemas: a function feed carries the
-       request and response field sets side by side, prefixed req./rsp. */
+    /* the feed table's visible field name hashes, toggled from the header menu and seeded
+       when the topic changes. Sized for two schemas, a function feed carries req. and rsp. */
     uint64_t col_vis[CAP_MSG_FIELDS * 2];
     int      n_col_vis;
     int      col_vis_topic;     /* sel_topic the set was seeded for (-1 = unseeded) */
@@ -101,7 +88,7 @@ typedef struct {
                                    header menu, persistent across topics (not schema-bound) */
     int      col_show_from;
 
-    Capture          *cap;    /* live observer (subscribe / read the feed); NULL if not started */
+    Capture          *cap;    /* the live observer, NULL if not started */
     const Dataset     *data;  /* rebuilt each frame from the live snapshot */
 } AppState;
 
@@ -136,7 +123,7 @@ static int app_topic_cat_match(const Topic *t, unsigned cats){
         bit = t->reliable ? TT_CAT_RELIABLE : TT_CAT_BEST_EFF;
         if (!(qos & bit)) return 0;
     }
-    if ((cats & TT_CAT_SUBSCRIBED) && !t->sub_state)     return 0;   /* AND: additional predicates */
+    if ((cats & TT_CAT_SUBSCRIBED) && !t->sub_state)     return 0;   /* AND: more predicates */
     if ((cats & TT_CAT_ACTIVE)     && !(t->rate_hz > 0.0)) return 0;
     return 1;
 }
@@ -203,10 +190,8 @@ static void app_toggle_expanded(AppState *a, const char *path){
     if (a->n_expanded < UI_MAX_EXPANDED) a->expanded[a->n_expanded++] = h;
 }
 
-/* expand every ancestor branch of a topic path so it is visible in the (collapsed by
-   default) tree: used when a selection arrives by NAME (the + add-topic flow, the
-   DART_UI_TOPIC deep link) rather than by a click on an already-visible row. Branch
-   keys are the tree's accumulated paths, which normalize both separators to '/'. */
+/* expand every ancestor branch of a topic path so it is visible in the collapsed tree, for
+   a selection arriving by name. Branch keys normalize both separators to '/'. */
 static void app_expand_to(AppState *a, const char *path){
     char acc[96]; int n = 0;
     const char *p;
@@ -221,13 +206,8 @@ static void app_expand_to(AppState *a, const char *path){
     }
 }
 
-/* select a topic: the path is the durable key, the index just this frame's resolution.
-   Selecting also JOINS the topic's data plane, so clicking into a topic is enough to see it
-   live (the feed, the rate/jitter columns and the status light all ride the data plane). It
-   joins at the topic's recommended reliability, like every other subscribe path. An
-   already-subscribed topic is left alone (a re-subscribe would clear its error/drop counters),
-   and a FUNCTION is skipped: replies are DIRECTED to their caller, so there is nothing to
-   passively receive. */
+/* select a topic: the path is the durable key, the index this frame's resolution. It also
+   joins the data plane at the recommended reliability, except a function. */
 static void app_select_topic(AppState *a, const Dataset *D, int idx){
     a->sel_topic = idx;
     snprintf(a->sel_topic_path, sizeof a->sel_topic_path, "%s",

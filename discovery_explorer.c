@@ -1,17 +1,5 @@
-/* DART Explorer: a debugger UI for a DART mesh (Discovery And Realtime
-   Transport). Two tabs: Nodes and Topics.
-
-   This translation unit is the GUI: SDL3 for the window/input/renderer, SDL3_ttf
-   (FreeType) for text, Clay for declarative (flexbox-style) layout. The UI is
-   broken out into ui_*.h (theme, data model, widgets, per-tab views, shell). The
-   live discovery observer lives in net_capture.c, a SEPARATE TU (it owns DART +
-   winsock); keeping the split isolates that side from the GUI.
-
-   The new UI renders from an (initially empty) ui_model Dataset; feeding it from
-   net_capture's live peers is the next step.
-
-   Build (cross-platform) with CMake; see CMakeLists.txt:
-     cmake -S explore -B explore/build && cmake --build explore/build */
+/* The explorer's UI translation unit: SDL3, SDL3_ttf and Clay, with the UI in ui_*.h. The
+   live observer is net_capture.c, a separate unit. spec/explorer.md has the design. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +12,7 @@
 #define CLAY_IMPLEMENTATION
 #include "clay.h"
 
-#define SDL_MAIN_HANDLED                 /* we own main(); don't let SDL_main.h rename it */
+#define SDL_MAIN_HANDLED                 /* we own main(), so SDL_main.h must not rename it */
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>               /* for SDL_SetMainReady() */
 #include <SDL3_ttf/SDL_ttf.h>
@@ -100,8 +88,7 @@ int main(int argc, char **argv){
         fprintf(stderr, "SDL_CreateWindowAndRenderer failed: %s\n", SDL_GetError());
         return 1;
     }
-    SDL_SetRenderVSync(ren, 1);   /* the node's service thread owns the poll now, so the
-                                     render loop no longer drives it: pace to the display */
+    SDL_SetRenderVSync(ren, 1);   /* paced to the display, the service thread polls */
     SDL_StartTextInput(win);   /* deliver SDL_EVENT_TEXT_INPUT for the text boxes */
 
     dpi = SDL_GetWindowPixelDensity(win);   /* physical px per logical px (1.0 = 100%) */
@@ -123,12 +110,8 @@ int main(int argc, char **argv){
     rdata = (UiRenderer){ .renderer = ren, .fonts = g_fonts };
 
     SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
-    /* Clay's arena is sized to this element ceiling (~840 B each), so it is a real memory
-       knob: 1M elements cost ~800 MB up front. The topic tree and feed are virtualized
-       (only visible rows emit elements), so the sole large consumer is a selected node's
-       endpoint list, which emits every row: at the 16000-topic ceiling that is ~32k rows x
-       ~5 elements ~= 160k. 256k covers that with generous headroom at ~215 MB instead of
-       ~800 MB. (Virtualizing node_endpoint_list would let this drop to ~64k / ~55 MB.) */
+    /* Clay's arena is sized to this element ceiling at about 840 B each, so it is a real
+       memory knob. spec/explorer.md says why 256k. */
     Clay_SetMaxElementCount(256 * 1024);
     clay_mem = Clay_MinMemorySize();
     arena = Clay_CreateArenaWithCapacityAndMemory(clay_mem, malloc(clay_mem));
@@ -141,7 +124,7 @@ int main(int argc, char **argv){
         if (tab){ if (!strcmp(tab, "topics")) app.tab = TAB_TOPICS;
                   else if (!strcmp(tab, "nodes")) app.tab = TAB_NODES; }
     }
-    {   const char *tp = getenv("DART_UI_TOPIC");  /* optional: select a topic (+drawer) once it appears */
+    {   const char *tp = getenv("DART_UI_TOPIC");   /* select a topic and drawer once it appears */
         if (tp && *tp){ snprintf(app.select_topic, sizeof app.select_topic, "%s", tp); app.drawer_open = 1; }
     }
 
@@ -150,8 +133,8 @@ int main(int argc, char **argv){
     app.cap = &cap;          /* lets the Topics tab subscribe and read the live feed */
 
     last_ticks = SDL_GetTicks();
-    /* optional readout (set DART_UI_FPS=1): the service thread owns the poll, so this fps is
-       just the (vsync-paced) render rate; render-ms is the per-frame layout+text work. */
+    /* an optional readout, DART_UI_FPS=1: the service thread owns the poll, so this fps is
+       the render rate and render ms the per frame layout and text work */
     int      fps_show = getenv("DART_UI_FPS") != NULL;
     uint64_t fps_t0 = last_ticks; int fps_frames = 0; double fps_render_ms = 0.0;
     for (;;){
@@ -186,13 +169,13 @@ int main(int argc, char **argv){
                     wheel_x += ev.wheel.x; wheel_y += ev.wheel.y;
                     break;
                 case SDL_EVENT_KEY_DOWN:
-                    if (ev.key.key == SDLK_F12){              /* F12: toggle Clay's layout inspector */
+                    if (ev.key.key == SDLK_F12){   /* F12: toggle Clay's layout inspector */
                         if (!ev.key.repeat){ debug_enabled = !debug_enabled; Clay_SetDebugModeEnabled(debug_enabled); }
                         break;
                     }
-                    ui_tb_feed_key(ev.key.key, ev.key.mod);   /* the focused text box consumes these */
+                    ui_tb_feed_key(ev.key.key, ev.key.mod);   /* the focused text box consumes it */
                     break;
-                case SDL_EVENT_TEXT_INPUT:                    /* typed characters -> the focused text box */
+                case SDL_EVENT_TEXT_INPUT:   /* typed characters go to the focused text box */
                     if (ev.text.text) ui_tb_feed_text(ev.text.text);
                     break;
                 default: break;
@@ -203,13 +186,13 @@ int main(int argc, char **argv){
         cap_poll(&cap);
 
         cur_dpi = SDL_GetWindowPixelDensity(win);
-        if (cur_dpi > 0.0f && fabsf(cur_dpi - g_atlas_scale) > 0.01f){   /* moved to a different-DPI monitor */
+        if (cur_dpi > 0.0f && fabsf(cur_dpi - g_atlas_scale) > 0.01f){   /* a new DPI */
             ui_fonts_reload(cur_dpi);   /* sets ui_dpi first... */
             ui_icons_reload(ren);       /* ...so the icon raster picks up the new density */
             ui_text_cache_clear();      /* every cached glyph raster is now the wrong size */
         }
 
-        SDL_GetMouseState(&mx, &my);     /* logical (point) coords; layout is physical */
+        SDL_GetMouseState(&mx, &my);     /* logical point coords, the layout is physical */
         mx *= ui_dpi; my *= ui_dpi;
         SDL_GetCurrentRenderOutputSize(ren, &ow, &oh);
         g_pointer_x = mx; g_pointer_y = my;              /* for cursor-anchored context menus */
@@ -231,8 +214,8 @@ int main(int argc, char **argv){
         Clay_UpdateScrollContainers(true, (Clay_Vector2){ wheel_x * UISC(UI_SCROLL_SPEED),
                                                           wheel_y * UISC(UI_SCROLL_SPEED) }, dt);
 
-        cap_snapshot(&cap, &g_snap);     /* live discovery table -> plain view */
-        ui_data_build(&g_data, &g_snap); /* -> the UI Dataset (rebuilt every frame) */
+        cap_snapshot(&cap, &g_snap);     /* the live discovery table as a plain view */
+        ui_data_build(&g_data, &g_snap); /* the UI Dataset, rebuilt every frame */
         if (app.select_topic[0]){        /* a just-added or deep-linked topic: select (and so
                                             subscribe to) it once it appears */
             int ti = uid_topic_find(app.select_topic);
@@ -242,12 +225,8 @@ int main(int argc, char **argv){
                 app.select_topic[0] = '\0';
             }
         }
-        /* Selection follows IDENTITY, never a bare index: the dataset is rebuilt (and
-           reordered) every frame as peers and topics come and go, so re-find the selected
-           topic/node now. Per-topic UI state keyed to the old index (the publish form's
-           values, the compose draft, the feed pin, the column picks) migrates with it,
-           so a topic-list change never resets it; -1 while the item is absent, and the
-           same identity returning reselects. */
+        /* Selection follows identity, never a bare index: the dataset is rebuilt and reordered
+           every frame, so re find the selected topic and node now (spec/explorer.md). */
         if (app.sel_topic_path[0]){
             int ti = uid_topic_find(app.sel_topic_path);
             if (ti != app.sel_topic){
@@ -272,13 +251,13 @@ int main(int argc, char **argv){
         Clay_BeginLayout();
         ui_frame(&app);
         Clay_RenderCommandArray cmds = Clay_EndLayout();
-        topics_feed_autoscroll(&app);    /* pin the feed to the newest message (uses final layout) */
+        topics_feed_autoscroll(&app);   /* pin the feed to the newest, off the final layout */
 
         bg = app.theme_dark ? UI_DARK.bg : UI_LIGHT.bg;
         SDL_SetRenderDrawColor(ren, (Uint8)bg.r, (Uint8)bg.g, (Uint8)bg.b, 255);
         SDL_RenderClear(ren);
         ui_render(&rdata, &cmds);
-        uint64_t r1 = SDL_GetPerformanceCounter();   /* before present: render WORK, not vsync wait */
+        uint64_t r1 = SDL_GetPerformanceCounter();   /* before present: the render work */
         SDL_RenderPresent(ren);
 
         if (fps_show){

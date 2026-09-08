@@ -1,36 +1,22 @@
-/* Reusable Clay leaf/component helpers. Components with a fixed internal
-   structure (dot, chip, pill, label) are plain functions that emit a CLAY block;
-   container layouts with caller-provided children stay inline in the tab files.
-
-   Click handling: Clay_Hovered() reports pointer-over for the open element;
-   combined with g_pointer_pressed (set once per frame from the mouse) it yields a
-   click. Requires clay.h, ui_theme.h, ui_fonts.h first. */
+/* Reusable Clay leaf and component helpers. A click is Clay_Hovered() combined with
+   g_pointer_pressed, set once per frame from the mouse. */
 #ifndef UI_WIDGETS_H
 #define UI_WIDGETS_H
 
-/* UISC yields a float; Clay's padding/childGap/border-width fields are uint16_t.
-   UISCI scales and casts in one step, to keep layout literals readable. */
+/* UISC yields a float and Clay's padding and gap fields are uint16_t, so UISCI scales
+   and casts in one step */
 #define UISCI(px) ((uint16_t)UISC(px))
 
-static bool g_pointer_pressed = false;   /* left mouse pressed this frame; main sets it */
+static bool g_pointer_pressed = false;   /* left mouse pressed this frame, main sets it */
 static bool g_right_pressed = false;     /* right mouse pressed this frame (context menus) */
 static bool g_pointer_pressed_raw = false;   /* like the two above, but never consumed by a */
 static bool g_right_pressed_raw = false;     /* widget: dismiss checks see every press */
-static uint32_t g_now_ms = 0;            /* monotonic ms this frame; main sets it (transient feedback) */
-static float g_pointer_x = 0.0f, g_pointer_y = 0.0f;   /* pointer position, physical px; main sets it */
-static float g_view_w = 0.0f, g_view_h = 0.0f;         /* render output size, physical px; main sets it */
+static uint32_t g_now_ms = 0;   /* monotonic ms this frame, main sets it, for transient feedback */
+static float g_pointer_x = 0.0f, g_pointer_y = 0.0f;   /* the pointer in physical px */
+static float g_view_w = 0.0f, g_view_h = 0.0f;   /* the output size in physical px */
 
-/* The scroll offset to feed a clip's .childOffset, fetched by ELEMENT ID. Never use
-   Clay_GetScrollOffset() for this: it finds the stored offset by comparing LAYOUT-ELEMENT
-   POINTERS, addresses into the per-frame element array, refreshed only when the container
-   is (re)declared. On any frame where an element declared EARLIER in the tree appears or
-   disappears (a blinking caret, a new feed row, a peer joining), every later element
-   shifts slots, the pointer compare misses for exactly that frame, and the container
-   renders scrolled to the top before snapping back -- the periodic one-frame flicker.
-   Matching the stored record by elementId is immune to slot shifts. (Clay's own
-   Clay_GetScrollContainerData is id-keyed too, but dereferences the stale element pointer
-   for its config, so this walks the records directly; Clay internals are visible here
-   because the UI TU owns CLAY_IMPLEMENTATION.) */
+/* The scroll offset for a clip's childOffset, fetched by element id. Clay_GetScrollOffset
+   matches by element pointer and flickers when earlier elements shift (spec/explorer.md). */
 static Clay_Vector2 ui_scroll_offset(Clay_ElementId id){
     Clay_Context *ctx = Clay_GetCurrentContext();
     int32_t i;
@@ -89,15 +75,15 @@ static bool ui_chip(const Palette *P, Clay_String label, Clay_Color dot){
     return clicked;
 }
 
-/* a square icon button: the icon centered in a box, faint hover fill. Returns true
-   on click. fg/hover_fg tint the icon; box is the clickable square's side (px). */
+/* a square icon button with a faint hover fill. Returns true on click. fg and hover_fg
+   tint the icon, box is the clickable square's side in px */
 static bool ui_icon_button(const Palette *P, IconId id, float icon_px, float box,
                            Clay_Color fg, Clay_Color hover_fg){
     bool clicked = false, hov;
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_FIXED(UISC(box)), .height = CLAY_SIZING_FIXED(UISC(box)) },
                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } },
            .cornerRadius = CLAY_CORNER_RADIUS(UISC(5)),
-           .backgroundColor = Clay_Hovered() ? P->panel2 : UI_NONE }) {   /* hover wash behind the icon */
+           .backgroundColor = Clay_Hovered() ? P->panel2 : UI_NONE }) {   /* the hover wash */
         hov = Clay_Hovered();
         if (hov && g_pointer_pressed) clicked = true;
         ui_icon(id, icon_px, hov ? hover_fg : fg);
@@ -105,8 +91,8 @@ static bool ui_icon_button(const Palette *P, IconId id, float icon_px, float box
     return clicked;
 }
 
-/* a small copy-to-clipboard pill: copy icon + label, dim -> text on hover. After a copy the
-   caller passes copied=1 for a moment, flipping it to a green check + "Copied". Click = true. */
+/* a small copy to clipboard pill: the copy icon plus a label, dim until hover. After a
+   copy the caller passes copied = 1 for a moment, showing a green check. Click = true. */
 static bool ui_copy_pill(const Palette *P, int copied){
     bool clicked = false, hov;
     Clay_Color fg;
@@ -136,17 +122,15 @@ typedef struct {
     Clay_String label;
     Clay_String keys;     /* right-aligned shortcut hint ("" = none) */
     int enabled;          /* 0 = dimmed, not clickable */
-    int check;            /* 0 = plain item; UI_MENU_ON/OFF = a leading checkbox, and a
-                             click reports the toggle but keeps the menu open (checklists) */
+    int check;   /* 0 = a plain item. UI_MENU_ON and OFF add a leading checkbox, and a click
+                    reports the toggle but keeps the menu open */
 } UiMenuItem;
 
 static const void *g_menu_owner = NULL;   /* whose menu is open (NULL = none) */
 static float g_menu_x, g_menu_y;          /* anchor, physical px */
 static int   g_menu_fresh = 0;            /* opened this frame: skip the dismiss checks once */
-static uint32_t g_menu_anchor = 0;        /* an element that also counts as "inside" for the
-                                             dismiss check (0 = none): its owning control (e.g. a
-                                             dropdown's box, which becomes a search field) so a
-                                             press on it does not close the menu it drives */
+static uint32_t g_menu_anchor = 0;   /* an element that also counts as inside for the dismiss check,
+                                        0 = none: a dropdown's box, so a press on it keeps the menu */
 
 static void ui_scrollbar_z(const Palette *P, Clay_ElementId id, int16_t z);   /* defined below */
 
@@ -165,10 +149,8 @@ static int  ui_menu_pointer_over(void){
     return 0;
 }
 
-/* natural width (css px) of a menu sized to its widest item: L/R padding, an
-   optional leading checkbox, the label, and any right-aligned shortcut past a
-   grow spacer (two child gaps). Used when ui_menu is asked to auto-size (w <= 0),
-   and by callers (the dropdown) that need the same width for their own control. */
+/* the natural width in css px of a menu sized to its widest item: padding, an optional
+   checkbox, the label and any right aligned shortcut. Used when ui_menu auto sizes. */
 static float ui_menu_fit_w(const UiMenuItem *items, int n){
     float maxw = 0.0f;
     int i, any_check = 0;
@@ -187,7 +169,7 @@ static float ui_menu_fit_w(const UiMenuItem *items, int n){
     return maxw;
 }
 
-/* one menu row; returns true on click */
+/* one menu row, returns true on click */
 static bool ui_menu_item(const Palette *P, const UiMenuItem *it){
     bool clicked = false;
     int on = it->check == UI_MENU_ON;
@@ -217,19 +199,16 @@ static bool ui_menu_item(const Palette *P, const UiMenuItem *it){
     return clicked;
 }
 
-/* draw the owner's open menu: floating at the anchor, clamped to the window, z
-   above everything. Returns the clicked item index or -1; a plain item closes
-   the menu, a check item leaves it open so the caller's toggle shows next
-   frame. Any press outside it dismisses it. Call every frame while open; a
-   no-op (-1) when this owner's menu isn't. */
+/* draw the owner's open menu floating at the anchor, clamped to the window. Returns the
+   clicked item or -1, a plain item closes and a check item stays open. Call every frame. */
 #define UI_MENU_ITEM_H 24    /* css px per row (matches ui_menu_item's fixed height) */
-#define UI_MENU_MAX_H  300   /* css px; a taller list is clipped to this and scrolls */
+#define UI_MENU_MAX_H  300   /* css px, a taller list is clipped to this and scrolls */
 
 static int ui_menu(const Palette *P, const void *owner, const UiMenuItem *items, int n, float w){
     int clicked = -1, i;
     float wpx    = w > 0.0f ? UISC(w) : UISC(ui_menu_fit_w(items, n));   /* w <= 0 = fit content */
     float full_h = (float)n * UISC(UI_MENU_ITEM_H) + UISC(8);
-    int   scroll = full_h > UISC(UI_MENU_MAX_H) + 0.5f;                  /* too tall: clip + scroll */
+    int   scroll = full_h > UISC(UI_MENU_MAX_H) + 0.5f;   /* too tall: clip and scroll */
     float mh     = scroll ? UISC(UI_MENU_MAX_H) : full_h;
     float mxp = g_menu_x, myp = g_menu_y;
     if (!ui_menu_is_open(owner)) return -1;
@@ -249,7 +228,7 @@ static int ui_menu(const Palette *P, const void *owner, const UiMenuItem *items,
            .border = { .width = { 1, 1, 1, 1, 0 }, .color = P->border2 },
            .floating = { .offset = { mxp, myp }, .zIndex = 1000,
                          .attachTo = CLAY_ATTACH_TO_ROOT } }) {
-        if (scroll){       /* rows live in a fixed-height clip child; wheel + bar drive it */
+        if (scroll){   /* the rows live in a fixed height clip child, wheel and bar driven */
             CLAY({ .id = CLAY_ID("ui_ctx_menu_scroll"),
                    .layout = { .sizing = { .width = CLAY_SIZING_GROW(0),
                                            .height = CLAY_SIZING_FIXED(mh - UISC(8)) },
@@ -268,34 +247,20 @@ static int ui_menu(const Palette *P, const void *owner, const UiMenuItem *items,
     return clicked;
 }
 
-/* The generic dropdown (ui_dropdown) lives in ui_textbox.h: it now turns its box
-   into a search field when open, so it depends on the text box. Its generic parts
-   (auto-fit width via ui_menu_fit_w, height cap + scroll, the anchor-aware dismiss)
-   are all here in ui_menu. */
+/* The generic dropdown lives in ui_textbox.h since it turns its box into a search field.
+   Its generic parts, the width fit, the height cap and the dismiss, are here in ui_menu. */
 
-/* ---- generic vertical scrollbar for Clay clip/scroll containers ----
-
-   Clay itself has no scrollbar: it only exposes each clip container's live scroll
-   position + content/viewport sizes (Clay_GetScrollContainerData), leaving the bar
-   to the app. This draws one for ANY vertical scroll container by id, as a floating
-   overlay pinned to the container's right edge, and makes it draggable.
-
-   Two phases per frame, because a bar overlays the rows behind it and a press must
-   reach the bar first (Clay_Hovered has no z-order, so a floating bar can't steal a
-   press from a row underneath it). ui_scrollbars_pre() runs at the TOP of the frame
-   over LAST frame's set of bars: using last frame's geometry it handles thumb drag /
-   track paging and CONSUMES the press before any row sees it. Then ui_scrollbar()
-   at each container site both registers the id (for next frame's pre pass) and draws
-   the bar for the current scroll state. Wheel scrolling is Clay's already. */
+/* The generic vertical scrollbar for Clay clip containers, a draggable floating overlay
+   pinned to the right edge, drawn in two phases (spec/explorer.md). */
 
 #define UI_SB_W    10.0f    /* bar width, css px */
 #define UI_SB_MIN  28.0f    /* minimum thumb length, css px */
 #define UI_SB_MAX  32       /* max distinct scroll containers tracked per frame */
 
-static int      g_mouse_held = 0;              /* left button currently down; main sets it each frame */
-static uint32_t g_sb_ids[UI_SB_MAX]; static int g_sb_n = 0;   /* ids drawn this frame (rolls to "last frame") */
+static int      g_mouse_held = 0;   /* the left button currently down, main sets it each frame */
+static uint32_t g_sb_ids[UI_SB_MAX]; static int g_sb_n = 0;   /* ids drawn this frame */
 static uint32_t g_sb_drag = 0;                 /* id of the bar being dragged (0 = none) */
-static float    g_sb_grab = 0.0f;              /* pointer offset within the thumb at grab, physical px */
+static float    g_sb_grab = 0.0f;   /* pointer offset within the thumb at grab, physical px */
 
 /* thumb/track geometry derived from a container's scroll data (physical px) */
 typedef struct { int scrollable; float view_h, range, track_h, thumb_h, inset; } UiSbGeom;
@@ -324,9 +289,8 @@ static void ui_sb_set_from_thumb(const Clay_ScrollContainerData *sd, const UiSbG
     sd->scrollPosition->y = -(t * g->range);
 }
 
-/* interaction pass: run once at the top of the frame, before any content. Drives drag
-   and track paging for whichever bar the pointer is on, using last frame's geometry,
-   and consumes the press so rows behind the bar don't also react. */
+/* the interaction pass at the top of the frame: drive drag and paging for the bar under
+   the pointer using last frame's geometry, consuming the press before any row sees it */
 static void ui_scrollbars_pre(void){
     int i, n = g_sb_n;
     uint32_t ids[UI_SB_MAX];
@@ -350,7 +314,7 @@ static void ui_scrollbars_pre(void){
             else              g_sb_drag = 0;
             continue;
         }
-        /* a fresh press inside the bar column starts a drag (on the thumb) or pages (on the track) */
+        /* a fresh press inside the bar column drags on the thumb or pages on the track */
         if (g_pointer_pressed &&
             g_pointer_x >= bar_x && g_pointer_x <= bar_x + UISC(UI_SB_W) &&
             g_pointer_y >= top   && g_pointer_y <= top + g.view_h){
@@ -362,27 +326,24 @@ static void ui_scrollbars_pre(void){
             if (g_pointer_y >= thumb_sy && g_pointer_y <= thumb_sy + g.thumb_h){
                 g_sb_grab = g_pointer_y - thumb_sy;          /* grabbed the thumb where it sits */
             } else {
-                g_sb_grab = g.thumb_h * 0.5f;                /* clicked the track: center thumb on cursor */
+                g_sb_grab = g.thumb_h * 0.5f;   /* the track: center the thumb on the cursor */
                 ui_sb_set_from_thumb(&sd, &g, g_pointer_y - top - g.inset - g_sb_grab);
             }
             g_sb_drag = id.id;
-            g_pointer_pressed = false;                        /* consume: rows under the bar must not fire */
+            g_pointer_pressed = false;   /* consume: rows under the bar must not fire */
         }
     }
 }
 
-/* draw the bar for one scroll container and register it for next frame's pre pass.
-   Call immediately after the container's CLAY{} block closes, with the same id.
-   A no-op bar (just the registration) when the content fits. `z` is the floating
-   z-index: the default (ui_scrollbar) sits above page content; a bar inside a
-   floating overlay (a menu) passes a higher z so it draws over the panel. */
+/* draw the bar for one scroll container and register it for next frame's pre pass. Call
+   right after the container's block closes with the same id. z lifts a bar in an overlay. */
 static void ui_scrollbar_z(const Palette *P, Clay_ElementId id, int16_t z){
     Clay_ScrollContainerData sd = Clay_GetScrollContainerData(id);
     Clay_ElementData ed;
     UiSbGeom g;
     float pos, thumb_y;
     int hot;
-    if (g_sb_n < UI_SB_MAX) g_sb_ids[g_sb_n++] = id.id;   /* register (even when it fits, so drags end cleanly) */
+    if (g_sb_n < UI_SB_MAX) g_sb_ids[g_sb_n++] = id.id;   /* even when it fits, so drags end */
     if (!sd.found) return;
     g = ui_sb_geom(&sd);
     if (!g.scrollable) return;
@@ -391,7 +352,7 @@ static void ui_scrollbar_z(const Palette *P, Clay_ElementId id, int16_t z){
     if (pos > g.range) pos = g.range;
     thumb_y = g.inset + (g.track_h - g.thumb_h) * (g.range > 0.0f ? pos / g.range : 0.0f);
 
-    ed = Clay_GetElementData(id);                          /* hover: pointer within the bar column */
+    ed = Clay_GetElementData(id);   /* hover: pointer within the bar column */
     hot = g_sb_drag == id.id ||
           (ed.found &&
            g_pointer_x >= ed.boundingBox.x + ed.boundingBox.width - UISC(UI_SB_W) &&
@@ -399,7 +360,7 @@ static void ui_scrollbar_z(const Palette *P, Clay_ElementId id, int16_t z){
            g_pointer_y >= ed.boundingBox.y &&
            g_pointer_y <= ed.boundingBox.y + g.view_h);
 
-    /* floating track pinned to the container's right edge; the thumb sits at thumb_y */
+    /* the floating track pinned to the container's right edge, the thumb at thumb_y */
     CLAY({ .floating = { .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID, .parentId = id.id,
                          .attachPoints = { .element = CLAY_ATTACH_POINT_RIGHT_TOP,
                                            .parent  = CLAY_ATTACH_POINT_RIGHT_TOP },
@@ -418,7 +379,7 @@ static void ui_scrollbar_z(const Palette *P, Clay_ElementId id, int16_t z){
 /* the common bar: above page content, below floating overlays */
 static void ui_scrollbar(const Palette *P, Clay_ElementId id){ ui_scrollbar_z(P, id, 600); }
 
-/* faint centered text filling the remaining space; marks an empty region */
+/* faint centered text filling the remaining space, marking an empty region */
 static void ui_placeholder(const Palette *P, Clay_String txt){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) },
                        .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } }) {

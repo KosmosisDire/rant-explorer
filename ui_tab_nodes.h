@@ -1,11 +1,5 @@
-/* Nodes tab: a node list on the left (grouped by machine = advertised IP) and a
-   scrolling detail pane. Both render from the live Dataset (fed by net_capture via
-   ui_data). The detail pane groups a peer's info by where it comes from: DISCOVERY
-   (what the discovery protocol carries: locator, observer metrics) and ANNOUNCE
-   METADATA (the transport overlay our node decoded: fragment size + pub/sub interest).
-   A peer's own runtime internals (CPU, memory, msg counts, uptime, its AckNack
-   counters, the peer table it holds) never ride the wire, so they are not shown at
-   all rather than as a placeholder. Requires ui_widgets.h, ui_model.h, ui_app.h. */
+/* The Nodes tab: a node list grouped by machine on the left and a detail pane grouping a
+   peer's facts by origin. Runtime internals show only from the meta poll. */
 #ifndef UI_TAB_NODES_H
 #define UI_TAB_NODES_H
 
@@ -27,7 +21,7 @@ static Clay_String nf_age(double s){          /* "0.4s ago" / "12s ago" / "3m ag
     if (s < 3600) return ui_fmt("%dm ago", (int)s / 60);
     return ui_fmt("%dh ago", (int)s / 3600);
 }
-static Clay_String nf_grp(long v){            /* thousands-separated int; <0 -> dash */
+static Clay_String nf_grp(long v){            /* a thousands separated int, below 0 = a dash */
     char tmp[24], out[32]; int len, i, j;
     if (v < 0) return ui_str(ND_DASH);
     len = snprintf(tmp, sizeof tmp, "%ld", v);
@@ -38,7 +32,7 @@ static Clay_String nf_grp(long v){            /* thousands-separated int; <0 -> 
     out[j] = '\0';
     return ui_fmt("%s", out);
 }
-static Clay_String nf_bytes(long b){          /* "1408 B" / "182 KB"; <0 -> dash */
+static Clay_String nf_bytes(long b){          /* "1408 B" or "182 KB", below 0 = a dash */
     if (b < 0) return ui_str(ND_DASH);
     if (b < 1024)            return ui_fmt("%ld B", b);
     if (b < 1024L * 1024)    return ui_fmt("%.0f KB", b / 1024.0);
@@ -50,7 +44,7 @@ static Clay_String nf_bytesu(uint64_t b){     /* the u64 twin (RSS can pass LONG
     if (b < 1024u * 1024u * 1024u)  return ui_fmt("%.1f MB", (double)b / (1024.0 * 1024.0));
     return ui_fmt("%.2f GB", (double)b / (1024.0 * 1024.0 * 1024.0));
 }
-static Clay_String nf_rtt(uint32_t us, uint32_t samples){   /* "1.24 ms"; no samples -> dash */
+static Clay_String nf_rtt(uint32_t us, uint32_t samples){   /* "1.24 ms", no samples = a dash */
     if (!samples) return ui_str(ND_DASH);
     return us >= 100000u ? ui_fmt("%.0f ms", us / 1e3) : ui_fmt("%.2f ms", us / 1e3);
 }
@@ -181,9 +175,8 @@ static const CapMetaTopic *node_meta_find(const CapMetaStats *ms, const char *pa
     return NULL;
 }
 
-/* one Publishes/Subscribes entry: reliability dot + topic path + qos word, with the
-   node's own @dart/meta counters folded in when a snapshot is fresh (tx on a publish
-   row, rx on a subscribe row; consumer-queue drops in red). tr is NULL with no snapshot. */
+/* one Publishes or Subscribes entry: reliability dot, topic path and qos word, with the
+   node's own meta counters folded in when a snapshot is fresh. tr is NULL with none. */
 static void node_endpoint_row(const Palette *P, Clay_String path, int reliable,
                               const CapMetaTopic *tr, int is_pub){
     CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_FIXED(UISC(28)) },
@@ -228,11 +221,8 @@ static void node_endpoint_list(const Palette *P, const Dataset *D,
     }
 }
 
-/* the RUNTIME / PROCESS sections of the detail pane, fed by the 1 Hz @dart/meta poll.
-   Everything here is the NODE'S OWN report (its allocator, its counters, its process),
-   unlike the wire-derived sections above. The poll's per-topic counters are folded into
-   the PUBLISHES / SUBSCRIBES lists instead of shown here. ms is the shared snapshot;
-   watching = a poll is aimed here, fresh = it answered for this node. */
+/* the RUNTIME and PROCESS sections of the detail pane, fed by the 1 Hz meta poll: the
+   node's own report. watching = a poll is aimed here, fresh = it answered for this node. */
 static void nodes_runtime_sections(const Palette *P,
                                    const CapMetaStats *ms, int watching, int fresh){
     ui_section_label(P, CLAY_STRING("RUNTIME  (@dart/meta)"));
@@ -310,9 +300,8 @@ static void nodes_runtime_sections(const Palette *P,
 static void nodes_detail(AppState *app, const Palette *P){
     const Dataset *D = app->data;
 
-    /* NB: never `return` out of a CLAY{} block -- the macro is a for-loop that
-       closes the element in its increment clause, so an early return unbalances
-       Clay's element stack and crashes EndLayout. Use if/else instead. */
+    /* never return out of a CLAY block: the macro is a for loop closing the element in
+       its increment clause, so an early return crashes EndLayout. Use if and else. */
     CLAY({ .id = CLAY_ID("nodes_detail"),
            .layout = { .sizing = { .width = CLAY_SIZING_GROW(0), .height = CLAY_SIZING_GROW(0) } },
            .backgroundColor = P->bg }) {
@@ -321,9 +310,8 @@ static void nodes_detail(AppState *app, const Palette *P){
       } else {
         const Node *nd = &D->nodes[app->sel_node];
 
-        /* the node's own @dart/meta snapshot, fetched once and shared by the RUNTIME /
-           PROCESS sections and the per-topic counters folded into PUBLISHES / SUBSCRIBES.
-           Read only during this layout pass (never handed to Clay as a pointer). */
+        /* the node's own meta snapshot, fetched once and shared by the sections and the folded
+           per topic counters. Read only during this layout pass, never handed to Clay. */
         CapMetaStats ms;
         int watching = app->cap ? cap_meta_stats(app->cap, &ms) : 0;
         int fresh    = watching && ms.valid && strcmp(ms.node, nd->name) == 0;
@@ -334,10 +322,8 @@ static void nodes_detail(AppState *app, const Palette *P){
                            .childGap = UISCI(14) },
                .clip = { .vertical = true, .childOffset = ui_scroll_offset(CLAY_ID("nodes_detail_scroll")) } }) {
 
-            /* header: name + state word (the state dot lives in the node list; the
-               state word is color-coded, so it carries the state on its own). The
-               small caps are box-centered high against the big title, so nudge them
-               down with a top padding to sit at the title's optical center. */
+            /* the header: name plus a color coded state word. The small caps sit high against the
+               big title, so a top padding nudges them to its optical center. */
             CLAY({ .layout = { .childGap = UISCI(10), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER } } }) {
                 CLAY_TEXT(ui_str(nd->name), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_BOLD, FS_HERO),
                                                                .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
@@ -381,8 +367,8 @@ static void nodes_detail(AppState *app, const Palette *P){
                                                                               : CLAY_STRING("none yet"));
             }
 
-            /* ===== RUNTIME: the node's own internals, served by its @dart/meta endpoint
-               (a directed call once per second; see net_capture's cap_meta_poll) ===== */
+            /* RUNTIME: the node's own internals served by its @dart/meta endpoint, a directed
+               call once per second from cap_meta_poll */
             nodes_runtime_sections(P, &ms, watching, fresh);
 
             ui_section_label(P, ui_fmt("PUBLISHES  %d", nd->n_pubs));
@@ -432,9 +418,8 @@ static void nodes_log_row(AppState *app, const Palette *P, const CapNodeLogLine 
     }
 }
 
-/* right-hand sidebar: the SELECTED node's @dart/log stream (the explorer subscribes to
-   all three shared levels at start; each node's recent history replays on join), newest
-   first, filtered by the per-level pills in the header. */
+/* the right sidebar: the selected node's @dart/log stream, newest first, filtered by the
+   per level pills in the header. */
 #define ND_LOG_SHOW 96   /* lines rendered (the capture ring holds more) */
 static void nodes_log_sidebar(AppState *app, const Palette *P){
     const Dataset *D = app->data;

@@ -1,32 +1,5 @@
-/* Vendored Clay -> SDL3 renderer with grayscale-AA text.
-
-   Replaces Clay's stock renderers/SDL3/clay_renderer_SDL3.c. We only ever used
-   its rounded-rect + arc fills, so those are ported below (MIT, (c) Clay
-   authors); the rest of that file (measure function, SDL_image/SDL_main pulls)
-   is dropped. ui_render() runs the command loop itself; text goes through
-   TTF_RenderText_Blended, whose alpha-channel output blends over whatever is
-   already in the target, so no background reconstruction is needed.
-
-   Text is neither rasterized nor re-uploaded per frame. Doing so was the
-   renderer's dominant cost and, over a long session, FATAL:
-   SDL_CreateTextureFromSurface burns about three SDL_PropertiesID values per call
-   (the texture's own, SDL_GetTextureProperties, SDL_GetSurfaceProperties) off one
-   global 32-bit counter that is never recycled. At this app's text volume the
-   counter saturates in roughly a day, and SDL_CreateProperties then spins
-   FOREVER: its allocation loop computes 0xFFFFFFFF + 1 == 0, hits its
-   `if (props == 0) continue;` guard, and can never reach the compare-and-swap
-   that would advance it (still present in SDL main as of 3.2.16). The window
-   freezes with a core pegged and nothing can free it.
-
-   Two mechanisms below, because one is not enough. The CACHE keys textures by
-   (font, color, string) and covers text that repeats. The POOL covers text that
-   does not: a subscribed message feed mints a unique string per message, which
-   misses the cache forever, so misses must not create textures either. They
-   borrow a size-classed texture and overwrite it with SDL_UpdateTexture, which
-   allocates no properties at all. Together, a steadily scrolling feed consumes
-   ZERO property IDs once the pool warms.
-
-   Requires clay.h, SDL3, SDL3_ttf. */
+/* The Clay to SDL3 renderer with grayscale AA text, ported from Clay's stock renderer. Text
+   is cached and pooled, never created per frame (spec/explorer.md says why it is fatal). */
 #ifndef UI_RENDER_H
 #define UI_RENDER_H
 
@@ -43,18 +16,13 @@ typedef struct {
 
 #define UI_CIRCLE_SEGMENTS 16
 
-/* ---- geometry scratch pool ----
-   Every rounded rect and every border arc used to malloc/free a vertex and an
-   index array, so a frame paid hundreds of allocation pairs for buffers with the
-   same handful of shapes. One growable scratch serves them all instead: ui_render
-   runs only on the main thread, and neither filler holds its buffers across a call
-   or nests inside the other, so a single shared pair is safe. Capacity ratchets to
-   the frame's worst shape and stays there. */
+/* The geometry scratch pool: one growable pair serves every rounded rect and border arc,
+   since ui_render runs on one thread and neither filler nests. Capacity ratchets up. */
 static SDL_Vertex *g_geo_vtx;
 static int        *g_geo_idx;
 static int         g_geo_vtx_cap, g_geo_idx_cap;
 
-/* grow the scratch to hold nv vertices and ni indices. 0 = out of memory (caller skips the shape). */
+/* grow the scratch to hold nv vertices and ni indices. 0 = out of memory, the caller skips. */
 static int ui_geo_reserve(int nv, int ni){
     if (nv > g_geo_vtx_cap){
         SDL_Vertex *p = (SDL_Vertex *)realloc(g_geo_vtx, (size_t)nv * sizeof *p);
@@ -69,29 +37,12 @@ static int ui_geo_reserve(int nv, int ni){
     return 1;
 }
 
-/* ---- text texture pool ----
-   The cache below handles text that REPEATS. It cannot help text that is unique
-   every time it appears: a subscribed message feed mints a brand new string per
-   message, so those miss forever, and a miss that creates a texture is exactly
-   what burns property IDs. So misses do not create textures. They borrow one from
-   this pool, sized by class the way the SHM path sizes its chunks, and overwrite
-   its pixels with SDL_UpdateTexture -- which, unlike SDL_CreateTextureFromSurface,
-   allocates no properties at all. Evicted entries return their texture here rather
-   than destroying it. Steady-state property consumption is then ZERO no matter how
-   fast the feed scrolls: the pool stops growing once it covers the working set.
-
-   A texture is drawn through a source rect of the text's true size, so the slack
-   in its class never shows, and NEAREST + 1:1 scaling means no filtering samples
-   into it either. A string past the widest or tallest class bypasses the pool and
-   is created and destroyed directly, the old behaviour: that covers unusually long
-   lines, and hero text at extreme DPI x zoom. Those are the only remaining source
-   of per-miss texture creation, and the cache still spares them per-frame. */
+/* The text texture pool for text that never repeats: a miss borrows a size classed texture
+   and overwrites it with SDL_UpdateTexture, which allocates no properties (spec/explorer.md). */
 #define UI_POOL_WCLASS  9    /* 32 << i: 32 .. 8192 px */
 #define UI_POOL_HCLASS  7    /* 16 * (i+1): 16 .. 112 px */
-/* The free list must absorb a whole sweep's worth of releases, or the pool starves:
-   the sweep frees in bursts while misses acquire continuously, so a list too short
-   throws away the burst and the next second of misses creates textures again. Size
-   it to (message rate x idle window), not to the visible row count. */
+/* The free list must absorb a whole sweep's releases or the pool starves, so it is sized to
+   message rate times idle window, not the visible row count. */
 #define UI_POOL_KEEP    1024
 #define UI_POOL_BYTES   (8u * 1024u * 1024u)   /* VRAM a single class may sit on while idle */
 #define UI_TEXT_FMT     SDL_PIXELFORMAT_ARGB8888   /* what TTF_RenderText_Blended produces */
@@ -155,14 +106,8 @@ static void ui_pool_free_all(void){
     }
 }
 
-/* ---- text texture cache ----
-   Keyed by (font id, rgb, string bytes), which is everything that determines the
-   raster. Open addressing with linear probing and no tombstones: entries are only
-   ever removed by the sweep, which rebuilds the table wholesale, so a probe run
-   still terminates at the first empty slot. Entries carry their key inline up to
-   UI_TEXT_INLINE bytes and spill to the heap past it, so the common short label
-   costs no allocation. The sweep drops anything untouched for UI_TEXT_IDLE_FRAMES,
-   which is what returns pooled textures as text scrolls out of view. */
+/* The text texture cache keyed by font id, rgb and string bytes: open addressing with no
+   tombstones, since the sweep rebuilds the table wholesale. Short keys live inline. */
 #define UI_TEXT_SLOTS        8192u   /* power of two: the probe mask depends on it */
 #define UI_TEXT_MAX_LIVE     5461    /* two thirds load, so probe runs stay short */
 #define UI_TEXT_IDLE_FRAMES  90u     /* ~1.5 s at 60 fps before an unused entry is dropped */
@@ -213,9 +158,8 @@ static void ui_text_place(const UiTextEntry *e){
     g_text[i] = *e;
 }
 
-/* destroy every cached texture. Call before the renderer dies, and whenever the
-   glyph raster changes underneath the keys (a DPI reload reopens every font at a
-   new pixel size, so every cached texture is the wrong size). */
+/* destroy every cached texture. Call before the renderer dies and whenever the glyph
+   raster changes underneath the keys, such as a DPI reload. */
 static void ui_text_cache_clear(void){
     Uint32 i;
     for (i = 0; i < UI_TEXT_SLOTS; i++) if (g_text[i].tex) ui_text_drop(&g_text[i]);
@@ -246,9 +190,8 @@ static void ui_text_cache_sweep(Uint32 idle){
     free(keep);
 }
 
-/* Draw one string at (x, y), reusing its texture when we already have it.
-   Falls back to an uncached create/draw/destroy if the table is genuinely full of
-   strings all used this same frame, so a pathological frame still renders. */
+/* Draw one string at (x, y), reusing its texture when one exists. Falls back to an
+   uncached create and destroy when the table is full of strings used this frame. */
 static void ui_draw_text(SDL_Renderer *ren, TTF_Font *font, Uint16 font_id,
                          const char *s, int len, SDL_Color fg, float x, float y){
     Uint32 hash = ui_text_hash(font_id, fg, s, len);
@@ -375,19 +318,19 @@ static void ui_fill_rounded_rect(SDL_Renderer *ren, const SDL_FRect rect, const 
         }
     }
 
-    vertices[vertexCount++] = (SDL_Vertex){ {rect.x + clampedRadius, rect.y}, color, {0, 0} };          /* top edge */
+    vertices[vertexCount++] = (SDL_Vertex){ {rect.x + clampedRadius, rect.y}, color, {0, 0} };
     vertices[vertexCount++] = (SDL_Vertex){ {rect.x + rect.w - clampedRadius, rect.y}, color, {1, 0} };
     indices[indexCount++] = 0; indices[indexCount++] = vertexCount - 2; indices[indexCount++] = vertexCount - 1;
     indices[indexCount++] = 1; indices[indexCount++] = 0; indices[indexCount++] = vertexCount - 1;
-    vertices[vertexCount++] = (SDL_Vertex){ {rect.x + rect.w, rect.y + clampedRadius}, color, {1, 0} };   /* right edge */
+    vertices[vertexCount++] = (SDL_Vertex){ {rect.x + rect.w, rect.y + clampedRadius}, color, {1, 0} };
     vertices[vertexCount++] = (SDL_Vertex){ {rect.x + rect.w, rect.y + rect.h - clampedRadius}, color, {1, 1} };
     indices[indexCount++] = 1; indices[indexCount++] = vertexCount - 2; indices[indexCount++] = vertexCount - 1;
     indices[indexCount++] = 2; indices[indexCount++] = 1; indices[indexCount++] = vertexCount - 1;
-    vertices[vertexCount++] = (SDL_Vertex){ {rect.x + rect.w - clampedRadius, rect.y + rect.h}, color, {1, 1} }; /* bottom edge */
+    vertices[vertexCount++] = (SDL_Vertex){ {rect.x + rect.w - clampedRadius, rect.y + rect.h}, color, {1, 1} };
     vertices[vertexCount++] = (SDL_Vertex){ {rect.x + clampedRadius, rect.y + rect.h}, color, {0, 1} };
     indices[indexCount++] = 2; indices[indexCount++] = vertexCount - 2; indices[indexCount++] = vertexCount - 1;
     indices[indexCount++] = 3; indices[indexCount++] = 2; indices[indexCount++] = vertexCount - 1;
-    vertices[vertexCount++] = (SDL_Vertex){ {rect.x, rect.y + rect.h - clampedRadius}, color, {0, 1} };   /* left edge */
+    vertices[vertexCount++] = (SDL_Vertex){ {rect.x, rect.y + rect.h - clampedRadius}, color, {0, 1} };
     vertices[vertexCount++] = (SDL_Vertex){ {rect.x, rect.y + clampedRadius}, color, {0, 0} };
     indices[indexCount++] = 3; indices[indexCount++] = vertexCount - 2; indices[indexCount++] = vertexCount - 1;
     indices[indexCount++] = 0; indices[indexCount++] = 3; indices[indexCount++] = vertexCount - 1;
@@ -395,12 +338,8 @@ static void ui_fill_rounded_rect(SDL_Renderer *ren, const SDL_FRect rect, const 
     SDL_RenderGeometry(ren, NULL, vertices, vertexCount, indices, indexCount);
 }
 
-/* a filled annular sector (one rounded-border corner) via SDL_RenderGeometry.
-   It uses the SAME center, outer radius and angular sampling as
-   ui_fill_rounded_rect's corner fans, so the border's outer edge is vertex-for-
-   vertex coincident with the fill edge: no seam, no offset, no AA fringe. The
-   ring spans rOuter (the corner radius) inward to rInner (radius - border width;
-   0 = a solid pie when the border is thicker than the radius). */
+/* a filled annular sector, one rounded border corner, with the same center, radius and
+   sampling as ui_fill_rounded_rect's fans so the edges coincide with no seam. */
 static void ui_fill_arc(SDL_Renderer *ren, const SDL_FPoint center, const float rOuter, const float rInner,
                         const float startAngle, const float endAngle, const Clay_Color _color){
     const SDL_FColor color = { _color.r/255, _color.g/255, _color.b/255, _color.a/255 };
@@ -412,7 +351,7 @@ static void ui_fill_arc(SDL_Renderer *ren, const SDL_FPoint center, const float 
     const float step = (radEnd - radStart) / (float)segs;
     const int   vtxCount = (segs + 1) * 2;
     const int   idxCount = segs * 6;
-    /* pooled, not a VLA (MSVC); counts grow with the corner radius. */
+    /* pooled, not a VLA for MSVC. The counts grow with the corner radius */
     SDL_Vertex *vertices;
     int        *indices;
     int vc = 0, ic = 0;
@@ -474,8 +413,8 @@ static void ui_render(UiRenderer *rd, Clay_RenderCommandArray *cmds){
                 if (c->width.right > 0){  SDL_FRect l = { rect.x + rect.w - (float)c->width.right, rect.y + tr, (float)c->width.right, rect.h - tr - br }; SDL_RenderFillRect(ren, &l); }
                 if (c->width.top > 0){    SDL_FRect l = { rect.x + tl, rect.y, rect.w - tl - tr, (float)c->width.top }; SDL_RenderFillRect(ren, &l); }
                 if (c->width.bottom > 0){ SDL_FRect l = { rect.x + bl, rect.y + rect.h - (float)c->width.bottom, rect.w - bl - br, (float)c->width.bottom }; SDL_RenderFillRect(ren, &l); }
-                /* centers match ui_fill_rounded_rect's corner centers exactly (no fudge offset);
-                   inner radius = corner radius - the adjoining border width. */
+                /* the centers match ui_fill_rounded_rect's corner centers exactly.
+                   inner radius = corner radius minus the adjoining border width */
                 if (tl > 0) ui_fill_arc(ren, (SDL_FPoint){ rect.x + tl, rect.y + tl }, tl, SDL_max(tl - (float)c->width.top, 0.0f), 180.0f, 270.0f, c->color);
                 if (tr > 0) ui_fill_arc(ren, (SDL_FPoint){ rect.x + rect.w - tr, rect.y + tr }, tr, SDL_max(tr - (float)c->width.top, 0.0f), 270.0f, 360.0f, c->color);
                 if (bl > 0) ui_fill_arc(ren, (SDL_FPoint){ rect.x + bl, rect.y + rect.h - bl }, bl, SDL_max(bl - (float)c->width.bottom, 0.0f), 90.0f, 180.0f, c->color);

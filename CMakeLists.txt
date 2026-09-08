@@ -1,6 +1,5 @@
-# DART Explorer (Windows + Linux): Clay layout + SDL3. CMake fetches SDL3/SDL3_ttf +
-# the Clay header (pinned tags); DART comes from ../dist. Builds standalone
-# (cmake -S explore -B explore/build) or from the root (-DDART_BUILD_EXPLORER=ON).
+# The explorer: Clay layout plus SDL3, with SDL3, SDL3_ttf and clay.h fetched at pinned
+# tags and DART from ../dist. Standalone or from the root (spec/explorer.md).
 
 cmake_minimum_required(VERSION 3.19)
 project(dart_explorer C)
@@ -12,15 +11,15 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Before FetchContent, so SDL3 and vendored freetype build against the same runtime.
 include("${CMAKE_CURRENT_SOURCE_DIR}/../tools/static_runtime.cmake")
 
-# Standalone: own the output dir and define a minimal `dart` -> ../dist. Under the
-# root build the `dart` target already exists (with dist include + regeneration).
+# Standalone: own the output dir and define a minimal dart target over ../dist. Under the
+# root build the dart target already exists.
 if(NOT TARGET dart)
   if(CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_CONFIGURATION_TYPES "Release;Debug;RelWithDebInfo;MinSizeRel"
         CACHE STRING "Build configs (Release first = the default)" FORCE)
   endif()
   get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
-  # land binaries in bin/, same as the root build; every config shares it (see docs/building.md)
+  # land binaries in bin/ like the root build, every config shares it (docs/building.md)
   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${REPO_ROOT}/bin")
   foreach(_cfg ${CMAKE_CONFIGURATION_TYPES})
     string(TOUPPER "${_cfg}" _CFG)
@@ -51,10 +50,8 @@ endfunction()
 set(CLAY_RAW "https://raw.githubusercontent.com/nicbarker/clay/v0.14")
 fetch("${CLAY_RAW}/clay.h" "${DEPS}/include/clay.h")
 
-# Clay v0.14 hardcodes its scroll-container table to 10 entries with no runtime setter.
-# Every clip container counts (every text box is one), so a topic form with a handful of
-# fields plus the tab's own scroll panels overflows the table and spams "out of bounds"
-# errors every frame. Bump the cap. Idempotent: a no-op once the file is already patched.
+# Clay v0.14 hard codes its scroll container table to 10 entries and every clip container
+# counts, so a form overflows it (spec/explorer.md). Bump the cap, idempotent.
 file(READ "${DEPS}/include/clay.h" _clay_src)
 string(REPLACE
   "context->scrollContainerDatas = Clay__ScrollContainerDataInternalArray_Allocate_Arena(10, arena)"
@@ -65,10 +62,8 @@ if(NOT _clay_patched STREQUAL _clay_src)
   message(STATUS "patched clay.h: scroll-container capacity 10 -> 256")
 endif()
 
-# Clay_UpdateScrollContainers dereferences clipConfig without a NULL check when the
-# pointer-over scroll container has no clip config, which happens for a stale record of a
-# TRANSIENT clip that vanished this frame (a dropdown menu's scroll area, a text box) whose
-# layoutElement slot got reused. Guard it (a non-clip element simply cannot scroll).
+# Clay_UpdateScrollContainers dereferences a null clipConfig for a transient clip that
+# vanished this frame. Guard it, since a non clip element cannot scroll.
 file(READ "${DEPS}/include/clay.h" _clay_src)
 string(REPLACE
   "bool canScrollVertically = clipConfig->vertical"
@@ -102,8 +97,8 @@ FetchContent_Declare(SDL3
   URL https://github.com/libsdl-org/SDL/releases/download/release-3.2.16/SDL3-3.2.16.tar.gz)
 FetchContent_MakeAvailable(SDL3)
 
-# SDL_ttf vendors FreeType from its git submodule (tarball omits it); HarfBuzz/PlutoSVG
-# off keeps it lean, so only external/freetype is pulled.
+# SDL_ttf vendors FreeType from its git submodule, which the tarball omits. HarfBuzz and
+# PlutoSVG off keep it lean, so only external/freetype is pulled.
 set(SDLTTF_VENDORED ON  CACHE BOOL "" FORCE)
 set(SDLTTF_HARFBUZZ OFF CACHE BOOL "" FORCE)
 set(SDLTTF_PLUTOSVG OFF CACHE BOOL "" FORCE)
@@ -126,11 +121,8 @@ else()
   target_link_libraries(dart_explorer PRIVATE m)
 endif()
 
-# demo_scene: a sample-mesh node (plain DART, no SDL) that run_demo.ps1 launches to
-# populate the explorer. Built here so `cmake --build` keeps it in lockstep with dist/:
-# a stale copy speaks an older announce-blob wire and can't exchange metadata with a
-# freshly built explorer (DART keeps no wire back-compat), which looks like "nodes found
-# but never finish joining".
+# demo_scene: the sample mesh node run_demo.ps1 launches. Built here so it stays in
+# lockstep with dist/, since a stale copy speaks an old announce wire and never joins.
 add_executable(demo_scene demo_scene.c)
 target_include_directories(demo_scene PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(demo_scene PRIVATE dart)

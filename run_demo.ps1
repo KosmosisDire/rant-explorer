@@ -37,10 +37,8 @@ if ($Stop) {
     return
 }
 
-# Rebuild if forced, missing, OR stale: a demo_scene built against an older dist/ speaks
-# the old announce-blob wire and can't exchange metadata with a current explorer (DART
-# keeps no wire back-compat) -- it shows up as "nodes found but never finish joining".
-# (cmake also builds demo_scene now; this gcc path keeps the demo self-contained.)
+# Rebuild if forced, missing or stale: a demo_scene built against an older dist/ speaks the
+# old announce wire and shows as nodes found but never joining. This gcc path is self contained.
 $dist  = Join-Path $repo "dist\dart.h"
 $stale = $false
 if (Test-Path $exe) {

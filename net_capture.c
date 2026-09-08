@@ -1,12 +1,5 @@
-/* Live DART observer, built on a real NODE (not bare discovery). The node owns the
-   discovery->transport wiring and decodes every peer's announce-metadata overlay, so
-   this TU reads peers back through the node's peer API (dart_node_peers) and never
-   parses the overlay itself. It runs with no topics of its own (it publishes and
-   subscribes nothing); a generous topic reserve only sizes discovery's incoming
-   overlay buffer so we can hold peers that advertise many topics.
-
-   Compiled as its own TU (see net_capture.h for why) and owns the DART implementation.
-   It echoes peer events to the console and exposes a peer snapshot to the UI. */
+/* The live observer, built on a real node: it reads peers through the node's peer API and
+   runs with no topics of its own. Its own translation unit, owning the implementation. */
 
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0601        /* GetTickCount64 */
@@ -27,20 +20,13 @@
 #include "net_capture.h"
 
 #define CAP_MAX_PEERS         64
-#define CAP_OBSERVER_CHANNELS 64     /* node topic reserve: our OWN subscriptions only (each observed
-                                        topic owns 1-2 DART topics). This is the STARTING reserve, not a
-                                        ceiling: the node grows max_topics automatically when we create
-                                        more (dynamic-mode i_dart_node_grow), so subscribing to thousands
-                                        of topics just relocates the reserve, it never refuses. A peer
-                                        that advertises many topics is handled by the node's meta self-
-                                        heal (it grows the accept bound + RX buffers and re-solicits). */
+#define CAP_OBSERVER_CHANNELS 64   /* the node's starting topic reserve for our own subscriptions,
+                                      not a ceiling since the node grows it (spec/explorer.md) */
 #define CAP_LOG_LINES         400
 /* CAP_LOG_LINE comes from net_capture.h (shared with the snapshot) */
 
-/* Ensure *arr can hold index `need` (0-based): grow it by doubling through realloc, so a
-   per-node/per-snapshot entity list scales to the peer's actual topic count with no fixed
-   ceiling and no steady-state churn (it settles at the high-water mark). Returns 1 if the
-   slot is available, 0 on OOM (the caller then skips that entry rather than overrunning). */
+/* Ensure *arr can hold index need, growing by doubling through realloc so a per node list
+   scales to the peer's topic count with no churn. 1 if the slot is available, 0 on OOM. */
 static int cap_grow(void *arr_ptr, int *cap, int need, size_t elem){
     void **arr = (void **)arr_ptr;
     if (need < *cap) return 1;
@@ -67,10 +53,8 @@ typedef struct {
     uint8_t  incomplete;     /* pattern half-pair */
 } CapTopic;
 
-/* one observer-side peer record, keyed by the node's local peer id. Events drive the
-   observer metrics (first_seen / updates / last_change) and the log; the snapshot
-   refreshes the cached facts from the node. Only ACTIVE peers are tracked: a peer the
-   node reports dropped or gone is freed on the next snapshot and leaves the UI. */
+/* one observer side peer record keyed by the node's local peer id. Events drive the
+   metrics and the log, the snapshot refreshes the facts. Only active peers are tracked. */
 typedef struct {
     int          used;
     uint32_t     local_id;
@@ -81,21 +65,18 @@ typedef struct {
     int      meta_stale;   /* the peer advertises newer state than the node holds yet */
     uint16_t frag;
     uint16_t meta_len;     /* always 0 now: the overlay length is not a reflected fact */
-    uint32_t rtt_us, rtt_jitter_us, rtt_min_us, rtt_samples;   /* our node's measured round trip to it */
+    uint32_t rtt_us, rtt_jitter_us, rtt_min_us, rtt_samples;   /* our measured round trip to it */
     char     name[DART_NODE_NAME_MAX + 1];
     char     ip[48];       /* "a.b.c.d" or "[v6]" */
     uint16_t port;
-    /* advertised entities, grown to the peer's actual topic count (no fixed ceiling). The
-       buffers are high-water heap allocations, preserved across a slot reclaim (see
-       cap_peer_get) and reused, so a run makes no steady-state malloc/free churn. */
+    /* advertised entities grown to the peer's topic count: high water heap buffers
+       preserved across a slot reclaim and reused, so no steady state churn */
     int      n_pub, pub_cap;
     int      n_sub, sub_cap;
     CapTopic *pub;
     CapTopic *sub;
-    uint32_t topics_epoch;   /* DartPeerInfo.epoch the pub/sub lists were last built from: the
-                                node bumps it on ANY reflected change (interest apply,
-                                external-interest assembly, names paging in), so it is the one
-                                cache key -- no event handling, no version watching */
+    uint32_t topics_epoch;   /* the DartPeerInfo.epoch the lists were last built from, the one
+                                cache key since the node bumps it on any reflected change */
 
     /* observer-derived */
     unsigned           updates;
@@ -107,58 +88,35 @@ static CapPeer cap_peers[CAP_MAX_PEERS];
 static char    cap_log[CAP_LOG_LINES][CAP_LOG_LINE];
 static int     cap_log_head, cap_log_count;
 static unsigned long long cap_start_ms;
-/* Clock origins for the feed's per-message stamps, taken at cap_start from the NODE's own
-   clocks, never from one the explorer reads itself: the monotonic one turns DartMsg.recv_us
-   into seconds since the observer started (what recency measures), and the two together map
-   an arrival onto our wall clock for a message carrying no write stamp. A stamped message
-   needs neither, its DartMsg.written_us being a wall clock already. See cap_stamp. */
+/* Clock origins for the feed's stamps, taken at cap_start from the node's own clocks: the
+   monotonic one turns recv_us into seconds since start, both map an arrival onto our wall. */
 static uint64_t cap_base_mono_us, cap_base_wall_us;
 static Config  cap_cfg;          /* echoed into the snapshot for display */
 
-/* THREADING. The node's SERVICE THREAD (dart_node_start) owns discovery/RX/timers, so
-   the poll cadence is independent of the UI frame rate. Message content never runs
-   there: every explorer topic is QUEUED (consumer queues), and cap_poll drains the
-   queues on the UI thread each frame (dart_node_dispatch -> cap_on_message), so the
-   feed rings and their metrics stay UI-thread-owned with no locking. Only cap_on_event
-   still fires on the service thread (peer/log/error bookkeeping); it always runs WITH
-   the node lock held, so the shared bits (the log ring, cap_peers, the cap_subs
-   topic bookkeeping) are serialized by bracketing the UI side's access with
-   dart_node_lock/dart_node_unlock (cap_node below is that handle). The bracket is not
-   nestable (an inner unlock releases the outer hold), so bracketed code never calls
-   another bracketing helper and never logs. */
+/* Threading: the service thread owns discovery, receive and timers, every explorer topic
+   is queued and drains on the UI thread, only cap_on_event fires on it (spec/explorer.md). */
 static DartNode *cap_node;
 
 static void *cap_schema_alloc(void *user, void *ptr, size_t size);          /* defined below */
 static DartSchema *cap_topic_schema_parse(DartNode *node, const char *topic);/* defined below */
-static DartSchema *cap_entity_schema_copy(DartNode *node, const char *topic, int which); /* defined below */
+static DartSchema *cap_entity_schema_copy(DartNode *node, const char *topic, int which);
 static void cap_schema_poll(DartNode *node);                                 /* defined below */
 
-/* set by cap_on_event whenever the topology (and so a topic's advertised schema) may have
-   changed; cap_schema_poll then re-checks every adopted schema on the next UI frame */
+/* set by cap_on_event whenever the topology may have changed, so cap_schema_poll
+   re checks every adopted schema on the next UI frame */
 static int cap_schema_dirty;
-static unsigned long long cap_schema_next_ms;   /* slow periodic fallback: the mesh's
-       provider ranking flips on a peer's growing SILENCE, which no event marks, so a
-       dirty flag alone would sit on a stale pick until peer_timeout */
+static unsigned long long cap_schema_next_ms;   /* a fallback: the ranking flips on silence,
+                                                   which no event marks */
 
-/* one observer-side topic the explorer is using: a ring of recent messages plus the DART
-   topic(s) wiring it up. A topic's reliability is FIXED at creation, but our wanted
-   reliability can change as publishers come and go, so a topic owns up to TWO topics
-   (ch[0] best-effort, ch[1] reliable), created on demand, with exactly one live at a time.
-   That live topic's ROLE is the union of what we want: SUB_ONLY (receive), PUB_ONLY
-   (send), or PUBSUB (both) -- one topic does both directions, since two live topics of
-   the same identity would misroute. cap_sub_reconcile keeps it in sync. The message/event
-   callbacks find the topic by either topic's local index. */
-#define CAP_MAX_SUBS 16000           /* distinct topics the explorer may show data for at once (each
-                                        owns 1-2 DART topics). Matches the ~13k announce topic ceiling
-                                        so the user can watch a whole large network with no artificial
-                                        cap. CapSub is ~300 B (the feed ring is a lazily-allocated
-                                        pointer, NOT embedded), so the fixed table is ~4.8 MB; an idle
-                                        or never-used slot costs nothing beyond that. */
+/* one observer side topic the explorer is using: a ring of recent messages plus the DART
+   topics wiring it up, ch[0] best effort and ch[1] reliable, one live (spec/explorer.md). */
+#define CAP_MAX_SUBS 16000   /* distinct topics the explorer may show data for at once,
+                                the announce ceiling (spec/explorer.md) */
 
 typedef struct {
-    uint64_t wall_us;                     /* WRITE time: the writer's wall clock, us since the epoch */
+    uint64_t wall_us;   /* WRITE time: the writer's wall clock, us since the epoch */
     double   recv_s;                      /* arrival time (monotonic), s since we started */
-    int      stamped;                     /* 1 = wall_us is the writer's stamp; 0 = it opted out, ours */
+    int      stamped;   /* 1 = wall_us is the writer's stamp, 0 = it opted out and this is ours */
     uint32_t uid;                         /* per-topic message id (UI expand/collapse key) */
     uint32_t len;
     uint16_t preview_len;
@@ -170,7 +128,7 @@ typedef struct {
     int      n_fields, total_fields;
     char     type_name[DART_TOPIC_NAME_MAX + 1];   /* sender's schema root name when decoded */
     char     sender[DART_NODE_NAME_MAX + 1];
-    char     preview[CAP_MSG_PREVIEW];    /* decoded: one-line summary; raw: payload head */
+    char     preview[CAP_MSG_PREVIEW];    /* decoded: a one line summary. raw: the payload head */
     CapMsgField fields[CAP_MSG_FIELDS];   /* per-field rendered decode (all depths) */
 } CapMsgRec;
 
@@ -178,42 +136,34 @@ typedef struct {
     int          used;
     int          subscribed;             /* user wants to receive (drives the topic light) */
     int          publishing;             /* user has sent here, so the topic stays PUB-capable */
-    int          error;                  /* a QoS-incompatible / oversize event hit the live topic */
+    int          error;   /* a QoS incompatible or oversize event hit the live topic */
     int          reliable;               /* reliability of the currently live topic (0/1) */
     uint8_t      kind;                   /* CAP_KIND_* entity kind, resolved from the peer view at
                                             first use (0 = plain topic). Locked in once channels exist. */
-    uint64_t     generation;             /* the entity's mesh generation the channels were adopted at */
+    uint64_t     generation;   /* the entity's mesh generation the channels were adopted at */
     char         name[DART_TOPIC_NAME_MAX + 1];
-    DartTopic *ch[2];                  /* [0] best-effort, [1] reliable; NULL until first needed.
-                                          For a VARIABLE ch[1] is the value channel (subscribe side);
-                                          a FUNCTION has none. */
+    DartTopic *ch[2];   /* [0] best effort, [1] reliable, NULL until first needed. For a
+                           variable ch[1] is the value channel, a function has none */
     DartTopic   *set_ch;                 /* VARIABLE: our name@set publisher (kind VAR_SET) */
-    /* one deadline-bounded pending send, parked when a send races the forming match (the
-       core's blocking match wait is disabled here: the UI thread must never stall). Newest
-       send overwrites it; cap_poll flushes it the moment matching resolves (or on expiry
-       drops it with a log line, never silently). Covers the sends retention cannot: a
-       variable set/force/unforce op, a best-effort publish. */
-    uint8_t     *pend_data;              /* malloc'd payload (may be empty); pend_used gates */
+    /* one deadline bounded pending send, parked when a send races the forming match since
+       the blocking match wait is disabled here. Newest overwrites, cap_poll flushes or drops. */
+    uint8_t     *pend_data;              /* malloc'd payload, may be empty. pend_used gates */
     uint32_t     pend_len;
     uint8_t      pend_op;                /* VARIABLE: the set-channel op byte */
     uint8_t      pend_used;
     unsigned long long pend_expire_ms;
-    DartFunction *fn;                    /* FUNCTION/TASK: our caller handle (subscribe = watch own calls) */
-    DartSchema  *req_schema;             /* FUNCTION/TASK: parsed request schema (ours; form + echo decode) */
-    DartSchema  *rsp_schema;             /* FUNCTION/TASK: parsed response schema (ours; reply decode) */
+    DartFunction *fn;   /* FUNCTION and TASK: our caller handle, subscribe = watch own calls */
+    DartSchema  *req_schema;   /* FUNCTION and TASK: our parsed request schema for the form */
+    DartSchema  *rsp_schema;   /* FUNCTION and TASK: our parsed response schema for replies */
     int          forced;                 /* VARIABLE: the newest value carried the FORCED flag */
     uint32_t     write_seq;              /* VARIABLE: the newest value's write counter */
-    /* VARIABLE: the newest value re-spelled in publish-form syntax, so the UI can open the
-       form on what the variable holds (cap_variable_form_values). Lazily allocated on the
-       first value, like the ring; a field the form cannot express stays "". */
+    /* VARIABLE: the newest value re spelled in publish form syntax so the form can open on
+       it. Lazily allocated on the first value, a field the form cannot express stays "". */
     CapFormValue *form_vals;
     int           n_form_vals;           /* entries filled (0 = no decodable value yet) */
-    /* TASK: entirely RAW wire, no pattern handle (the per-peer demux binds an identity to
-       ONE local topic, so a remote handle's channels and raw twins cannot coexist; the
-       taskx selftest pins the raw recipe). prg_ch taps the broadcast progress, req_raw
-       carries calls + cancel ops, rsp_ch receives our directed responses. The call state
-       below is UI-thread-owned (queued intake) and bracketed for the snapshot reads. */
-    DartTopic   *prg_ch;                 /* TASK: raw @prg tap (best-effort: never stalls the task) */
+    /* TASK: entirely raw wire, no pattern handle (spec/explorer.md). prg_ch taps the
+       progress, req_raw carries calls and cancel ops, rsp_ch receives our directed responses. */
+    DartTopic   *prg_ch;   /* TASK: the raw @prg tap, best effort so it never stalls the task */
     DartTopic   *req_raw;                /* TASK: raw @req publisher (calls + cancel ops) */
     DartTopic   *rsp_ch;                 /* TASK: raw @rsp subscriber (RUNNING + terminals) */
     uint16_t     prg_index, rsp_index;   /* their local indices (intake demux keys) */
@@ -231,20 +181,19 @@ typedef struct {
     unsigned long long n_msgs;
     unsigned long long n_drops;
     uint32_t     uid_next;               /* next message uid (expand/collapse key) */
-    CapMsgRec   *ring;                   /* CAP_FEED_MAX records, allocated LAZILY on the first
-                                            message (cap_ring_push): an idle/never-used slot costs
-                                            nothing, so 512 slots don't reserve ~275 MB up front */
+    CapMsgRec   *ring;   /* CAP_FEED_MAX records, allocated on the first message so an
+                            idle slot costs nothing */
     int          head, count;            /* ring write cursor + fill */
     double       rate_hz;                /* publish rate (msgs/s), refreshed ~1 Hz (below) */
     double       rate_prev_hr;           /* high-res time of the last rate-window boundary */
     unsigned long long rate_prev_msgs;   /* n_msgs at that boundary (rate = dmsgs / dt) */
-    double       jitter_last_hr;         /* high-res time of the previous received message; <= 0 = none yet */
-    double       jitter_mean_ms;         /* EWMA of the inter-arrival interval (ms): the topic's "expected" spacing */
-    double       jitter_p90_ms;          /* online p90 estimate of the deviation from jitter_mean_ms (ms) */
-    int          jitter_n;               /* inter-arrival samples folded in (gates the estimate until warm) */
+    double       jitter_last_hr;   /* high res time of the previous message, 0 or below = none */
+    double       jitter_mean_ms;   /* EWMA of the inter arrival ms, the expected spacing */
+    double       jitter_p90_ms;   /* online p90 of the deviation from jitter_mean_ms, in ms */
+    int          jitter_n;   /* samples folded in, gates the estimate until warm */
     CapMiniPreview mini;                 /* newest value, compact (the topic list's VALUE column) */
     uint64_t     mini_hash;              /* schema hash the recognition below was formed under */
-    uint8_t      mini_std;               /* DartStdType of that schema's root (recognized once per schema) */
+    uint8_t      mini_std;   /* the DartStdType of that schema's root, recognized once */
 } CapSub;
 
 static CapSub cap_subs[CAP_MAX_SUBS];
@@ -254,16 +203,14 @@ static CapSub cap_subs[CAP_MAX_SUBS];
 #define CAP_RSP_PREFIX 5           /* @rsp: [u32 call_id][u8 status], then [u8 len][msg] */
 #define CAP_PRG_PREFIX 8           /* @prg: [u32 caller_lo][u32 call_id] */
 #define CAP_TASK_OP_CALL   0u      /* @req op: a call (payload = the request) */
-#define CAP_TASK_OP_CANCEL 1u      /* @req op: cancel (empty payload = the sender's own call;
-                                      a [u32 caller_lo] payload names another caller's) */
+#define CAP_TASK_OP_CANCEL 1u   /* the @req cancel op: an empty payload is the sender's own call, a
+                                   [u32 caller_lo] payload names another caller's */
 #define CAP_CALL_TIMEOUT_MS 5000ull /* until-first-response bound (DART_CALL_TIMEOUT_US) */
 
 static uint32_t cap_self_lo;       /* our own uuid low-32 (the @prg header's caller key) */
 
-/* observed live runs across every tapped task topic, keyed (topic, provider, caller_lo,
-   call_id). Written by the tap intake (UI thread bar the create-to-queue window, so writes
-   and the UI reads bracket with the node lock like the other shared tables); aged out by
-   cap_task_poll ~30s after the last update. */
+/* observed live runs across every tapped task topic, keyed by topic, provider, caller_lo
+   and call_id. Written by the tap intake under the node lock, aged out by cap_task_poll. */
 #define CAP_RUN_TTL_MS 30000ull
 typedef struct {
     int      used;
@@ -307,10 +254,8 @@ static CapSub *cap_sub_by_index(uint16_t index){
     return NULL;
 }
 
-/* ---- reflected decode: the explorer subscribes without a schema of its own, so a
-   delivered message's DartMsg.schema is the SENDER's. Each message becomes per-field
-   rows rendered exactly as the writer declared them; no content guessing (a u8 array
-   is an array of numbers, not assumed text). */
+/* Reflected decode: the explorer subscribes without a schema of its own, so a message's
+   DartMsg.schema is the sender's and each becomes per field rows as the writer declared. */
 static int cap_val_append(char *dst, int cap, int at, const char *fmt, ...){
     va_list ap; int n;
     if (at >= cap - 1) return cap - 1;
@@ -320,9 +265,8 @@ static int cap_val_append(char *dst, int cap, int at, const char *fmt, ...){
     if (n < 0 || at + n >= cap) return cap - 1;   /* clamped (still NUL-terminated) */
     return at + n;
 }
-/* an array value: elements decoded by their kind. Appends at most `max_items` of them
-   (0 = as many as the buffer holds), then " .." if any were left out. Floats print
-   %g normally, or fixed-width (see cap_fmt_float) when `fixed_float`. */
+/* an array value, elements decoded by their kind. Appends at most max_items of them, 0 =
+   as many as fit, then " .." if any were left out. fixed_float picks fixed width floats. */
 static void cap_fmt_arr(char *dst, int cap, int *at, DartBytes a, uint8_t elem, uint16_t count,
                         uint16_t str_cap, uint16_t max_items, int fixed_float){
     uint32_t esz = (elem == DART_STR) ? 2u + str_cap
@@ -362,7 +306,7 @@ static uint16_t cap_varr_count(const DartSchemaFieldInfo *fi, const DartValue *v
     return esz ? (uint16_t)(v->bytes.len / esz) : 0;
 }
 
-/* a map body, "{k=v k2="s" nested={..} ..}"; values by their own tags, depth-capped */
+/* a map body, "{k=v k2="s" nested={..} ..}", values by their own tags, depth capped */
 static void cap_fmt_dyn_value(char *dst, int cap, int *at, const DartValue *v,
                               int depth, uint16_t max_items);
 static void cap_fmt_map_body(char *dst, int cap, int *at, DartBytes body,
@@ -415,17 +359,16 @@ static void cap_fmt_dyn_value(char *dst, int cap, int *at, const DartValue *v,
     }
 }
 
-/* one field's value text, from its reflected DartValue. s + field resolve an ENUM's stored
-   number to its option NAME (so the feed/inspector shows the name, not the raw integer);
-   an unknown/out-of-table number falls back to the number itself. */
+/* one field's value text from its reflected DartValue. s and field resolve an enum's
+   number to its option name, and an unknown number falls back to the number. */
 static void cap_fmt_value(char *dst, int cap, const DartSchema *s, uint16_t field,
                           const DartSchemaFieldInfo *fi, const DartValue *v){
     int at = 0;
     switch ((DartSchemaTypeKind)fi->kind){
         case DART_ENUM: {
-            DartString nm = dart_enum_name_of(s, field, v->v.i);   /* the option name for this value */
+            DartString nm = dart_enum_name_of(s, field, v->v.i);   /* the option name */
             if (nm.len) snprintf(dst, (size_t)cap, "%.*s", (int)nm.len, nm.data);
-            else        snprintf(dst, (size_t)cap, "%lld", (long long)v->v.i);   /* unknown value: the number */
+            else        snprintf(dst, (size_t)cap, "%lld", (long long)v->v.i);
             break;
         }
         case DART_BOOL: snprintf(dst, (size_t)cap, "%s", v->v.u ? "true" : "false"); break;
@@ -470,10 +413,8 @@ static uint16_t cap_field_skip(const DartSchema *s, uint16_t nf, uint16_t idx){
     return idx;
 }
 
-/* the preview's value for one field: scalars as cap_fmt_value, arrays up to
-   CAP_PREVIEW_MAX_ITEMS elements, structs expanded member-by-member (up to
-   CAP_PREVIEW_MAX_ITEMS shown, " .." past that) recursively up to CAP_PREVIEW_MAX_DEPTH
-   levels of nesting; deeper structs fold to "{...}" */
+/* the preview's value for one field: scalars as cap_fmt_value, arrays and structs
+   expanded up to CAP_PREVIEW_MAX_ITEMS and CAP_PREVIEW_MAX_DEPTH, deeper folds to "{...}" */
 static void cap_fmt_value_preview(char *dst, int cap, int *at, const DartSchema *s, DartBytes data,
                                   uint16_t nf, uint16_t field_index, const DartSchemaFieldInfo *fi,
                                   const DartValue *v){
@@ -539,23 +480,19 @@ static void cap_schema_type_name(char *dst, size_t cap, const DartSchema *sch){
     else if (cap) dst[0] = '\0';
 }
 
-/* ---- value -> publish-form text: the exact inverse of cap_form_set, so a variable's
-   current value can seed the form that writes the next one. Display text will not do: the
-   feed quotes strings and brackets arrays, and it clamps silently, all of which would
-   compose a WRONG message on Send. Everything here either round-trips or renders nothing. */
+/* Value to publish form text, the exact inverse of cap_form_set, so a variable's value can
+   seed the form that writes the next one. Everything here round trips or renders nothing. */
 
-/* a float in the shortest form that parses back to the same value: %.7g / %.15g reads
-   naturally and covers almost everything, and the wider fallback always round-trips, so
-   sending a prefilled form never quietly rewrites the value it started from */
+/* a float in the shortest form that parses back to the same value: %.7g or %.15g reads
+   naturally and the wider fallback always round trips */
 static void cap_form_fmt_float(char *dst, size_t cap, double v, int is32){
     snprintf(dst, cap, is32 ? "%.7g" : "%.15g", v);
     if (is32 ? (float)strtod(dst, NULL) != (float)v : strtod(dst, NULL) != v)
         snprintf(dst, cap, is32 ? "%.9g" : "%.17g", v);
 }
 
-/* an array's elements as the form spells them: comma-separated, no brackets, no quotes.
-   0 = the value has no form text (an unsupported element, or a string element holding the
-   separator itself, which the form has no way to express). */
+/* an array's elements as the form spells them: comma separated, no brackets, no quotes.
+   0 = no form text, an unsupported element or a string holding the separator. */
 static int cap_form_fmt_elems(char *dst, int cap, DartBytes a, uint8_t elem,
                               uint16_t count, uint16_t str_cap){
     uint32_t esz = (elem == DART_STR) ? 2u + str_cap
@@ -589,12 +526,11 @@ static int cap_form_fmt_elems(char *dst, int cap, DartBytes a, uint8_t elem,
             default: return 0;
         }
     }
-    return at < cap - 1;                     /* cap_val_append clamps at cap-1: that is a truncation */
+    return at < cap - 1;   /* cap_val_append clamps at cap-1: that is a truncation */
 }
 
-/* One field's value in form syntax; 0 = it has none (a struct or map row, which the form
-   shows read-only) or the text does not FIT `cap`, where empty is the honest answer: an
-   empty form field keeps the schema default, a truncated one would send junk. */
+/* One field's value in form syntax. 0 = it has none (a struct or map row) or the text does
+   not fit cap, where empty is honest: an empty field keeps the default, a cut one sends junk. */
 static int cap_form_fmt_field(char *dst, size_t cap, const DartSchema *s, uint16_t field,
                               const DartSchemaFieldInfo *fi, const DartValue *v){
     char buf[512];                           /* rendered full width, then taken only if it fits */
@@ -608,7 +544,7 @@ static int cap_form_fmt_field(char *dst, size_t cap, const DartSchema *s, uint16
             snprintf(buf, sizeof buf, "%lld", (long long)v->v.i); break;
         case DART_F32: case DART_F64:
             cap_form_fmt_float(buf, sizeof buf, v->v.f, fi->kind == DART_F32); break;
-        case DART_ENUM: {                    /* the option NAME the dropdown lists, else the number */
+        case DART_ENUM: {   /* the option NAME the dropdown lists, else the number */
             DartString nm = dart_enum_name_of(s, field, v->v.i);
             if (nm.len) snprintf(buf, sizeof buf, "%.*s", (int)nm.len, nm.data);
             else        snprintf(buf, sizeof buf, "%lld", (long long)v->v.i);
@@ -635,8 +571,8 @@ static int cap_form_fmt_field(char *dst, size_t cap, const DartSchema *s, uint16
     return 1;
 }
 
-/* reflect a message into per-field rows (every depth) + a one-line summary (top-level
-   fields only; arrays/structs are expanded inline via cap_fmt_value_preview) */
+/* reflect a message into per field rows at every depth plus a one line summary of the top
+   level fields with arrays and structs expanded inline */
 static void cap_decode_fields(CapMsgRec *m, DartBytes data, const DartSchema *s){
     uint16_t i, nf = dart_schema_field_count(s);
     int at = 0;
@@ -662,20 +598,8 @@ static void cap_decode_fields(CapMsgRec *m, DartBytes data, const DartSchema *s)
     m->preview_len = (uint16_t)strlen(m->preview);
 }
 
-/* Stamp a feed entry from the message's OWN times. wall_us is what the feed shows: the WRITE
-   time, the publisher's wall clock (UTC us) at the moment it wrote the message into its
-   writer history (DartMsg.written_us, taken at the commit point, not when a datagram goes out).
-   So a repaired, replayed or queued message reads as when it was WRITTEN, never as when this
-   frame got around to it, and a variable set an hour ago still reads as that write when it
-   replays to a late joiner. Two things follow from it being the writer's clock, and the feed
-   shows it as a plain time of day so both are visible rather than hidden in an offset: a
-   replayed message legitimately reads OLDER than this observer, and a message from another
-   host is only as good as that host's clock sync, so a skewed publisher's stream reads shifted.
-   recv_s is arrival on the node's monotonic clock: it can never run backwards whatever a
-   publisher's clock says, so recency measures from it, not from wall_us. written_us == 0 means
-   the publisher opted out (qos.no_timestamp) or the entry was synthesized locally (a failed
-   call); wall_us then holds our own arrival, mapped onto our wall clock through the two
-   origins, and stamped = 0 so the UI says "arrived" rather than passing it off as a write. */
+/* Stamp a feed entry from the message's own times: wall_us is the writer's written_us,
+   recv_s the arrival on the monotonic clock (spec/explorer.md). No stamp = our arrival. */
 static void cap_stamp(CapMsgRec *m, uint64_t recv_us, uint64_t written_us){
     double dt  = (double)((int64_t)recv_us - (int64_t)cap_base_mono_us) / 1e6;
     m->recv_s  = dt > 0.0 ? dt : 0.0;
@@ -683,8 +607,8 @@ static void cap_stamp(CapMsgRec *m, uint64_t recv_us, uint64_t written_us){
     m->wall_us = m->stamped ? written_us : cap_base_wall_us + (uint64_t)(m->recv_s * 1e6);
 }
 
-/* fill one message record (a ring slot, or the task layer's latest-progress copy). With a
-   schema the message is reflected into field rows; raw bytes else. */
+/* fill one message record, a ring slot or the task layer's latest progress copy. With a
+   schema the message is reflected into field rows, raw bytes else. */
 static void cap_rec_fill(CapMsgRec *m, DartString sender, const void *data, size_t len, int mine,
                          const DartSchema *schema, uint64_t recv_us, uint64_t written_us){
     cap_stamp(m, recv_us, written_us);
@@ -706,13 +630,8 @@ static void cap_rec_fill(CapMsgRec *m, DartString sender, const void *data, size
     snprintf(m->sender, sizeof m->sender, "%.*s", (int)sender.len, sender.data ? sender.data : "");
 }
 
-/* ---- mini value preview: the topic list's VALUE column ------------------------------
-   The newest value rendered compactly at intake (UI thread, the same funnel as the
-   ring). A standard-type root (dart_std_recognize, cached per schema hash) gets a
-   type-aware one-liner aimed at ~16 chars; a Color also ships its bytes (the swatch)
-   and a Matrix its cells (the heat grid). Otherwise only a bare-type root (a single
-   value) or a raw payload's printable head shows; a plain struct stays blank, since
-   its full text serialization never fits the column. */
+/* The mini value preview for the topic list's VALUE column, rendered at intake on the UI
+   thread. spec/explorer.md says what each root kind shows. */
 
 #ifdef _MSC_VER
 #pragma warning(push)
@@ -727,7 +646,7 @@ typedef char cap_std_mirror_check[      /* CAP_STD_* must mirror DartStdType by 
 #pragma warning(pop)
 #endif
 
-/* copy the fixed head of the payload into a std-type mirror; 0 = payload too short */
+/* copy the fixed head of the payload into a std type mirror, 0 = the payload is too short */
 static int cap_mini_take(DartBytes d, size_t need, void *out){
     if (!d.data || d.len < need) return 0;
     memcpy(out, d.data, need);
@@ -739,9 +658,8 @@ static void cap_mini_vec(char *dst, const double *v, int n){
     for (i = 0; i < n; i++) at = cap_val_append(dst, CAP_MINI_TEXT, at, i ? ", %.4g" : "%.4g", v[i]);
 }
 
-/* a quaternion's rotation as 2*atan2(|xyz|, w), folded to [-180, 180] and signed by the
-   dominant axis component (so -z by 45 reads as z by -45); scale-invariant, so a non-unit
-   quaternion still reads right */
+/* a quaternion's rotation as 2 atan2(|xyz|, w) folded to [-180, 180] and signed by the
+   dominant axis, so -z by 45 reads as z by -45. Scale invariant. */
 static double cap_quat_angle_deg(double x, double y, double z, double w, char *axis){
     double l = sqrt(x * x + y * y + z * z);
     double deg, ax = fabs(x), ay = fabs(y), az = fabs(z), sgn = x;
@@ -791,9 +709,8 @@ static void cap_mini_size(char *dst, int *at, uint64_t n){
                                                          (double)n / (1024.0 * 1024.0));
 }
 
-/* the media types read through reflection (their tails are variable): field indices are
-   exact because recognition verified the canonical shape. Enum values print as the
-   schema's own option names (dart_enum_name_of), so no local name table can drift. */
+/* the media types read through reflection, since their tails are variable. Field indices
+   are exact because recognition verified the shape. Enum values print their option names. */
 static void cap_mini_media(CapMiniPreview *o, int std, DartBytes d, const DartSchema *s){
     DartValue v;
     int at = 0;
@@ -829,7 +746,7 @@ static void cap_mini_media(CapMiniPreview *o, int std, DartBytes d, const DartSc
             cap_mini_size(o->text, &at, v.bytes.len);
         }
         if (key) cap_val_append(o->text, CAP_MINI_TEXT, at, " key");
-    } else {                                       /* EXTERNAL_VIDEO_STREAM: kind codec w h url name */
+    } else {   /* EXTERNAL_VIDEO_STREAM: kind codec w h url name */
         DartString kn = dart_string(0, 0), label = dart_string(0, 0);
         if (dart_get_value(d, s, 0, &v)) kn = dart_enum_name_of(s, 0, v.v.i);
         if (dart_get_value(d, s, 5, &v) && v.bytes.len)
@@ -957,9 +874,8 @@ static void cap_mini_update(CapSub *s, DartBytes d, const DartSchema *schema, co
             o->text[j] = '\0';
             if (!j) snprintf(o->text, sizeof o->text, "%u B", m->len);
         } else {
-            /* a bare-type root (one anonymous non-struct field) is a single value and reads
-               well; a struct's full text serialization never fits the column, so it stays
-               BLANK (the feed and inspector are the place for it) */
+            /* a bare type root is a single value and reads well. A struct's full text never fits
+               the column, so it stays blank for the feed and inspector */
             DartSchemaFieldInfo fi;
             if (dart_schema_field_count(schema) == 1 && dart_schema_field_at(schema, 0, &fi)
                 && fi.name.len == 0 && fi.kind != DART_STRUCT){
@@ -973,13 +889,12 @@ static void cap_mini_update(CapSub *s, DartBytes d, const DartSchema *schema, co
     o->have = 1;
 }
 
-/* Re-spell a VARIABLE's newest value as publish-form text, so selecting it can open the
-   form on the value it holds. Only variables carry this: a stream's newest sample is
-   history, not a starting point for the next message. UI-thread only, like the ring. */
+/* Re spell a variable's newest value as publish form text, so selecting it opens the form
+   on the value it holds. Only variables carry this. UI thread only, like the ring. */
 static void cap_form_vals_update(CapSub *s, DartBytes data, const DartSchema *sch){
     uint16_t i, nf;
     if (!sch) return;
-    if (!s->form_vals){                  /* lazy, like the ring: an untouched variable costs nothing */
+    if (!s->form_vals){   /* lazy, like the ring: an untouched variable costs nothing */
         s->form_vals = (CapFormValue *)calloc(CAP_SCHEMA_FIELDS, sizeof *s->form_vals);
         if (!s->form_vals) return;
     }
@@ -1029,9 +944,8 @@ static unsigned long long cap_now_ms(void){
 #endif
 }
 
-/* high-resolution monotonic seconds. GetTickCount64 quantizes to ~15.6 ms, which is too
-   coarse for a rate window (it snaps a 250 Hz reading to a couple of discrete values); the
-   performance counter is sub-microsecond, so a message-count / elapsed-time rate is exact. */
+/* high resolution monotonic seconds: GetTickCount64 quantizes to about 15.6 ms, too coarse
+   for a rate window, and the performance counter is sub microsecond */
 static double cap_now_hr(void){
 #ifdef _WIN32
     LARGE_INTEGER c, f;
@@ -1045,15 +959,8 @@ static double cap_now_hr(void){
 #endif
 }
 
-/* Track a topic's receive-time jitter across its WHOLE lifetime, not just the visible feed
-   ring (which overwrites after CAP_FEED_MAX messages). jitter_mean_ms is an EWMA of the
-   inter-arrival interval: the topic's "expected" spacing, adapting as its rate changes. Each
-   new interval's deviation from that mean is one jitter sample, folded into jitter_p90_ms via
-   an online quantile tracker (stochastic approximation on the pinball loss: nudge the estimate
-   up by step*0.90 when a sample meets or exceeds it, down by step*0.10 when it doesn't; this
-   converges to the true 90th percentile without keeping any sample history at all). The step
-   scales with jitter_mean_ms so it adapts to the topic's own timescale (a slow topic's jitter
-   is naturally larger in absolute ms than a fast one's). */
+/* Track a topic's receive jitter across its whole lifetime: an EWMA of the interval and
+   an online p90 estimator on the pinball loss (spec/explorer.md). */
 static void cap_jitter_update(CapSub *s, double t_hr){
     if (s->jitter_last_hr > 0.0){
         double dt_ms = (t_hr - s->jitter_last_hr) * 1000.0;
@@ -1073,8 +980,8 @@ static void cap_jitter_update(CapSub *s, double t_hr){
     s->jitter_last_hr = t_hr;
 }
 
-/* Log-ring append, callable from BOTH threads: UI paths acquire the node lock; the
-   event callback (service thread) already holds it, so the bracket no-ops there. */
+/* Log ring append from both threads: UI paths take the node lock, the event callback
+   already holds it so the bracket no ops there. */
 static void cap_logf(const char *fmt, ...){
     unsigned long long t = cap_now_ms() - cap_start_ms;
     char *line;
@@ -1123,28 +1030,25 @@ static CapPeer *cap_peer_get(uint32_t id){
     return p;
 }
 
-/* ---- node logs: the mesh-wide @dart/log/{error,warn,info} intake ------------------------
-   The explorer widens its OWN built-in log handles to PUBSUB at start (one shared topic
-   per level, so this subscribes to every node's lines at once) and switches them to
-   consumer queues: lines drain on the UI thread with the other feeds, so the ring below
-   is UI-thread-owned and lock-free. */
+/* The node log intake: the explorer widens its own built in log handles to PUBSUB at start
+   and switches them to consumer queues, so the ring below is UI thread owned. */
 static CapNodeLogLine cap_nodelog[CAP_NODELOG_MAX];
 static int      cap_nodelog_head, cap_nodelog_count;
 static uint16_t cap_nodelog_index[3] = { 0xFFFF, 0xFFFF, 0xFFFF };  /* our log topics' indices */
 
-/* @dart/meta watch state (the poll/decode functions live below with the pattern interop;
-   declared here so cap_stop can reset them) */
-static char               cap_meta_node[CAP_NAME_CAP];   /* watched node's name; empty = off */
+/* the @dart/meta watch state, declared here so cap_stop can reset it. The poll and
+   decode live below with the pattern interop */
+static char               cap_meta_node[CAP_NAME_CAP];   /* the watched node's name, empty = off */
 static CapMetaStats       cap_meta;                      /* latest decode (lock-bracketed) */
 static uint32_t           cap_meta_gen;                  /* bumped per watch change */
-static uint32_t           cap_meta_req_gen;              /* generation the in-flight call belongs to */
+static uint32_t           cap_meta_req_gen;   /* the generation the in flight call belongs to */
 static int                cap_meta_inflight;
 static uint32_t           cap_meta_polls;      /* every 5th poll asks for the topics section */
 static unsigned long long cap_meta_last_ms;              /* last request time */
 static unsigned long long cap_meta_recv_ms;              /* when the snapshot arrived (0 = never) */
 static uint64_t           cap_meta_prev_cpu, cap_meta_prev_wall;   /* CPU%% deltas */
 
-/* a delivered @dart/log line -> the node-log ring; 1 = consumed (not a topic feed) */
+/* a delivered @dart/log line into the node log ring. 1 = consumed, not a topic feed */
 static int cap_nodelog_intake(const DartMsg *msg){
     int lvl;
     for (lvl = 0; lvl < 3; lvl++) if (cap_nodelog_index[lvl] == msg->topic_index) break;
@@ -1169,7 +1073,7 @@ int cap_node_log(const Capture *cap, const char *node_name, unsigned level_mask,
     int i, n = 0;
     (void)cap;   /* the ring is UI-thread-owned (queued dispatch fills it on this thread) */
     for (i = 0; i < cap_nodelog_count && n < max; i++){
-        int idx = (cap_nodelog_head - 1 - i + 2 * CAP_NODELOG_MAX) % CAP_NODELOG_MAX;   /* newest first */
+        int idx = (cap_nodelog_head - 1 - i + 2 * CAP_NODELOG_MAX) % CAP_NODELOG_MAX;
         const CapNodeLogLine *L = &cap_nodelog[idx];
         if (!(level_mask & (1u << L->level))) continue;
         if (node_name && strcmp(node_name, L->node) != 0) continue;
@@ -1231,17 +1135,15 @@ static void cap_task_rsp_intake(CapSub *s, const DartMsg *msg){
     s->n_msgs++;
 }
 
-/* one @prg update off the raw tap: our own call's newest progress, or a foreign run's row.
-   Runs on the UI thread (queued dispatch); the shared call state and run table are
-   bracketed with the node lock (no-op if this thread already holds it). Progress never
-   enters the topic feed ring: the ring stays the call log (echoes + terminals). */
+/* one @prg update off the raw tap: our own call's newest progress or a foreign run's row,
+   on the UI thread, bracketed with the node lock. Progress never enters the feed ring. */
 static void cap_task_prg_intake(CapSub *s, const DartMsg *msg){
     uint32_t lo, id;
     if (msg->header.len != CAP_PRG_PREFIX) return;
     lo = i_dart_le_r32(msg->header.data);
     id = i_dart_le_r32(msg->header.data + 4);
     if (cap_node) dart_node_lock(cap_node);
-    if (lo == cap_self_lo){                    /* our own call (the remote's prg twin is shadowed) */
+    if (lo == cap_self_lo){   /* our own call, the remote's prg twin is shadowed */
         if (s->call_id == id && s->call_phase != CAP_TCALL_IDLE){
             if (s->call_phase == CAP_TCALL_SENT) s->call_phase = CAP_TCALL_RUNNING;
             if (!s->prg_last) s->prg_last = (CapMsgRec *)calloc(1, sizeof *s->prg_last);
@@ -1294,9 +1196,8 @@ static void cap_task_prg_intake(CapSub *s, const DartMsg *msg){
     if (cap_node) dart_node_unlock(cap_node);
 }
 
-/* task upkeep, on the UI thread each frame: age out run rows that stopped updating
-   (~30s), and time out an own call still waiting for its FIRST response (5s; RUNNING
-   has no deadline, cancel is the tool for impatience). */
+/* task upkeep on the UI thread each frame: age out run rows that stopped updating and
+   time out an own call still waiting for its first response (spec/explorer.md) */
 static void cap_task_poll(void){
     unsigned long long now = cap_now_ms();
     int i, any = 0;
@@ -1333,8 +1234,7 @@ static void cap_task_poll(void){
 }
 
 /* the node's message sink: append a delivered message to its topic ring. Every explorer
-   topic is queued, so this only ever runs on the UI thread (cap_poll's dispatch) --
-   the rings and their metrics need no locking. We keep only a short payload preview. */
+   topic is queued, so this runs only on the UI thread and the rings need no locking. */
 static void cap_on_message(const DartMsg *msg){
     CapSub *s;
     if (cap_nodelog_intake(msg)) return;      /* a @dart/log line, not a topic feed */
@@ -1344,9 +1244,8 @@ static void cap_on_message(const DartMsg *msg){
     if (s){ cap_task_rsp_intake(s, msg); return; }   /* a task response (RUNNING / terminal) */
     s = cap_sub_by_index(msg->topic_index);
     if (!s) return;
-    /* jitter is INTER-ARRIVAL, so it stays on recv_us (the poll-side arrival stamp, not when
-       this frame got around to dispatching: a frame-paced consumer must never quantize it).
-       The feed's own timestamp is the writer's written_us (its write time) instead: see cap_stamp. */
+    /* jitter is inter arrival, so it stays on recv_us, the poll side arrival stamp, since a
+       frame paced consumer must never quantize it. The feed's own stamp is written_us. */
     cap_jitter_update(s, (double)msg->recv_us / 1e6);
     cap_ring_push(s, msg->publisher_name, msg->data.data, msg->data.len, 0, msg->schema,
                   msg->recv_us, msg->written_us);
@@ -1359,10 +1258,8 @@ static void cap_on_message(const DartMsg *msg){
     s->n_msgs++;
 }
 
-/* the node's app event sink: maintain the observer metrics + log. We never call back into
-   dart_* here (the snapshot reads the facts); the cap_peers table is file-static. Runs on
-   the SERVICE thread (with the node lock held), so everything it touches is read by the
-   UI only under a dart_node_lock bracket (cap_snapshot, cap_topic_feed). */
+/* the node's event sink: maintain the observer metrics and log, never calling back into
+   dart. Runs on the service thread under the node lock, so the UI reads under a bracket. */
 static void cap_on_event(const DartEvent *ev){
     switch (ev->kind){
     case DART_PEER_UP: {
@@ -1393,7 +1290,7 @@ static void cap_on_event(const DartEvent *ev){
         cap_logf("        LOST  ch=%u peer=%u first=%llu count=%llu", ev->topic, ev->peer,
                  (unsigned long long)ev->lost_first, (unsigned long long)ev->lost_count);
         break; }
-    case DART_ERROR: {                               /* every failure funnels here; mark the sub if topic-scoped */
+    case DART_ERROR: {   /* every failure funnels here. Mark the sub if topic scoped */
         char line[160];
         if (ev->error == DART_E_QOS_INCOMPATIBLE || ev->error == DART_E_SCHEMA_MISMATCH ||
             ev->error == DART_E_MSG_TOO_BIG){
@@ -1451,17 +1348,15 @@ int cap_start(Capture *cap, const Config *cfg){
     cap_start_ms = cap_now_ms();
     cap_cfg = *cfg;          /* group/name point into argv: stable for the run */
 
-    /* a real node, owning its memory via a dynamic allocator. It starts with no topics but
-       subscribes to topics on demand (cap_subscribe); CAP_OBSERVER_CHANNELS bounds those and
-       sizes discovery's per-peer overlay buffer, so a peer advertising many topics is held in full. */
+    /* a real node owning its memory via a dynamic allocator. It starts with no topics and
+       subscribes on demand, CAP_OBSERVER_CHANNELS bounds those. */
     mem  = dart_allocator_dynamic(i_dart_plat_realloc, 0);
     node = dart_node_open(&mem, cfg->name, cap_on_message, cap_on_event, &(DartNodeOpts){
         .domain        = cfg->domain,
         .max_topics  = CAP_OBSERVER_CHANNELS,
         .fetch_details = 1,   /* observer: fetch every peer topic's name + schema */
-        .match_wait_ms = -1,  /* never block the UI thread in a send: a send racing the
-                                 forming match parks in the per-topic pending slot instead
-                                 and cap_poll flushes it when dart_topic_ready flips */
+        .match_wait_ms = -1,  /* never block the UI thread in a send: a send racing the forming
+                                 match parks in the pending slot and cap_poll flushes it */
         .net           = { .discovery_group     = cfg->group,
                            .discovery_port      = cfg->port,
                            .multicast_interface = cfg->ifc },
@@ -1472,15 +1367,13 @@ int cap_start(Capture *cap, const Config *cfg){
         return 0;
     }
     cap->rt  = node;
-    cap->mem = NULL;         /* the node owns its memory now; close frees it */
+    cap->mem = NULL;         /* the node owns its memory now, close frees it */
     cap_base_mono_us = i_dart_node_now_us(node);    /* the two feed-stamp origins, from the */
     cap_base_wall_us = i_dart_node_wall_us(node);   /* node's own clocks (see cap_stamp) */
     cap_self_lo = i_dart_le_r32(i_dart_node_uuid(node));   /* our @prg caller key */
     cap_node = node;         /* the log/table serializer handle (see the THREADING note) */
-    {   /* join the mesh-wide @dart/log topics: widen our own built-in handles to PUBSUB
-           (one shared topic per level subscribes to EVERY node's lines, with each node's
-           recent history replaying on join) and switch them to consumer queues so the
-           lines drain on the UI thread with the other feeds. */
+    {   /* join the mesh wide @dart/log topics: widen our own built in handles to PUBSUB and
+           switch them to consumer queues so the lines drain on the UI thread with the feeds */
         int lvl;
         for (lvl = 0; lvl < 3; lvl++){
             DartTopic *lc = dart_node_log_topic(node, (DartLogLevel)lvl);
@@ -1491,19 +1384,16 @@ int cap_start(Capture *cap, const Config *cfg){
             (void)dart_topic_take(lc, &m, 0);   /* first take switches it to queued delivery */
         }
     }
-    /* the service thread owns discovery/RX/timers from here: the poll cadence no longer
-       rides the UI frame rate. DART_ERR_NOSYS (threads compiled out) falls back to the
-       old single-threaded drive inside cap_poll. */
+    /* the service thread owns discovery, receive and timers from here. DART_ERR_NOSYS
+       with threads compiled out falls back to the single threaded drive in cap_poll */
     if (dart_node_start(node) != DART_OK)
         cap_logf("service thread unavailable: polling on the UI thread");
     cap_logf("observer node \"%s\" started on domain %u (%s:%u)", cfg->name, cfg->domain, cfg->group, cfg->port);
     return 1;
 }
 
-/* One UI-frame tick: drain every subscribed topic's consumer queue on THIS thread
-   (dart_node_dispatch runs cap_on_message here), so message handling and the UI never
-   race while the service thread polls at its own cadence. Without a service thread
-   (DART_NO_THREADS) it also drives the loop, exactly the old behavior. */
+/* One UI frame tick: drain every subscribed topic's queue on this thread, so message
+   handling and the UI never race. Without a service thread it also drives the loop. */
 static void cap_drain_replies(DartNode *node);   /* defined with the pattern interop below */
 static void cap_pend_poll(void);                 /* flush/expire parked sends (same block) */
 static void cap_meta_poll(DartNode *node);       /* the 1 Hz @dart/meta poll (below) */
@@ -1515,8 +1405,8 @@ int cap_poll(Capture *cap){
     if (!dart_node_is_started(node))
         dart_node_poll(node, 0);
     n = dart_node_dispatch(node, 0, 0);
-    cap_drain_replies(node);   /* parked function replies -> their feeds (UI thread) */
-    cap_pend_poll();           /* parked sends -> the wire once matching resolves */
+    cap_drain_replies(node);   /* parked function replies into their feeds, UI thread */
+    cap_pend_poll();           /* parked sends to the wire once matching resolves */
     cap_task_poll();           /* age out silent task-run rows */
     cap_schema_poll(node);     /* re-adopt topics whose advertised schema changed */
     cap_meta_poll(node);       /* keep the watched node's runtime stats fresh */
@@ -1526,7 +1416,7 @@ int cap_poll(Capture *cap){
 void cap_stop(Capture *cap){
     int i;
     cap_node = NULL;
-    if (cap->rt) dart_node_close((DartNode *)cap->rt, 1);   /* stops the service thread, sends a BYE, frees */
+    if (cap->rt) dart_node_close((DartNode *)cap->rt, 1);   /* stop, BYE, free */
     cap->rt = NULL; cap->mem = NULL;
     /* release the observer's own heap (lazy feed rings, grown peer entity lists, parked
        sends), so a clean shutdown leaves nothing behind for a leak check */
@@ -1552,8 +1442,8 @@ void cap_stop(Capture *cap){
     cap_meta_node[0] = '\0'; cap_meta_inflight = 0;
     memset(&cap_meta, 0, sizeof cap_meta);
 }
-/* Free a CapSnapshot's grown per-node entity buffers (the caller owns the CapSnapshot
-   struct; net_capture owns the buffers it malloc'd into it). Call once at shutdown. */
+/* Free a CapSnapshot's grown per node entity buffers. The caller owns the struct,
+   net_capture owns the buffers. Call once at shutdown. */
 void cap_snapshot_free(CapSnapshot *snap){
     int i;
     if (!snap) return;
@@ -1563,12 +1453,8 @@ void cap_snapshot_free(CapSnapshot *snap){
     }
 }
 
-/* ---- node runtime stats: the 1 Hz @dart/meta poll ---------------------------------------
-   A directed call at the watched node's peer id, once per second, decoded straight in the
-   response callback (SERVICE thread, node lock held: the same discipline as cap_on_event;
-   the UI copies cap_meta out under a dart_node_lock bracket). A generation counter ties a
-   reply to the watch that requested it, so a late reply for a previous node is dropped.
-   The state itself is declared with the node-log ring above (cap_stop resets it). */
+/* The 1 Hz @dart/meta poll: a directed call at the watched node, decoded in the response
+   callback on the service thread. A generation counter ties a reply to its watch. */
 
 static uint64_t cap_map_u64(DartBytes body, const char *key){
     DartValue v;
@@ -1699,10 +1585,8 @@ static void cap_meta_poll(DartNode *node){
     cap_meta_last_ms = now;
     cap_meta_inflight = 1;
     cap_meta_req_gen = cap_meta_gen;
-    {   /* ask only for what this poll needs: the node/proc/peers sections every time (a few
-           hundred bytes), the per-topic counters every 5th poll. That section is O(topics)
-           to build and ~250 B per topic on the wire, so on a node advertising thousands of
-           topics it was hundreds of KB every second for a panel that shows a few rows. */
+    {   /* ask only for what this poll needs: node, proc and peers every time, the per topic
+           counters every fifth poll, since that section is O(topics) on the wire */
         uint8_t req[4];
         uint32_t mask = DART_META_NODE | DART_META_PROC | DART_META_PEERS;
         if ((cap_meta_polls++ % 5u) == 0) mask |= DART_META_TOPICS;
@@ -1740,17 +1624,13 @@ int cap_meta_stats(const Capture *cap, CapMetaStats *out){
     return 1;
 }
 
-/* ---- pattern-entity interop -----------------------------------------------------------
-   Joining a pattern entity's data plane needs KIND-matched channels (the kind gate refuses
-   a plain topic against a variable channel) and, for functions, a real caller (the
-   replies are DIRECTED to their caller, so an observer can only ever see its own calls).
-   This block is the one place in the explorer that knows the wire constants: the channel
-   kinds and prefixes mirror src/patterns/core.c (DART__VAR_PREFIX / DART__SET_PREFIX). */
+/* Pattern entity interop: joining a pattern's data plane needs kind matched channels and
+   a real caller for functions. The one place that knows the wire constants of patterns/core.c. */
 #define CAP_VAR_PREFIX 5   /* value channel prefix: [u8 flags][u32 write_seq] */
 #define CAP_SET_PREFIX 1   /* set channel prefix:   [u8 op] */
 
-/* the entity kind (CAP_KIND_*) some peer advertises `name` as, from the cached peer view
-   (built each frame by cap_snapshot); writable set for a variable with a set channel */
+/* the entity kind some peer advertises name as, from the cached peer view built each
+   frame by cap_snapshot. writable is set for a variable with a set channel */
 static uint8_t cap_entity_kind(const char *name, int *writable){
     int i, k;
     if (writable) *writable = 0;
@@ -1771,9 +1651,8 @@ static uint8_t cap_entity_kind(const char *name, int *writable){
     return CAP_KIND_TOPIC;
 }
 
-/* the CHANNEL name that carries an entity's schema: a function/task request channel
-   ("name@req"; which 1 = "name@rsp", 2 = a task's "name@prg"), everything else the bare
-   name (a variable's value channel IS the bare name on the wire) */
+/* the channel name that carries an entity's schema: which 0 is the request channel
+   "name@req", 1 "name@rsp", 2 a task's "name@prg", everything else the bare name */
 static void cap_primary_channel_name(char *dst, size_t cap, const char *topic, uint8_t kind,
                                      int which){
     if (kind == CAP_KIND_FUNCTION || kind == CAP_KIND_TASK)
@@ -1782,9 +1661,8 @@ static void cap_primary_channel_name(char *dst, size_t cap, const char *topic, u
         snprintf(dst, cap, "%s", topic);
 }
 
-/* function replies arrive on the SERVICE thread (the caller's delivery callback, node lock
-   held). The feed rings are UI-thread-owned, so replies park here and cap_poll drains them
-   into the ring under the same lock. */
+/* function replies arrive on the service thread with the node lock held, so they park
+   here and cap_poll drains them into the UI thread owned ring under the same lock */
 #define CAP_REPLY_PENDING 8
 #define CAP_REPLY_MAX     2048
 typedef struct {
@@ -1823,10 +1701,8 @@ static void cap_fn_on_reply(const DartResponse *r){
     /* pending full: the reply is dropped from the feed (the call itself completed) */
 }
 
-/* drain parked function replies into their topics' feeds, on the UI thread. The pending
-   slots are written by the service thread WITH the node lock held, so the drain brackets
-   the copy-out with the same lock (and only the copy-out: ring pushes stay unbracketed,
-   UI-thread-owned, per the threading note at the top). */
+/* drain parked function replies into their feeds on the UI thread. The pending slots are
+   written under the node lock, so the copy out brackets with it and the ring push does not. */
 static void cap_drain_replies(DartNode *node){
     CapReplyPending local[CAP_REPLY_PENDING];
     int i, n = 0;
@@ -1840,16 +1716,14 @@ static void cap_drain_replies(DartNode *node){
         char sender[DART_NODE_NAME_MAX + 1] = "provider";
         int k;
         if (!s || !s->used) continue;
-        for (k = 0; k < CAP_MAX_PEERS; k++)   /* provider peer id -> its display name */
+        for (k = 0; k < CAP_MAX_PEERS; k++)   /* provider peer id to its display name */
             if (cap_peers[k].used && cap_peers[k].local_id == pr->provider && cap_peers[k].name[0]){
                 snprintf(sender, sizeof sender, "%s", cap_peers[k].name);
                 break;
             }
         s->n_msgs++;
-        {   /* one shape for every outcome: the payload decodes with our response-schema copy
-               when it arrived whole and validates (a FAILED call's structured payload decodes
-               too, if the app shaped it like the response), and the response message + status
-               ride the record so the UI shows them (failed feed rows + the inspect card) */
+        {   /* one shape for every outcome: the payload decodes with our response schema copy when
+               whole and valid, and the message and status ride the record for the UI */
             const DartSchema *sch = (pr->kept == pr->len) ? s->rsp_schema : NULL;
             int newest;
             if (sch && !dart_schema_validate(sch, dart_bytes(pr->data, pr->kept))) sch = NULL;
@@ -1866,12 +1740,8 @@ static void cap_drain_replies(DartNode *node){
 
 static int cap_sub_reconcile_topic(CapSub *s, DartNode *node, int want);
 
-/* bring the topic's live channels in line with subscribed/publishing. A plain topic takes
-   the original path (cap_sub_reconcile_topic); a pattern entity gets kind-matched channels,
-   always reliable: a VARIABLE subscribes its value channel and publishes over its own
-   name@set channel (never the value: that would claim ownership), and a FUNCTION opens a
-   caller handle (subscribe and publish both mean "be a caller": the feed can only ever
-   show our own calls). */
+/* bring the topic's live channels in line with subscribed and publishing. A plain topic
+   takes cap_sub_reconcile_topic, a pattern entity kind matched reliable channels. */
 static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
     if (!s->kind && !s->ch[0] && !s->ch[1] && !s->fn)
         s->kind = cap_entity_kind(s->name, NULL);   /* resolve once, before any channel exists */
@@ -1886,7 +1756,7 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
                      0 /*attrs: observer never owns*/, NULL, NULL);
             if (sch) dart_schema_free(sch, cap_schema_alloc, NULL);
             if (!ch) return 0;
-            dart_topic_dispatch(ch, 0, 0);            /* queued: deliveries drain on the UI thread */
+            dart_topic_dispatch(ch, 0, 0);   /* queued: deliveries drain on the UI thread */
             dart_node_lock(node);
             s->index[1] = dart_topic_index(ch);
             s->ch[1] = ch;
@@ -1896,13 +1766,10 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
         }
         if (s->publishing && !s->set_ch){
             char sn[DART_TOPIC_NAME_MAX + 8];
-            DartSchema *sch = cap_topic_schema_parse(node, s->name);   /* set payload = value schema */
+            DartSchema *sch = cap_topic_schema_parse(node, s->name);   /* set payload = value */
             snprintf(sn, sizeof sn, "%s@set", s->name);
-            /* NO retention (catch_up 0): a set channel is multi-writer, and replay-on-match
-               preserves only per-writer order, so retained ops from several writers reach a
-               (re)matching owner in arbitrary order and a STALE write can win last-write-wins.
-               An op racing the owner match parks in the topic's pending-send slot instead
-               (flushed by cap_poll the moment matching resolves; see cap_send_routed). */
+            /* no retention, catch_up 0: a set channel is multi writer, so retained ops could
+               let a stale write win (spec/explorer.md). A racing op parks instead. */
             s->set_ch = i_dart_node_create_pattern_topic(node, sn, DART_PUB_ONLY, sch,
                      &(DartTopicOpts){ .qos = { .reliability = DART_RELIABLE } },
                      DART_KIND_VAR_SET, CAP_SET_PREFIX, 0, 0, NULL, NULL);
@@ -1933,12 +1800,8 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
         return 1;
     }
     if (s->kind == CAP_KIND_TASK){
-        /* Subscribe = watch every live run over the raw @prg tap; publish = also be a
-           caller (calling implies watching, like a function's call log). ALL THREE
-           channels are raw: a remote-task handle beside them would be a same-identity
-           twin, and the per-peer demux binds an identity to ONE local topic, so its
-           channels would shadow (or be shadowed by) the raw ones. The taskx selftest
-           pins this recipe (raw tap + raw req; no live pattern handle). */
+        /* subscribe = watch every live run over the raw @prg tap, publish = also be a caller.
+           All three channels are raw, a handle beside them would shadow (spec/explorer.md). */
         DartRole trole;
         char cn[DART_TOPIC_NAME_MAX + 8];
         if (s->publishing) s->subscribed = 1;
@@ -1962,7 +1825,7 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
             dart_topic_set_role(s->prg_ch, trole);
         }
         if (!s->rsp_ch && trole != DART_INACTIVE){
-            /* our directed responses (RUNNING + terminals); reliable like the pattern's */
+            /* our directed responses, RUNNING and terminals, reliable like the pattern's */
             snprintf(cn, sizeof cn, "%s@rsp", s->name);
             s->rsp_ch = i_dart_node_create_pattern_topic(node, cn, DART_SUB_ONLY, NULL,
                      &(DartTopicOpts){ .qos = { .reliability = DART_RELIABLE } },
@@ -1974,9 +1837,8 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
             dart_node_unlock(node);
         }
         if (!s->req_raw && trole != DART_INACTIVE){
-            /* calls + cancel ops out; carries the provider's request schema so its gate
-               matches. Created at subscribe so it is matched by the time a call or a
-               run's cancel button happens. */
+            /* calls and cancel ops out, carrying the provider's request schema so its gate
+               matches. Created at subscribe so it is matched by the time a call happens. */
             DartSchema *req;
             snprintf(cn, sizeof cn, "%s@req", s->name);
             req = cap_entity_schema_copy(node, s->name, 0);
@@ -1995,10 +1857,8 @@ static int cap_sub_reconcile(CapSub *s, DartNode *node, int want){
     return cap_sub_reconcile_topic(s, node, want);
 }
 
-/* the plain-topic path: make the topic for `want` reliability live with the combined role
-   (SUB_ONLY/PUB_ONLY/PUBSUB), creating it once if needed, and turn the other one off.
-   Data is unicast (point-to-point to each subscriber), so a publish reaches every
-   subscriber and a subscribe hears every unicast publisher. Returns 1 on success. */
+/* the plain topic path: make the topic for want reliability live with the combined role,
+   creating it once if needed, and turn the other one off. Returns 1 on success. */
 static int cap_sub_reconcile_topic(CapSub *s, DartNode *node, int want){
     DartRole role = (s->subscribed && s->publishing) ? DART_PUBSUB
                   :  s->subscribed                   ? DART_SUB_ONLY
@@ -2011,21 +1871,16 @@ static int cap_sub_reconcile_topic(CapSub *s, DartNode *node, int want){
         return 1;
     }
     if (!s->ch[want]){
-        /* a typed topic gets a typed topic: adopt the schema its advertisers carry, so
-           our publishes reach typed readers and the schema gate matches us. Trade-off:
-           this topic then matches only that schema (the drawer flags topics whose
-           publishers disagree); a topic with no advertised schema stays generic. */
+        /* a typed topic gets a typed topic: adopt the schema its advertisers carry so our
+           publishes reach typed readers. It then matches only that schema. */
         DartSchema *sch = cap_topic_schema_parse(node, s->name);
         DartTopic *ch = dart_node_create_topic(node, s->name, role, sch,
                  &(DartTopicOpts){ .qos = { .reliability = want ? DART_RELIABLE : DART_BEST_EFFORT,
                                               .catch_up = 1 } });
         if (sch) dart_schema_free(sch, cap_schema_alloc, NULL);   /* the node keeps its own copy */
         if (!ch) return 0;
-        /* switch it to QUEUED delivery now (lazy ring, grows to DART_QUEUE_CAP): its
-           messages then arrive via cap_poll's dispatch on the UI thread, never on the
-           service thread. An observer never stalls a publisher: at the cap a best-effort
-           queue drops oldest, and a parked reliable one only throttles publishers that
-           opted into backpressure_wait_us. */
+        /* switch it to queued delivery now: messages then arrive via cap_poll's dispatch on
+           the UI thread. An observer never stalls a publisher beyond its backpressure opt in. */
         dart_topic_dispatch(ch, 0, 0);
         /* publish the (index, handle) pair under the node lock: the service thread's
            event callback maps events back to topics through it (cap_sub_by_index) */
@@ -2058,7 +1913,7 @@ int cap_unsubscribe(Capture *cap, const char *topic){
     CapSub *s = node ? cap_sub_find(topic) : NULL;
     if (!s) return 0;
     s->subscribed = 0;
-    cap_sub_reconcile(s, node, s->reliable);   /* drops to PUB_ONLY if still publishing, else INACTIVE */
+    cap_sub_reconcile(s, node, s->reliable);   /* PUB_ONLY if still publishing, else INACTIVE */
     cap_logf("UNSUBSCRIBE %s", topic);
     return 1;
 }
@@ -2071,12 +1926,8 @@ int cap_declare_publish(Capture *cap, const char *topic){
     if (!s){ cap_logf("PUBLISH %s refused (topic table full)", topic); return 0; }
     was = s->publishing;
     s->publishing = 1;
-    /* publishers OFFER RELIABLE by default: RxO means a reliable offer satisfies every
-       subscriber (best-effort ones stay out of flow control), and reliability is what arms
-       writer-side retention (catch_up) so a first publish racing the match replays instead
-       of vanishing (best-effort would silently void it, the classic TRANSIENT_LOCAL +
-       BEST_EFFORT footgun). Only an existing SUBSCRIPTION pins the choice: one identity
-       means one live topic, so the sub's reliability stands. */
+    /* publishers offer reliable by default (spec/explorer.md). Only an existing subscription
+       pins the choice, since one identity means one live topic. */
     want = s->subscribed ? s->reliable : 1;
     if (!cap_sub_reconcile(s, node, want)){ s->publishing = was; cap_logf("PUBLISH %s failed (topic)", topic); return 0; }
     if (!was) cap_logf("PUBLISH %s declared (%s pub interest)", topic, want ? "reliable" : "best-effort");
@@ -2088,8 +1939,8 @@ int cap_declare_publish(Capture *cap, const char *topic){
 #define CAP_SET_OP_FORCE   0x01u   /* set-channel ops, mirroring src/patterns/core.c */
 #define CAP_SET_OP_UNFORCE 0x02u
 
-/* the live channel that carries this topic's outgoing sends (functions never route here:
-   a call goes through the caller handle; a task call is crafted on its raw req channel) */
+/* the live channel carrying this topic's sends. Functions never route here: a call goes
+   through the caller handle and a task call is crafted on its raw req channel */
 static DartTopic *cap_send_channel(CapSub *s){
     return s->kind == CAP_KIND_VARIABLE ? s->set_ch
          : s->kind == CAP_KIND_TASK     ? s->req_raw : s->ch[s->reliable];
@@ -2123,7 +1974,7 @@ static int cap_task_call_send(CapSub *s, const void *data, size_t len){
 
 static int cap_send_now(CapSub *s, DartTopic *ch, const void *data, size_t len, uint8_t var_op){
     if (s->kind == CAP_KIND_VARIABLE){
-        uint8_t op = var_op;   /* 0 = a dumb write; force/unforce ride the same byte */
+        uint8_t op = var_op;   /* 0 = a dumb write, force and unforce ride the same byte */
         return i_dart_topic_send_hdr(ch, dart_bytes(&op, 1), dart_bytes(data, len)) >= 0;
     }
     if (s->kind == CAP_KIND_TASK) return cap_task_call_send(s, data, len);
@@ -2193,12 +2044,8 @@ static int cap_send_routed(CapSub *s, const void *data, size_t len, uint8_t var_
     ch = cap_send_channel(s);
     if (!ch) return 0;
     *echo_sch = dart_topic_schema(ch);
-    /* Retention (reliable + catch_up, the explorer's plain-topic default) already covers a
-       send racing the forming match: the writer replays it. The un-retainable sends (a
-       variable set/force/unforce op is multi-writer, a best-effort publish never
-       replays) PARK instead when a match is still resolving:
-       the node's blocking match wait is disabled here (never stall the UI thread), so the
-       pending slot + cap_pend_poll are its async form, driven by dart_topic_ready. */
+    /* Retention covers a reliable send racing the forming match. The un retainable sends, a
+       variable op or a best effort publish, park instead (spec/explorer.md). */
     if ((s->kind == CAP_KIND_VARIABLE || !s->reliable)
         && dart_topic_match_count(ch) == 0 && !dart_topic_ready(ch))
         return cap_send_park(s, data, len, var_op);
@@ -2214,9 +2061,8 @@ int cap_publish(Capture *cap, const char *topic, const void *data, size_t len){
     if (!s) return 0;
     if (!cap_send_routed(s, data, len, 0, &echo)){ cap_logf("PUBLISH %s send failed", topic); return 0; }
     if (echo && !dart_schema_validate(echo, dart_bytes(data, len))) echo = NULL;
-    /* our own echo never rides the wire, so stamp it from the node's clocks here: the same
-       wall clock the transport would have written this message with (a parked send reads as
-       when the user wrote it, not when the forming match later let it out) */
+    /* our own echo never rides the wire, so stamp it from the node's clocks here, the wall
+       clock the transport would have written it with */
     cap_ring_push(s, dart_cstr(cap_cfg.name), data, len, 1, echo,
                   i_dart_node_now_us(node), i_dart_node_wall_us(node));
     return 1;
@@ -2225,8 +2071,8 @@ int cap_publish(Capture *cap, const char *topic, const void *data, size_t len){
 #define CAP_FORM_MAX_ELEMS 64   /* variable-array elements the form accepts (a UI bound) */
 #define CAP_FORM_SLACK 2048     /* message-buffer room for a form's variable content */
 
-/* parse one form value into flat field i of the message being built (dart_set_value).
-   Empty keeps the default; a struct or map row has no value of its own. */
+/* parse one form value into flat field i of the message being built. Empty keeps the
+   default, a struct or map row has no value of its own. */
 static int cap_form_set(const DartSchema *sch, uint16_t i, const char *v, uint8_t *buf, size_t size){
     DartSchemaFieldInfo fi; DartValue val; char *end;
     if (!dart_schema_field_at(sch, i, &fi)) return 0;
@@ -2259,7 +2105,7 @@ static int cap_form_set(const DartSchema *sch, uint16_t i, const char *v, uint8_
             while (*end == ' ') end++;
             if (*end != '\0') return 0;
             break;
-        case DART_ENUM: {                                 /* an option NAME (the dropdown), or a raw number */
+        case DART_ENUM: {   /* an option name from the dropdown, or a raw number */
             int64_t ev;
             if (dart_enum_value_of(sch, i, v, &ev)) val.v.i = ev;
             else {
@@ -2327,7 +2173,7 @@ static int cap_form_set(const DartSchema *sch, uint16_t i, const char *v, uint8_
             val.bytes = dart_bytes(w, (size_t)n * esz);
             ok = (*p == '\0') && dart_set_value(buf, size, sch, i, &val);
             free(w);
-            return ok;                                    /* leftovers = junk or too many elements */
+            return ok;   /* leftovers = junk or too many elements */
         }
         default: return 0;
     }
@@ -2340,8 +2186,8 @@ static int cap_publish_form_op(Capture *cap, const char *topic, const char *cons
     if (!topic || !values) return 0;
     if (!cap_declare_publish(cap, topic)) return 0;
     s = cap_sub_find(topic);
-    /* the form's shape: a function or task fills its REQUEST schema; a variable its value
-       schema (the set channel carries it); a plain topic its adopted channel schema */
+    /* the form's shape: a function or task fills its request schema, a variable its value
+       schema, a plain topic its adopted channel schema */
     sch = !s ? NULL
         : s->kind == CAP_KIND_FUNCTION ? s->req_schema
         : s->kind == CAP_KIND_TASK     ? s->req_schema
@@ -2371,7 +2217,7 @@ static int cap_publish_form_op(Capture *cap, const char *topic, const char *cons
         cap_ring_push(s, dart_cstr(cap_cfg.name), buf, msg_len, 1, sch,
                       i_dart_node_now_us((DartNode *)cap->rt),
                       i_dart_node_wall_us((DartNode *)cap->rt));
-        if ((var_op & CAP_SET_OP_FORCE) && s->ring){   /* mark the echo: this write PINS the value */
+        if ((var_op & CAP_SET_OP_FORCE) && s->ring){   /* the echo pins the value */
             int newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
             s->ring[newest].forced = 1;
         }
@@ -2414,9 +2260,8 @@ int cap_variable_unforce(Capture *cap, const char *topic){
     return 1;
 }
 
-/* The newest VARIABLE value in publish-form syntax (see the header). Written by the value
-   intake and read here, both on the UI thread (a topic feed is queued, so cap_poll's
-   dispatch owns it), so this needs no bracket of its own. */
+/* The newest variable value in publish form syntax, written by the intake and read here,
+   both on the UI thread, so no bracket of its own. */
 int cap_variable_form_values(const Capture *cap, const char *topic, CapFormValue *out, int max){
     CapSub *s = (cap && cap->rt && topic) ? cap_sub_find(topic) : NULL;
     int i, n;
@@ -2504,7 +2349,7 @@ int cap_task_runs(const Capture *cap, const char *topic, CapTaskRun *out, int ma
                 snprintf(o->provider, sizeof o->provider, "%s", cap_peers[j].name);
                 break;
             }
-        {   /* caller_lo -> a discovered peer's uuid low-32 -> its name */
+        {   /* caller_lo to a discovered peer's uuid low 32 to its name */
             DartIter it; DartPeerInfo pi;
             memset(&it, 0, sizeof it);
             while (dart_node_peers_next(node, &it, &pi))
@@ -2561,10 +2406,8 @@ static void cap_endpoint_fill(CapTopic *e, const DartEntityInfo *ei){
     e->incomplete  = ei->incomplete;
 }
 
-/* copy one ACTIVE peer's facts out of the node's peer view into its observer record, then
-   its advertised ENTITIES via the node's reflection walk (dart_node_entities_next), so
-   pattern channels arrive already folded and this TU never sees the @-mangling. Each
-   direction's list grows to the peer's actual entity count (cap_grow). */
+/* copy one active peer's facts out of the node's peer view, then its entities via the
+   reflection walk so pattern channels arrive folded. Each list grows to the count. */
 static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartPeerInfo *pi){
     DartIter it; DartEntityInfo ei;
     p->seen_frame = 1;
@@ -2584,18 +2427,16 @@ static void cap_peer_refresh(DartNode *node, CapPeer *p, const DartPeerInfo *pi)
         } else { p->ip[0] = '\0'; p->port = 0; }
     }
 
-    /* Rebuilding the lists walks every entity, O(topics) per peer PER FRAME at many-
-       thousand-topic scale. The peer's EPOCH is the one cache key: it bumps on every
-       reflected change, so skip the walk while it is unchanged and keep the cached lists.
-       cap_snapshot still copies them out each frame; only this fetch is throttled. */
+    /* rebuilding the lists is O(topics) per peer per frame, so skip the walk while the
+       peer's epoch is unchanged. cap_snapshot still copies them out each frame. */
     if (pi->epoch == p->topics_epoch) return;
     p->topics_epoch = pi->epoch;
 
     p->n_pub = p->n_sub = 0;
     memset(&it, 0, sizeof it);
     while (dart_node_entities_next(node, pi->id, &it, &ei)){
-        /* provides = the entity's source side (publisher / provider / owner); consumes =
-           its sink side. An entity on both sides lands in both lists. */
+        /* provides = the entity's source side, consumes = its sink side. An entity on
+           both sides lands in both lists. */
         if (ei.provides && cap_grow(&p->pub, &p->pub_cap, p->n_pub, sizeof *p->pub))
             cap_endpoint_fill(&p->pub[p->n_pub++], &ei);
         if (ei.consumes && cap_grow(&p->sub, &p->sub_cap, p->n_sub, sizeof *p->sub))
@@ -2608,11 +2449,8 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
     unsigned long long now = cap_now_ms();
     int i, k;
 
-    /* Do NOT memset the whole snapshot: the per-node entity buffers are grown high-water
-       heap and zeroing them every frame would be a large per-frame cost. It is fully
-       count-delimited instead: n_nodes /
-       n_log / n_subs below bound the reader, and every used node/sub/log slot is completely
-       overwritten as it is filled, so the untouched tail never needs clearing. */
+    /* do not memset the whole snapshot: the entity buffers are high water heap growth,
+       the reader is count delimited and every used slot is fully overwritten */
     out->n_nodes   = 0;
     out->n_log     = 0;
     out->n_subs    = 0;
@@ -2620,10 +2458,8 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
     out->disc_port = cap_cfg.port;
     snprintf(out->group, sizeof out->group, "%s", cap_cfg.group ? cap_cfg.group : "");
 
-    /* one bracket for the whole copy-out (NULL-safe when the capture never started): it
-       pins the zero-copy peer view AND excludes the service thread's event callback,
-       which writes the log ring, cap_peers, and the sub error counters this reads. Do
-       not log inside (the bracket is not nestable). */
+    /* one bracket for the whole copy out, NULL safe before the capture started: it pins
+       the peer view and excludes the event callback. Do not log inside. */
     dart_node_lock(node);
 
     {   /* copy the observer event ring, newest first, capped to CAP_SNAP_LOG */
@@ -2649,9 +2485,8 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         si->error      = (s->error || s->n_drops > 0) ? 1 : 0;
         si->n_msgs     = (uint32_t)s->n_msgs;
         si->n_drops    = (uint32_t)s->n_drops;
-        /* recency from the ring: age of the newest stored message (a live count-up). Off the
-           ARRIVAL stamp, not the displayed send stamp: a publisher whose clock is skewed (or
-           a replayed message older than this observer) must not make a live topic read stale. */
+        /* recency from the ring, off the arrival stamp: a skewed publisher or a replayed
+           message must not make a live topic read stale */
         si->last_age_s = -1.0;
         if (s->count > 0){
             double now_s  = (double)((int64_t)i_dart_node_now_us(node) - (int64_t)cap_base_mono_us) / 1e6;
@@ -2659,15 +2494,11 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
             si->last_age_s = now_s - s->ring[newest].recv_s;
             if (si->last_age_s < 0.0) si->last_age_s = 0.0;
         }
-        /* publish rate: messages received over an accurately measured window (exact count /
-           high-res elapsed). Counting over wall-clock rather than a ring timespan avoids the
-           ~15.6 ms stamp quantization that snapped a steady 250 Hz reading to two values.
-           The window is ADAPTIVE so it spans all rates: it closes once we have enough
-           messages for a stable estimate (fast topics update ~1 Hz) OR a max time has passed
-           (a slow, sub-Hz, or now-silent topic still reports, and silence decays to 0). */
+        /* publish rate over an accurately measured adaptive window (spec/explorer.md), so
+           fast topics update about once a second and silence decays to 0 */
         {   double t_hr = cap_now_hr(), dt = t_hr - s->rate_prev_hr;
             unsigned long long dmsgs = s->n_msgs - s->rate_prev_msgs;
-            if (s->rate_prev_hr <= 0.0){             /* first sample on this slot: seed the baseline */
+            if (s->rate_prev_hr <= 0.0){   /* first sample on this slot: seed the baseline */
                 s->rate_prev_hr = t_hr; s->rate_prev_msgs = s->n_msgs;
             } else if (dt >= 1.0 && (dmsgs >= 4 || dt >= 4.0)){
                 s->rate_hz = (double)dmsgs / dt;
@@ -2675,13 +2506,12 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
             }
         }
         si->rate_hz = s->rate_hz;
-        si->jitter_p90_ms = s->jitter_n >= 4 ? s->jitter_p90_ms : -1.0;   /* a few intervals to warm up */
+        si->jitter_p90_ms = s->jitter_n >= 4 ? s->jitter_p90_ms : -1.0;   /* warms up first */
         si->mini = s->mini;                     /* newest value, compact (the VALUE column) */
     }
 
-    /* walk the node's peer view and refresh each ACTIVE peer's observer record; anything
-       else (dropped, gone, evicted) is freed and leaves the UI. The grown pub/sub buffers
-       stay with the slot for reuse (cap_peer_get). */
+    /* walk the node's peer view and refresh each active peer's record. Anything else is
+       freed and leaves the UI, the grown buffers stay with the slot for reuse. */
     for (i = 0; i < CAP_MAX_PEERS; i++) cap_peers[i].seen_frame = 0;
     {   DartIter it; DartPeerInfo pi;
         memset(&it, 0, sizeof it);
@@ -2710,9 +2540,8 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         snprintf(n->name, sizeof n->name, "%s", p->name);
         snprintf(n->ip, sizeof n->ip, "%s", p->ip);
 
-        /* grow the node's snapshot buffers to the peer's actual counts (high-water, reused
-           across frames), then copy (memcpy, not snprintf: the name is already a NUL-
-           terminated 65-byte field, and per-entry snprintf x thousands is slow) */
+        /* grow the node's snapshot buffers to the peer's counts, then memcpy the name, since
+           per entry snprintf times thousands is slow */
         for (k = 0; k < p->n_pub && cap_grow(&n->pub, &n->pub_cap, k, sizeof *n->pub); k++){
             memcpy(n->pub[k].name, p->pub[k].name, sizeof n->pub[k].name);
             n->pub[k].index       = p->pub[k].index;
@@ -2744,7 +2573,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
     dart_node_unlock(node);
 }
 
-/* one stored record -> the UI's plain view */
+/* one stored record as the UI's plain view */
 static void cap_feed_item_out(CapFeedItem *o, const CapMsgRec *m){
     int k;
     o->wall_us     = m->wall_us;
@@ -2763,7 +2592,7 @@ static void cap_feed_item_out(CapFeedItem *o, const CapMsgRec *m){
     snprintf(o->type_name, sizeof o->type_name, "%s", m->type_name);
     snprintf(o->sender, sizeof o->sender, "%s", m->sender);
     if (m->preview_len) memcpy(o->preview, m->preview, m->preview_len);
-    if (m->preview_len < CAP_MSG_PREVIEW) o->preview[m->preview_len] = '\0';  /* terminate: %s reads it, slot is reused */
+    if (m->preview_len < CAP_MSG_PREVIEW) o->preview[m->preview_len] = '\0';
 }
 
 int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int max,
@@ -2783,7 +2612,7 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
         return 0;
     }
 
-    /* walk the ring oldest first; with a full ring the oldest is at head */
+    /* walk the ring oldest first, with a full ring the oldest is at head */
     n     = s->count < max ? s->count : max;
     start = (s->head - n) % CAP_FEED_MAX; if (start < 0) start += CAP_FEED_MAX;
     for (i = 0; i < n; i++)
@@ -2792,11 +2621,8 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
     return n;
 }
 
-/* Discard everything accumulated for `topic`: the stored message ring, the message/drop
-   counters, the error mark, and the derived rate/jitter estimators (which are lifetime
-   state, not ring state, so they must reset with it). The live subscription and publish
-   interest are untouched, so the feed simply restarts from the next message. uid_next is
-   kept: recycling uids would let a fresh message match a pinned inspect copy. */
+/* Discard everything accumulated for topic: the ring, the counters, the error mark and the
+   rate and jitter estimators. The subscription stays. uid_next is kept against a stale pin. */
 int cap_topic_clear(Capture *cap, const char *topic){
     DartNode *node = (cap && cap->rt) ? (DartNode *)cap->rt : NULL;
     CapSub   *s    = (node && topic) ? cap_sub_find(topic) : NULL;
@@ -2841,10 +2667,8 @@ static const char *cap_kind_str(uint8_t kind){
     }
 }
 
-/* a field's DSL type spelling: "u64", "string<33>", "f32[8]", "string<16>[]", "map",
-   "enum<u8>", and a NAMED type by its name ("Pose", "Float3[4]"). A struct is NOT spelled
-   here: in the DSL it is `name: { members }`, handled by the caller. An enum's backing
-   integer kind is reported in fi->elem. */
+/* a field's DSL type spelling, and a named type by its name. A struct is not spelled
+   here, the caller handles `name: { members }`. An enum's backing kind is in fi->elem. */
 static void cap_field_type_str(char *dst, size_t cap, const DartSchemaFieldInfo *fi){
     if (fi->type_name.len)                        /* the name IS the type (`at: Pose`) */
         snprintf(dst, cap, "%.*s", (int)fi->type_name.len, fi->type_name.data);
@@ -2876,7 +2700,7 @@ static void cap_field_type_str(char *dst, size_t cap, const DartSchemaFieldInfo 
 static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
     DartSchemaFieldInfo fi; uint16_t i, nf = dart_schema_field_count(sch);
     out->inlined      = 1;
-    out->msg_size     = dart_schema_msg_min(sch);   /* exact size, or the minimum with variable fields */
+    out->msg_size     = dart_schema_msg_min(sch);   /* exact, or the minimum with variable fields */
     out->total_fields = nf;
     cap_schema_type_name(out->type_name, sizeof out->type_name, sch);
     for (i = 0; i < nf && out->n_fields < CAP_SCHEMA_FIELDS; i++){
@@ -2884,22 +2708,22 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
         if (!dart_schema_field_at(sch, i, &fi)) break;
         cap_field_label(f->name, sizeof f->name, &fi);
         cap_field_type_str(f->type, sizeof f->type, &fi);
-        f->kind    = fi.kind;                                        /* CAP_K_* == DartSchemaTypeKind */
+        f->kind    = fi.kind;   /* CAP_K_* == DartSchemaTypeKind */
         f->elem    = (uint8_t)((fi.kind == DART_ARR || fi.kind == DART_VARR
-                                || fi.kind == DART_ENUM) ? fi.elem : 0);   /* ENUM: the backing kind */
+                                || fi.kind == DART_ENUM) ? fi.elem : 0);   /* ENUM: the backing */
         f->count   = (uint16_t)(fi.kind == DART_ARR ? fi.count : 0);
-        f->str_cap = fi.str_cap;                                     /* set for STR + STR-element arrays */
+        f->str_cap = fi.str_cap;   /* set for STR and STR element arrays */
         snprintf(f->type_name, sizeof f->type_name, "%.*s",
                  (int)fi.type_name.len, fi.type_name.data ? fi.type_name.data : "");
         snprintf(f->elem_name, sizeof f->elem_name, "%.*s",
                  (int)fi.elem_name.len, fi.elem_name.data ? fi.elem_name.data : "");
-        f->arr_parent = fi.arr_parent;                               /* a member of a struct array */
+        f->arr_parent = fi.arr_parent;   /* a member of a struct array */
         f->elem_size  = fi.elem_size;
         f->depth  = (uint8_t)(fi.depth > 255 ? 255 : fi.depth);
         f->offset = fi.offset;
         f->size   = fi.size;
         f->n_variants = 0;
-        if (fi.kind == DART_ENUM){   /* copy the option NAMES so the UI can offer a dropdown (no DART here) */
+        if (fi.kind == DART_ENUM){   /* copy the option names so the UI can offer a dropdown */
             uint16_t nv = dart_schema_enum_count(sch, i), k;
             for (k = 0; k < nv && f->n_variants < CAP_ENUM_VARIANTS; k++){
                 DartString vn;
@@ -2913,9 +2737,8 @@ static void cap_schema_fields(CapSchema *out, const DartSchema *sch){
     }
 }
 
-/* The mesh's view of the entity behind `topic` (1 + *out): kind from the peer lists we
-   already hold, the rest from dart_node_mesh_find. Views into node state: bracket use with
-   the node lock when they outlive the call. */
+/* The mesh's view of the entity behind topic: kind from the peer lists, the rest from
+   dart_node_mesh_find. Views into node state, bracket when they outlive the call. */
 static int cap_entity_lookup(DartNode *node, const char *topic, DartEntityInfo *out){
     uint8_t kind = cap_entity_kind(topic, NULL);
     DartEntityKind ek = kind == CAP_KIND_FUNCTION ? DART_ENTITY_FUNCTION
@@ -2924,10 +2747,8 @@ static int cap_entity_lookup(DartNode *node, const char *topic, DartEntityInfo *
     return dart_node_mesh_find(node, ek, topic, out);
 }
 
-/* the schema of one channel (which: 0 primary, 1 rsp, 2 prg) of the entity behind `topic`,
-   as a freeable parsed copy: the provider's declaration (the mesh's pick), NULL when nobody
-   advertises one or while details are still in flight. The SAME resolver backs the schema
-   DISPLAY, the topics we adopt and the feed decode, so they can never disagree. */
+/* the schema of one channel of the entity behind topic as a freeable parsed copy, the
+   mesh's pick, NULL when none is advertised. The one resolver behind display and adoption. */
 static DartSchema *cap_entity_schema_copy(DartNode *node, const char *topic, int which){
     DartEntityInfo ei; const DartSchema *sch; DartSchema *copy = NULL;
     dart_node_lock(node);   /* one bracket: the pick AND the wire it copies from */
@@ -2950,15 +2771,8 @@ static uint64_t cap_entity_generation(DartNode *node, const char *topic){
     return cap_entity_lookup(node, topic, &ei) ? ei.generation : 0;
 }
 
-/* A provider that restarts with a CHANGED schema strands any topic we already adopted:
-   a DART topic's schema is immutable for its lifetime, so the old adoption would refuse
-   the new writer forever (a fresh subscriber would pair fine). When the entity's mesh
-   GENERATION moved since we adopted, retire the channels (set INACTIVE: the transport
-   re-resolves same-identity twins toward the live one) and re-create them through
-   cap_sub_reconcile, which adopts the current pick. Runs on the UI frame only after an
-   event marked the topology dirty, so steady state costs one flag test. Functions are
-   skipped: a caller handle cannot be retired, and its schemas ride the mangled
-   request/response channels. */
+/* A provider restarting with a changed schema strands an adopted topic, since a topic's
+   schema is immutable. Retire and re create when the generation moved (spec/explorer.md). */
 static void cap_schema_poll(DartNode *node){
     unsigned long long now = cap_now_ms();
     int i;
@@ -3048,11 +2862,8 @@ int cap_topic_schema_dsl(const Capture *cap, const char *topic, int which, char 
     return (int)n;
 }
 
-/* Live per-field validity for the publish form. Parses the topic's advertised schema
-   once (the same source the form is built from), then runs each value through cap_form_set
-   against a scratch message buffer: the authoritative accept test cap_publish_form applies,
-   with no side effects (no publisher declared, nothing sent). An empty value is valid (it
-   keeps the field's default). */
+/* Live per field validity for the publish form: run each value through cap_form_set
+   against a scratch buffer, the authoritative accept test with no side effects. */
 int cap_form_validate(const Capture *cap, const char *topic, const char *const *values,
                       int n_values, unsigned char *valid){
     DartNode *node = cap ? (DartNode *)cap->rt : NULL;
@@ -3061,11 +2872,11 @@ int cap_form_validate(const Capture *cap, const char *topic, const char *const *
     for (j = 0; j < n_values; j++) if (valid) valid[j] = 1;   /* default: don't flag */
     if (!node || !topic || !values) return 0;
     sch = cap_topic_schema_parse(node, topic);   /* a function's form fills its REQUEST schema */
-    if (!sch) return 0;                                       /* no schema: nothing to judge against */
+    if (!sch) return 0;   /* no schema: nothing to judge against */
     size = dart_schema_msg_min(sch) + CAP_FORM_SLACK;
     buf = (uint8_t *)malloc(size);
     if (!buf){ dart_schema_free(sch, cap_schema_alloc, NULL); return 0; }
-    dart_schema_message_default(sch, buf, size);              /* per-field parse is independent of the rest */
+    dart_schema_message_default(sch, buf, size);   /* per field parse, independent */
     nf = dart_schema_field_count(sch);
     for (i = 0; i < nf && (int)i < n_values; i++){
         const char *v = values[i] ? values[i] : "", *p = v;

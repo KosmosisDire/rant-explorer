@@ -1,12 +1,5 @@
-/* Lucide icons (https://lucide.dev), rendered as real SVG. Each icon's SVG source
-   is embedded with a white stroke, rasterized once at load via nanosvg into an
-   RGBA SDL_Texture, and drawn through Clay's image path tinted by the theme color
-   (the white stroke + SDL color-mod = any color, with the anti-aliased alpha kept).
-   This is the project's only vector-graphics path: SDL3_ttf's SVG (PlutoSVG) is off
-   and SDL3 has no native SVG, so nanosvg does the rasterizing.
-
-   Requires nanosvg.h + nanosvgrast.h (their *_IMPLEMENTATION defined in the one TU
-   that includes this), SDL3, clay.h, and ui_fonts.h (UISC). Lucide is ISC-licensed. */
+/* Lucide icons as real SVG: each is embedded with a white stroke, rasterized once by
+   nanosvg into an RGBA texture and drawn through Clay's image path tinted by the theme. */
 #ifndef UI_ICONS_H
 #define UI_ICONS_H
 
@@ -23,14 +16,14 @@ typedef enum {
     ICON_MOON,       /* theme: currently dark */
     ICON_CHEVRON_DOWN,   /* tree caret: expanded */
     ICON_CHEVRON_RIGHT,  /* tree caret: collapsed */
-    ICON_CHEVRON_LEFT,   /* back (inspector: message -> topic) */
+    ICON_CHEVRON_LEFT,   /* back, from an inspected message to its topic */
     ICON_PLUS,           /* add a new topic */
     ICON_CHECK,          /* column menu: a shown field */
     ICON_COPY,           /* copy the schema DSL to the clipboard */
     ICON_RSS,            /* a plain pub/sub topic (a feed you subscribe to) */
     ICON_FUNCTION,       /* patterns: a function channel (req/resp) */
     ICON_VARIABLE,       /* patterns: a variable channel (value/set) */
-    ICON_TASK,           /* patterns: a task (req/prg/rsp; Lucide activity) */
+    ICON_TASK,           /* patterns: a task, Lucide activity */
     ICON_FILTER,         /* topic-tree category filter (funnel) */
     ICON_COUNT
 } IconId;
@@ -42,11 +35,8 @@ typedef enum {
     "stroke-linecap=\"round\" stroke-linejoin=\"round\">"
 #define UI_ICON(body) (UI_ICON_HEAD body "</svg>")
 
-/* The DART brand logo (Logo.svg), full color, drawn untinted. Its "D" letter was
-   converted from <text> to a <path> (the Javanese Text glyph outlined via fontTools,
-   transform baked in) so nanosvg -- which has no text engine -- renders it. Attribute
-   quotes are single so this embeds as a plain C string; the class fills resolve via
-   nanosvg's <style> class support. */
+/* The brand logo, full color and untinted. Its D was outlined to a path since nanosvg has
+   no text engine, and the attribute quotes are single so it embeds as a C string. */
 #define UI_LOGO_SVG "<svg id=\"Layer_1\" data-name=\"Layer 1\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">\n" \
 "  <defs>\n" \
 "    <style>\n" \
@@ -89,14 +79,11 @@ static const char *const UI_ICON_SVG[ICON_COUNT] = {
     /* FILTER */ UI_ICON("<polygon points=\"22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3\"/>"),
 };
 
-/* Icons rasterize at a supersample of their on-screen size, then SDL linear-shrinks
-   to the draw box: shrinking always anti-aliases (crisp), the failure mode is
-   upscaling, so the texture is sized to the largest icon's DEVICE pixels. UISC folds
-   in display density (ui_dpi) and UI zoom (ui_scale), so the raster tracks both and
-   is recomputed on a DPI change, alongside the fonts. */
+/* Icons rasterize at a supersample of their on screen size and SDL shrinks them, since
+   shrinking always anti aliases. UISC folds in density and zoom, so a DPI change recomputes. */
 #define UI_ICON_SUPERSAMPLE 2      /* texture px per draw px before the linear shrink */
 #define UI_ICON_MAX_CSS     24     /* largest icon drawn (the 22px logo) plus a margin */
-static int          g_icon_raster = 64;   /* texture px; recomputed per load from the UI scale */
+static int          g_icon_raster = 64;   /* texture px, recomputed per load from the UI scale */
 static SDL_Texture *g_icon_tex[ICON_COUNT];
 
 static SDL_Texture *ui_icon_rasterize(SDL_Renderer *ren, const char *svg, int raster){
@@ -127,8 +114,7 @@ static SDL_Texture *ui_icon_rasterize(SDL_Renderer *ren, const char *svg, int ra
     return tex;
 }
 
-/* rasterize every icon to a texture; returns 0 if any failed (the UI still runs,
-   a NULL icon just draws nothing). */
+/* rasterize every icon to a texture. 0 if any failed, a NULL icon just draws nothing */
 static int ui_icons_load(SDL_Renderer *ren){
     int i, ok = 1, raster;
     raster = (int)(UISC(UI_ICON_MAX_CSS) * UI_ICON_SUPERSAMPLE + 0.5f);
@@ -145,7 +131,7 @@ static void ui_icons_unload(void){
     int i;
     for (i = 0; i < ICON_COUNT; i++){ if (g_icon_tex[i]) SDL_DestroyTexture(g_icon_tex[i]); g_icon_tex[i] = NULL; }
 }
-/* re-rasterize at the current UI scale; call after a DPI change, like the fonts */
+/* re rasterize at the current UI scale. Call after a DPI change, like the fonts */
 static int ui_icons_reload(SDL_Renderer *ren){
     ui_icons_unload();
     return ui_icons_load(ren);

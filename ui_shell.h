@@ -1,7 +1,5 @@
-/* The app shell: a 48px top bar (logo, tabs, theme toggle) above a body that
-   dispatches to the active tab. ui_frame() builds the whole Clay tree and is
-   called between Clay_BeginLayout and Clay_EndLayout. Requires the tab headers
-   first. */
+/* The app shell: a 48 px top bar above a body dispatching to the active tab. ui_frame()
+   builds the whole Clay tree between Clay_BeginLayout and Clay_EndLayout. */
 #ifndef UI_SHELL_H
 #define UI_SHELL_H
 
@@ -33,8 +31,8 @@ static void ui_tab(AppState *app, const Palette *P, IconId icon, Clay_String nam
     }
 }
 
-/* the theme toggle: an icon-only button (no text, no border) whose icon shows the
-   CURRENT mode -- moon while dark, sun while light. */
+/* the theme toggle: an icon only button whose icon shows the current mode, moon while
+   dark and sun while light */
 static void ui_theme_toggle(AppState *app, const Palette *P){
     if (ui_icon_button(P, app->theme_dark ? ICON_MOON : ICON_SUN, 17, 30, P->dim, P->text))
         app->theme_dark = !app->theme_dark;

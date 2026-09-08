@@ -1,6 +1,5 @@
-/* Design tokens: the two color palettes, as Clay_Color (rgba floats 0-255).
-   Values mirror the HTML mockup's CSS variables. Swap the active palette to
-   toggle theme. Requires clay.h included first (for Clay_Color). */
+/* The design tokens: the two color palettes as Clay_Color, mirroring the mockup's CSS
+   variables. Swap the active palette to toggle the theme. */
 #ifndef UI_THEME_H
 #define UI_THEME_H
 

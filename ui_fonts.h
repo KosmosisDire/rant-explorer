@@ -1,37 +1,12 @@
-/* Fonts, DPI handling, and the per-frame string pool (SDL3_ttf backend).
-
-   Typeface: the mockup uses CSS `system-ui` (sans) and `ui-monospace` (mono),
-   i.e. the OS's native UI fonts. We load those same system fonts so the app
-   matches the design per platform (Segoe UI + Consolas on Windows).
-
-   Why SDL3_ttf: it rasterizes through FreeType, whose hinting snaps stems to the
-   pixel grid the way the browser/OS text does, so glyphs come out crisp and at
-   the right weight instead of stb_truetype's lighter grayscale.
-
-   Sizing: FreeType's pixel size IS the em square, which is exactly what CSS
-   font-size means, so a CSS px maps straight to a TTF point size (no em-ratio
-   correction like the raylib path needed). Each (family, weight, size) is its own
-   TTF_Font; Clay's fontId selects it, and the SDL3 renderer draws at the font's
-   own size, ignoring the config fontSize.
-
-   DPI: we lay out and render in PHYSICAL pixels. UISC() and the font sizes both
-   fold in ui_dpi (the window's pixel density), so at 100% nothing changes and a
-   HiDPI display scales uniformly. ui_fonts_reload() re-opens at a new density when
-   the window crosses to a different monitor.
-
-   String pool: Clay stores {chars,length} pointers and does NOT copy, so any
-   runtime-generated string must outlive the render. ui_fmt() bumps into a
-   frame-scoped buffer reset once per frame; ui_str() wraps a persistent C string.
-   Requires clay.h + SDL3_ttf first. */
+/* Fonts, DPI handling and the per frame string pool over SDL3_ttf: OS system fonts by path,
+   FreeType hinting, a CSS px per TTF point, and ui_fmt pooling since Clay copies no strings. */
 #ifndef UI_FONTS_H
 #define UI_FONTS_H
 
 #include <SDL3_ttf/SDL_ttf.h>
 
-/* All sizes below are the mockup's CSS px. Final px = css_px * ui_scale (a UI
-   zoom) * ui_dpi (display pixel density). ui_scale is an optional zoom (the design
-   preview may be shown enlarged); ui_dpi matches the browser scaling CSS px by
-   devicePixelRatio. main sets ui_scale (DART_UI_ZOOM); ui_fonts_load sets ui_dpi. */
+/* All sizes are the mockup's CSS px. Final px = css_px times ui_scale, a zoom set by main
+   from DART_UI_ZOOM, times ui_dpi, the display density set by ui_fonts_load. */
 static float ui_scale = 1.0f;
 static float ui_dpi   = 1.0f;
 #define UISC(px) ((float)(px) * ui_scale * ui_dpi)
@@ -65,8 +40,8 @@ static const char *UI_FONT_FILE[FAM_COUNT][WT_COUNT] = {
 #endif
 
 #define UI_FONT_COUNT (FAM_COUNT * WT_COUNT * FS_COUNT)
-static TTF_Font *g_fonts[UI_FONT_COUNT];      /* indexed by ui_font_id; passed to Clay measure + SDL3 renderer */
-static int       g_font_size[UI_FONT_COUNT];  /* per-font pixel size (physical), CSS px * ui_scale * ui_dpi */
+static TTF_Font *g_fonts[UI_FONT_COUNT];   /* by ui_font_id, for measure and render */
+static int       g_font_size[UI_FONT_COUNT];   /* physical pixel size per font */
 static float     g_atlas_scale = 1.0f;        /* pixel density the fonts are currently opened at */
 
 static inline int ui_font_id(FontFamily fam, FontWeight wt, FontSize sz){
@@ -86,7 +61,7 @@ static int ui_fonts_load(float dpi){
                 float px = UI_FONT_PX[sz] * ui_scale * dpi;
                 TTF_Font *f = TTF_OpenFont(UI_FONT_FILE[fam][wt], px);
                 if (!f) return 0;
-                TTF_SetFontHinting(f, TTF_HINTING_NORMAL);   /* grid-fit stems: crisp, browser-like */
+                TTF_SetFontHinting(f, TTF_HINTING_NORMAL);   /* grid fit stems, crisp */
                 g_fonts[id] = f;
                 g_font_size[id] = (int)(px + 0.5f);
             }
@@ -117,8 +92,8 @@ static Clay_Dimensions ui_measure_text(Clay_StringSlice text, Clay_TextElementCo
     return (Clay_Dimensions){ (float)w, (float)h };
 }
 
-/* fill a CLAY_TEXT_CONFIG's font fields together (the SDL3 renderer keys off
-   fontId; fontSize is carried for completeness but the font's own size wins) */
+/* fill a CLAY_TEXT_CONFIG's font fields together. The renderer keys off fontId, and
+   fontSize is carried for completeness though the font's own size wins */
 #define UI_FONT(fam, wt, sz) .fontId = (uint16_t)ui_font_id(fam, wt, sz), \
     .fontSize = (uint16_t)g_font_size[ui_font_id(fam, wt, sz)]
 

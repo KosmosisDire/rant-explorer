@@ -804,14 +804,14 @@ static void cap_mini_update(CapSub *s, DartBytes d, const DartSchema *schema, co
             break; }
         case CAP_STD_RECT:  { DartRect  t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%.4gx%.4g @%.4g,%.4g", t.w, t.h, t.x, t.y); break; }
         case CAP_STD_RECTI: { DartRectI t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%ldx%ld @%ld,%ld", (long)t.w, (long)t.h, (long)t.x, (long)t.y); break; }
-        case CAP_STD_POSE: {
-            DartPose p;
+        case CAP_STD_TRANSFORM: {
+            DartTransform p;
             if (cap_mini_take(d, sizeof p, &p)){
                 int at = 0;
-                double deg = cap_quat_angle_deg(p.orientation.x, p.orientation.y,
-                                                p.orientation.z, p.orientation.w, NULL);
+                double deg = cap_quat_angle_deg(p.rotation.x, p.rotation.y,
+                                                p.rotation.z, p.rotation.w, NULL);
                 at = cap_val_append(o->text, CAP_MINI_TEXT, at, "%.3g, %.3g, %.3g",
-                                    p.position.x, p.position.y, p.position.z);
+                                    p.translation.x, p.translation.y, p.translation.z);
                 if (fabs(deg) >= 0.5)
                     cap_val_append(o->text, CAP_MINI_TEXT, at, " R%.0f\xC2\xB0", fabs(deg));
             }

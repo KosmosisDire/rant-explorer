@@ -87,7 +87,7 @@ enum {
     CAP_STD_QUATERNION,
     CAP_STD_COLOR,
     CAP_STD_RECT, CAP_STD_RECTI,
-    CAP_STD_POSE, CAP_STD_TWIST,
+    CAP_STD_TRANSFORM, CAP_STD_TWIST,
     CAP_STD_GEOPOINT,
     CAP_STD_UUID,
     CAP_STD_TIMESTAMP, CAP_STD_DURATION,
@@ -227,8 +227,8 @@ enum {
 
 typedef struct {
     char     name[CAP_TOPIC_CAP];  /* field's own name */
-    char     type[32];             /* display type: "u64", "u8[256]", "Float3[4]", "map", "Pose" */
-    char     type_name[24];        /* the field type's NAME ("Pose"), "" when anonymous */
+    char     type[32];             /* display type: "u64", "u8[256]", "Float3[4]", "map", "Transform" */
+    char     type_name[24];        /* the field type's NAME ("Transform"), "" when anonymous */
     char     elem_name[24];        /* an array ELEMENT type's name ("Float3"), "" when anonymous */
     uint8_t  kind;   /* the CAP_K_* of the field itself, a named type reports what it wraps */
     uint8_t  elem;   /* the CAP_K_* of an array's element or an enum's backing, else 0 */

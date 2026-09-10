@@ -1978,7 +1978,7 @@ static int cap_send_now(CapSub *s, DartTopic *ch, const void *data, size_t len, 
         return i_dart_topic_send_hdr(ch, dart_bytes(&op, 1), dart_bytes(data, len)) >= 0;
     }
     if (s->kind == CAP_KIND_TASK) return cap_task_call_send(s, data, len);
-    return dart_topic_send(ch, dart_bytes(data, len)) >= 0;
+    return dart_topic_send(ch, dart_bytes(data, len), NULL) >= 0;
 }
 
 #define CAP_PEND_EXPIRE_MS 3000ull   /* a parked send that never matches is dropped, loudly */

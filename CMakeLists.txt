@@ -113,11 +113,9 @@ FetchContent_MakeAvailable(SDL3_ttf)
 add_executable(dart_explorer discovery_explorer.c net_capture.c)
 target_include_directories(dart_explorer PRIVATE
   "${DEPS}/include" "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(dart_explorer PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf dart)
-
-if(WIN32)
-  target_link_libraries(dart_explorer PRIVATE ws2_32 bcrypt winmm)
-else()
+target_link_libraries(dart_explorer PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf
+                      dart dart_platform)
+if(NOT WIN32)
   target_link_libraries(dart_explorer PRIVATE m)
 endif()
 
@@ -125,12 +123,7 @@ endif()
 # lockstep with dist/, since a stale copy speaks an old announce wire and never joins.
 add_executable(demo_scene demo_scene.c)
 target_include_directories(demo_scene PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(demo_scene PRIVATE dart)
-if(WIN32)
-  target_link_libraries(demo_scene PRIVATE ws2_32 bcrypt winmm)
-elseif(NOT APPLE)
-  target_link_libraries(demo_scene PRIVATE rt)   # shm_open (the SHM fast path is on by default)
-endif()
+target_link_libraries(demo_scene PRIVATE dart dart_platform)
 
 # regenerate dist/ before building when the root build owns that target
 if(TARGET dist)

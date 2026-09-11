@@ -117,7 +117,7 @@ static int task_setup(DartNode *node, const char *profile){
     DartAllocator *mem = (DartAllocator *)malloc(sizeof *mem);
     int def = !strcmp(profile, "lidar-driver"), caller = !strcmp(profile, "perception");
     if (!mem || (!def && !caller)){ free(mem); return 1; }
-    *mem = dart_allocator_dynamic(i_dart_plat_realloc, 0);
+    *mem = dart_allocator_heap(0);
     task_req_s = dart_schema_compile(dart_allocator_alloc, mem, "CalibrateRequest { sweeps: u32 }", NULL);
     task_prg_s = dart_schema_compile(dart_allocator_alloc, mem, "CalibrateProgress { done: u32, total: u32 }", NULL);
     task_rsp_s = dart_schema_compile(dart_allocator_alloc, mem, "CalibrateResult { ok: bool, points: u32 }", NULL);
@@ -150,7 +150,7 @@ typedef struct { const char *name; const char **pubs; const char **subs; } Profi
    MAX_PUBS) so the main loop can publish to them. *n_pubs gets the count. */
 static DartNode *open_node(const Profile *p, uint16_t domain, const char *ifc,
                            PubCh *pubs, int *n_pubs){
-    DartAllocator mem = dart_allocator_dynamic(i_dart_plat_realloc, 0);
+    DartAllocator mem = dart_allocator_heap(0);
     DartNode *n;
     int i;
     *n_pubs = 0;

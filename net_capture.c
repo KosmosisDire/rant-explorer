@@ -1350,7 +1350,7 @@ int cap_start(Capture *cap, const Config *cfg){
 
     /* a real node owning its memory via a dynamic allocator. It starts with no topics and
        subscribes on demand, CAP_OBSERVER_CHANNELS bounds those. */
-    mem  = dart_allocator_dynamic(i_dart_plat_realloc, 0);
+    mem  = dart_allocator_heap(0);
     node = dart_node_open(&mem, cfg->name, cap_on_message, cap_on_event, &(DartNodeOpts){
         .domain        = cfg->domain,
         .max_topics  = CAP_OBSERVER_CHANNELS,

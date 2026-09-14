@@ -166,7 +166,7 @@ static void node_kv_single(const Palette *P, Clay_String label, Clay_String valu
     }
 }
 
-/* the @dart/meta counter row for a topic name, or NULL if this snapshot lacks it */
+/* the @ramble/meta counter row for a topic name, or NULL if this snapshot lacks it */
 static const CapMetaTopic *node_meta_find(const CapMetaStats *ms, const char *path){
     int i;
     if (!ms) return NULL;
@@ -225,13 +225,13 @@ static void node_endpoint_list(const Palette *P, const Dataset *D,
    node's own report. watching = a poll is aimed here, fresh = it answered for this node. */
 static void nodes_runtime_sections(const Palette *P,
                                    const CapMetaStats *ms, int watching, int fresh){
-    ui_section_label(P, CLAY_STRING("RUNTIME  (@dart/meta)"));
+    ui_section_label(P, CLAY_STRING("RUNTIME  (@ramble/meta)"));
     if (!fresh){
         CLAY({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(0) }, .layoutDirection = CLAY_TOP_TO_BOTTOM },
                .backgroundColor = P->panel2, .cornerRadius = CLAY_CORNER_RADIUS(UISC(6)),
                .border = { .width = CLAY_BORDER_OUTSIDE(1), .color = P->border } }) {
             node_kv_single(P, CLAY_STRING("Status"),
-                           (watching && ms->failing >= 2) ? CLAY_STRING("no @dart/meta response")
+                           (watching && ms->failing >= 2) ? CLAY_STRING("no @ramble/meta response")
                                                           : CLAY_STRING("querying..."));
         }
     } else {
@@ -367,7 +367,7 @@ static void nodes_detail(AppState *app, const Palette *P){
                                                                               : CLAY_STRING("none yet"));
             }
 
-            /* RUNTIME: the node's own internals served by its @dart/meta endpoint, a directed
+            /* RUNTIME: the node's own internals served by its @ramble/meta endpoint, a directed
                call once per second from cap_meta_poll */
             nodes_runtime_sections(P, &ms, watching, fresh);
 
@@ -418,7 +418,7 @@ static void nodes_log_row(AppState *app, const Palette *P, const CapNodeLogLine 
     }
 }
 
-/* the right sidebar: the selected node's @dart/log stream, newest first, filtered by the
+/* the right sidebar: the selected node's @ramble/log stream, newest first, filtered by the
    per level pills in the header. */
 #define ND_LOG_SHOW 96   /* lines rendered (the capture ring holds more) */
 static void nodes_log_sidebar(AppState *app, const Palette *P){
@@ -457,7 +457,7 @@ static void nodes_log_sidebar(AppState *app, const Palette *P){
 
 static void nodes_tab(AppState *app, const Palette *P){
     const Dataset *D = app->data;
-    /* keep the 1 Hz @dart/meta poll aimed at the selected node */
+    /* keep the 1 Hz @ramble/meta poll aimed at the selected node */
     if (app->cap)
         cap_meta_watch(app->cap, (D && D->n_nodes && app->sel_node >= 0 && app->sel_node < D->n_nodes)
                                  ? D->nodes[app->sel_node].name : NULL);

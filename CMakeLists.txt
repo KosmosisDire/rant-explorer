@@ -1,8 +1,8 @@
 # The explorer: Clay layout plus SDL3, with SDL3, SDL3_ttf and clay.h fetched at pinned
-# tags and DART from ../dist. Standalone or from the root (spec/explorer.md).
+# tags and Ramble from ../dist. Standalone or from the root (spec/explorer.md).
 
 cmake_minimum_required(VERSION 3.19)
-project(dart_explorer C)
+project(ramble_explorer C)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -11,9 +11,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Before FetchContent, so SDL3 and vendored freetype build against the same runtime.
 include("${CMAKE_CURRENT_SOURCE_DIR}/../tools/static_runtime.cmake")
 
-# Standalone: own the output dir and define a minimal dart target over ../dist. Under the
-# root build the dart target already exists.
-if(NOT TARGET dart)
+# Standalone: own the output dir and define a minimal ramble target over ../dist. Under the
+# root build the ramble target already exists.
+if(NOT TARGET ramble)
   if(CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_CONFIGURATION_TYPES "Release;Debug;RelWithDebInfo;MinSizeRel"
         CACHE STRING "Build configs (Release first = the default)" FORCE)
@@ -25,9 +25,9 @@ if(NOT TARGET dart)
     string(TOUPPER "${_cfg}" _CFG)
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${_CFG} "${REPO_ROOT}/bin")
   endforeach()
-  add_library(dart INTERFACE)
-  target_include_directories(dart INTERFACE "${REPO_ROOT}/dist")
-  include("${REPO_ROOT}/tools/dart_platform.cmake")
+  add_library(ramble INTERFACE)
+  target_include_directories(ramble INTERFACE "${REPO_ROOT}/dist")
+  include("${REPO_ROOT}/tools/ramble_platform.cmake")
 endif()
 set(DEPS "${CMAKE_BINARY_DIR}/deps")
 file(MAKE_DIRECTORY "${DEPS}/include")
@@ -111,24 +111,24 @@ FetchContent_Declare(SDL3_ttf
   GIT_SUBMODULES external/freetype)
 FetchContent_MakeAvailable(SDL3_ttf)
 
-# Two TUs: discovery_explorer.c is the SDL3/Clay UI, net_capture.c owns DART + winsock.
-add_executable(dart_explorer discovery_explorer.c net_capture.c)
-target_include_directories(dart_explorer PRIVATE
+# Two TUs: discovery_explorer.c is the SDL3/Clay UI, net_capture.c owns Ramble + winsock.
+add_executable(ramble_explorer discovery_explorer.c net_capture.c)
+target_include_directories(ramble_explorer PRIVATE
   "${DEPS}/include" "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(dart_explorer PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf
-                      dart dart_platform)
+target_link_libraries(ramble_explorer PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf
+                      ramble ramble_platform)
 if(NOT WIN32)
-  target_link_libraries(dart_explorer PRIVATE m)
+  target_link_libraries(ramble_explorer PRIVATE m)
 endif()
 
 # demo_scene: the sample mesh node run_demo.ps1 launches. Built here so it stays in
 # lockstep with dist/, since a stale copy speaks an old announce wire and never joins.
 add_executable(demo_scene demo_scene.c)
 target_include_directories(demo_scene PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(demo_scene PRIVATE dart dart_platform)
+target_link_libraries(demo_scene PRIVATE ramble ramble_platform)
 
 # regenerate dist/ before building when the root build owns that target
 if(TARGET dist)
-  add_dependencies(dart_explorer dist)
+  add_dependencies(ramble_explorer dist)
   add_dependencies(demo_scene dist)
 endif()

@@ -1,5 +1,5 @@
 /* The public interface of the live observer. net_capture.c is its own translation unit
-   owning DART and winsock, and the UI includes only this header of plain types. */
+   owning Ramble and winsock, and the UI includes only this header of plain types. */
 #ifndef NET_CAPTURE_H
 #define NET_CAPTURE_H
 
@@ -13,7 +13,7 @@ typedef struct {
     const char *name;
 } Config;
 
-/* opaque to the UI: the fields are DART runtime pointers, owned by net_capture.c */
+/* opaque to the UI: the fields are Ramble runtime pointers, owned by net_capture.c */
 typedef struct {
     void *rt;
     void *mem;
@@ -30,8 +30,8 @@ void cap_stop(Capture *cap);
 /* The snapshot: a flat, plain types view of the live peer table copied out for the UI each
    frame. Only active peers appear, and node internal facts never ride the wire. */
 
-#define CAP_NAME_CAP   33    /* DART_NODE_NAME_MAX (32) + NUL  */
-#define CAP_TOPIC_CAP  65    /* DART_TOPIC_NAME_MAX (64) + NUL */
+#define CAP_NAME_CAP   33    /* RAMBLE_NODE_NAME_MAX (32) + NUL  */
+#define CAP_TOPIC_CAP  65    /* RAMBLE_TOPIC_NAME_MAX (64) + NUL */
 #define CAP_SNAP_NODES 64    /* mirrors CAP_MAX_PEERS */
 #define CAP_LOG_LINE   160   /* bytes per observer log line */
 #define CAP_SNAP_LOG   256   /* most-recent observer log lines exposed, newest first */
@@ -40,7 +40,7 @@ void cap_stop(Capture *cap);
 #define CAP_SNAP_SUBS  16000 /* subscription entries exposed to the UI, matching CAP_MAX_SUBS
                                 in net_capture.c (spec/explorer.md sizes it) */
 
-/* Entity kind, values mirroring DartEntityKind. The capture walks peers through the entity
+/* Entity kind, values mirroring RambleEntityKind. The capture walks peers through the entity
    reflection, so pattern channels never reach the UI, an entity is one entry. */
 enum {
     CAP_KIND_TOPIC = 0, CAP_KIND_FUNCTION, CAP_KIND_VARIABLE, CAP_KIND_TASK
@@ -78,7 +78,7 @@ typedef struct {
 } CapNode;
 
 /* The mini value preview for the topic list's VALUE column (spec/explorer.md). std values
-   mirror DartStdType, CAP_STD_NONE = not a standard type. */
+   mirror RambleStdType, CAP_STD_NONE = not a standard type. */
 enum {
     CAP_STD_NONE = 0,
     CAP_STD_FLOAT2, CAP_STD_FLOAT3, CAP_STD_FLOAT4,
@@ -183,10 +183,10 @@ typedef struct {
     uint16_t preview_len;            /* bytes filled in preview[] */
     int      mine;                   /* 1 = we published it (local echo) */
     int      forced;   /* VARIABLE value: the owner published it forced */
-    int      call_status;            /* FUNCTION reply: its DartCallStatus, nonzero = the call
+    int      call_status;            /* FUNCTION reply: its RambleCallStatus, nonzero = the call
                                         failed. 0 on every other entry */
     char     call_msg[256];          /* FUNCTION reply: the response message, the provider's text or
-                                        the default status text. Sized to DART_CALL_MSG_MAX + 1 */
+                                        the default status text. Sized to RAMBLE_CALL_MSG_MAX + 1 */
     int      decoded;                /* 1 = fields[] holds the reflected decode */
     int      n_fields;               /* fields filled (capped to CAP_MSG_FIELDS) */
     int      total_fields;           /* fields the schema actually has */
@@ -212,7 +212,7 @@ int  cap_topic_clear(Capture *cap, const char *topic);
 #define CAP_ENUM_VARIANTS 16   /* enum option names carried per field, for the form dropdown */
 #define CAP_ENUM_NAME     28    /* bytes per enum option name (truncated) */
 
-/* A field's type kind, values mirroring DartSchemaTypeKind so the UI can pick a type aware
+/* A field's type kind, values mirroring RambleSchemaTypeKind so the UI can pick a type aware
    input. elem is an array's element kind or an enum's backing kind. */
 enum {
     CAP_K_U8 = 0, CAP_K_U16, CAP_K_U32, CAP_K_U64,
@@ -220,7 +220,7 @@ enum {
     CAP_K_F32, CAP_K_F64, CAP_K_BOOL,
     CAP_K_ARR, CAP_K_STRUCT, CAP_K_STR,
     CAP_K_VSTR, CAP_K_VARR, CAP_K_MAP,   /* variable kinds: live-sized, ride the message tail */
-    CAP_K_ENUM,   /* a named integer mirroring DART_ENUM, a dropdown of variants */
+    CAP_K_ENUM,   /* a named integer mirroring RAMBLE_ENUM, a dropdown of variants */
     CAP_K_NAMED                          /* a nominal tag, unwrapped into type_name so a field never
                                             reports it as its own kind */
 };
@@ -303,7 +303,7 @@ typedef struct {
     int      phase;              /* CAP_TCALL_*: SENT until the RUNNING ack (or a reply) */
     uint32_t call_id;            /* the call's id (the cancel key) */
     uint32_t progress_count;     /* progress payloads received for this call */
-    int      call_status;        /* terminal DartCallStatus (phase DONE) */
+    int      call_status;        /* terminal RambleCallStatus (phase DONE) */
     char     call_msg[256];      /* terminal response message ("" = none) */
     int      has_progress;       /* latest holds the newest decoded progress update */
     CapFeedItem latest;          /* that update, decoded like any feed message */
@@ -337,13 +337,13 @@ int  cap_task_runs(const Capture *cap, const char *topic, CapTaskRun *out, int m
 int  cap_task_cancel_run(Capture *cap, const char *topic, uint32_t provider_id,
                          uint32_t caller_lo, uint32_t call_id);
 
-/* Node logs: the explorer subscribes to all three @dart/log topics at start, so each
+/* Node logs: the explorer subscribes to all three @ramble/log topics at start, so each
    node's lines collect here, including the history logged before the explorer joined. */
 #define CAP_NODELOG_TEXT 192          /* bytes kept per line (longer lines truncate) */
 #define CAP_NODELOG_MAX  512          /* lines retained across all nodes (ring) */
 typedef struct {
     char     node[CAP_NAME_CAP];      /* the publishing node's name */
-    uint8_t  level;                   /* 0 error, 1 warn, 2 info (DartLogLevel) */
+    uint8_t  level;                   /* 0 error, 1 warn, 2 info (RambleLogLevel) */
     uint64_t wall_us;                 /* the sender's wall clock, us since the Unix epoch */
     char     text[CAP_NODELOG_TEXT];
 } CapNodeLogLine;
@@ -380,9 +380,9 @@ typedef struct {
     uint32_t bp_waits, evicted_unsent;
     uint32_t peers, max_peers, topics, max_topics;
     uint32_t shm_tx, shm_rx;
-    uint32_t last_error;              /* DartErrorKind (0 = none) */
+    uint32_t last_error;              /* RambleErrorKind (0 = none) */
     char     last_error_text[128];
-    /* proc section: absent where the node's platform cannot measure (DART_PROC_STATS off) */
+    /* proc section: absent where the node's platform cannot measure (RAMBLE_PROC_STATS off) */
     int      have_proc;
     int      have_cpu;
     uint64_t pid, cpu_us, rss, peak_rss;

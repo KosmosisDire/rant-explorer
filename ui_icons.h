@@ -11,7 +11,7 @@ typedef enum {
     ICON_SEARCH,     /* filter boxes */
     ICON_BOX,        /* Nodes tab */
     ICON_RADIO,      /* Topics tab (broadcast) */
-    ICON_LOGO,       /* the DART logo (Logo.svg, full color) */
+    ICON_LOGO,       /* the Ramble logo (Logo.svg, full color) */
     ICON_SUN,        /* theme: currently light */
     ICON_MOON,       /* theme: currently dark */
     ICON_CHEVRON_DOWN,   /* tree caret: expanded */

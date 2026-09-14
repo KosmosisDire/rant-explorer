@@ -1,11 +1,11 @@
-# DART Explorer
+# Ramble Explorer
 
-A cross-platform DART network explorer. 
+A cross-platform Ramble network explorer. 
 
 ## Usage
 
 ```
-./dart_explorer [--domain N] [--group IP] [--port N] [--if IP] [--name STR]
+./ramble_explorer [--domain N] [--group IP] [--port N] [--if IP] [--name STR]
 ```
 
 ## Build

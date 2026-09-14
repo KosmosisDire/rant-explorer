@@ -1238,7 +1238,7 @@ static void topics_composer(AppState *app, const Palette *P, const Topic *t){
 static CapTaskCall tt_task_call;                 /* the selected task's own-call state, per frame */
 static CapTaskRun  tt_task_runs[CAP_TASK_RUNS];  /* observed runs off the @prg tap, per frame */
 
-/* DartCallStatus display words. net_capture hands the numeric status, no DART types here */
+/* RambleCallStatus display words. net_capture hands the numeric status, no Ramble types here */
 static const char *tt_call_status_word(int status){
     switch (status){
         case 0: return "OK";

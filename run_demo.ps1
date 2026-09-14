@@ -1,5 +1,5 @@
 <#
-  run_demo.ps1 - start (or stop) the DART Explorer demo mesh.
+  run_demo.ps1 - start (or stop) the Ramble Explorer demo mesh.
 
   Spins up the handoff sample mesh: 6 nodes (perception, planner, lidar-driver,
   camera-driver, controller, logger) declaring a hierarchical topic set, one node
@@ -39,7 +39,7 @@ if ($Stop) {
 
 # Rebuild if forced, missing or stale: a demo_scene built against an older dist/ speaks the
 # old announce wire and shows as nodes found but never joining. This gcc path is self contained.
-$dist  = Join-Path $repo "dist\dart.h"
+$dist  = Join-Path $repo "dist\ramble.h"
 $stale = $false
 if (Test-Path $exe) {
     $exeTime = (Get-Item $exe).LastWriteTime
@@ -68,11 +68,11 @@ $n = @(Get-Process demo_scene -ErrorAction SilentlyContinue).Count
 Write-Host "started $n demo nodes on domain $Domain ($Interface): $($profiles -join ', ')"
 
 if ($Explorer) {
-    $dexe = Join-Path $repo "Debug\dart_explorer.exe"
-    if (-not (Test-Path $dexe)) { $dexe = Join-Path $repo "dart_explorer.exe" }
+    $dexe = Join-Path $repo "Debug\ramble_explorer.exe"
+    if (-not (Test-Path $dexe)) { $dexe = Join-Path $repo "ramble_explorer.exe" }
     if (Test-Path $dexe) { Start-Process -FilePath $dexe -ArgumentList "--domain","$Domain","--if",$Interface }
-    else { Write-Host "explorer not built (cmake --build build --target dart_explorer)" }
+    else { Write-Host "explorer not built (cmake --build build --target ramble_explorer)" }
 } else {
-    Write-Host "open the explorer:  .\Debug\dart_explorer.exe --domain $Domain --if $Interface"
+    Write-Host "open the explorer:  .\Debug\ramble_explorer.exe --domain $Domain --if $Interface"
 }
 Write-Host "stop them:          powershell -ExecutionPolicy Bypass -File .\explore\run_demo.ps1 -Stop"

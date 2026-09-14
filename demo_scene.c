@@ -3,8 +3,8 @@
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0601          /* GetTickCount64 */
 #endif
-#define DART_IMPLEMENTATION
-#include "dart.h"
+#define RAMBLE_IMPLEMENTATION
+#include "ramble.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,7 +26,7 @@ static unsigned long long now_ms(void){
 
 /* a publishing topic: its handle, name, period, and running sequence number */
 typedef struct {
-    DartTopic       *ch;
+    RambleTopic       *ch;
     const char        *topic;
     unsigned           period_ms;
     unsigned           seq;
@@ -49,54 +49,54 @@ static void on_sig(int s){ (void)s; g_run = 0; }
 /* The demo task: a slow lidar calibration defined on lidar-driver and called by perception
    every 10 s. A single threaded superloop: the handler defers, the main loop steps. */
 #define TASK_NAME "sensors/lidar/calibrate"
-static DartSchema   *task_req_s, *task_prg_s, *task_rsp_s;
-static DartFunction *task_def, *task_remote;
+static RambleSchema   *task_req_s, *task_prg_s, *task_rsp_s;
+static RambleFunction *task_def, *task_remote;
 static volatile uint64_t task_token;     /* the one live job (the handler answers "busy" else) */
 static unsigned task_done, task_total;
 static unsigned long long task_step_ms, task_next_call_ms;
 
-static void on_calibrate(DartRequest *req, void *user){
+static void on_calibrate(RambleRequest *req, void *user){
     (void)user;
-    if (task_token){ dart_request_fail(req, "busy: a calibration is running", dart_bytes(NULL, 0)); return; }
+    if (task_token){ ramble_request_fail(req, "busy: a calibration is running", ramble_bytes(NULL, 0)); return; }
     task_total = 20;
     if (req->schema){
-        unsigned s = (unsigned)dart_get_uint(req->data, req->schema, "sweeps");
+        unsigned s = (unsigned)ramble_get_uint(req->data, req->schema, "sweeps");
         if (s) task_total = s > 60 ? 60 : s;
     }
     task_done  = 0;
-    task_token = dart_request_defer(req);   /* implies RUNNING to the caller */
+    task_token = ramble_request_defer(req);   /* implies RUNNING to the caller */
 }
 
 /* one calibration step per tick: progress {done,total}, cancel honored, OK at the end */
 static void task_def_step(unsigned long long t){
     uint8_t b[16];
     if (!task_def || !task_token || t < task_step_ms) return;
-    if (dart_function_cancelled(task_def, task_token)){
+    if (ramble_function_cancelled(task_def, task_token)){
         char msg[48];
         snprintf(msg, sizeof msg, "stopped at %u/%u", task_done, task_total);
-        dart_function_complete(task_def, task_token, DART_CALL_CANCELLED, msg, dart_bytes(NULL, 0));
+        ramble_function_complete(task_def, task_token, RAMBLE_CALL_CANCELLED, msg, ramble_bytes(NULL, 0));
         printf("calibrate: cancelled at %u/%u\n", task_done, task_total);
         task_token = 0;
         return;
     }
     task_done++;
-    dart_schema_message_default(task_prg_s, b, sizeof b);
-    dart_set_uint(b, sizeof b, task_prg_s, "done", task_done);
-    dart_set_uint(b, sizeof b, task_prg_s, "total", task_total);
-    dart_function_progress(task_def, task_token, dart_bytes(b, dart_schema_size(task_prg_s)));
+    ramble_schema_message_default(task_prg_s, b, sizeof b);
+    ramble_set_uint(b, sizeof b, task_prg_s, "done", task_done);
+    ramble_set_uint(b, sizeof b, task_prg_s, "total", task_total);
+    ramble_function_progress(task_def, task_token, ramble_bytes(b, ramble_schema_size(task_prg_s)));
     if (task_done >= task_total){
-        dart_schema_message_default(task_rsp_s, b, sizeof b);
-        dart_set_uint(b, sizeof b, task_rsp_s, "ok", 1);
-        dart_set_uint(b, sizeof b, task_rsp_s, "points", task_total * 360u);
-        dart_function_complete(task_def, task_token, DART_CALL_OK, NULL,
-                               dart_bytes(b, dart_schema_size(task_rsp_s)));
+        ramble_schema_message_default(task_rsp_s, b, sizeof b);
+        ramble_set_uint(b, sizeof b, task_rsp_s, "ok", 1);
+        ramble_set_uint(b, sizeof b, task_rsp_s, "points", task_total * 360u);
+        ramble_function_complete(task_def, task_token, RAMBLE_CALL_OK, NULL,
+                               ramble_bytes(b, ramble_schema_size(task_rsp_s)));
         printf("calibrate: done (%u sweeps)\n", task_total);
         task_token = 0;
     }
     task_step_ms = t + 500;
 }
 
-static void on_calibrate_rsp(const DartResponse *r){
+static void on_calibrate_rsp(const RambleResponse *r){
     printf("calibrate call: status %d%s%.*s\n", (int)r->status,
            r->message.len ? " " : "", (int)r->message.len,
            r->message.data ? r->message.data : "");
@@ -106,27 +106,27 @@ static void on_calibrate_rsp(const DartResponse *r){
 static void task_caller_step(unsigned long long t){
     uint8_t b[8];
     if (!task_remote || t < task_next_call_ms) return;
-    dart_schema_message_default(task_req_s, b, sizeof b);
-    dart_set_uint(b, sizeof b, task_req_s, "sweeps", 14);
-    dart_function_call_async(task_remote, dart_bytes(b, dart_schema_size(task_req_s)),
+    ramble_schema_message_default(task_req_s, b, sizeof b);
+    ramble_set_uint(b, sizeof b, task_req_s, "sweeps", 14);
+    ramble_function_call_async(task_remote, ramble_bytes(b, ramble_schema_size(task_req_s)),
                              on_calibrate_rsp, NULL, NULL);
     task_next_call_ms = t + 10000;
 }
 
-static int task_setup(DartNode *node, const char *profile){
-    DartAllocator *mem = (DartAllocator *)malloc(sizeof *mem);
+static int task_setup(RambleNode *node, const char *profile){
+    RambleAllocator *mem = (RambleAllocator *)malloc(sizeof *mem);
     int def = !strcmp(profile, "lidar-driver"), caller = !strcmp(profile, "perception");
     if (!mem || (!def && !caller)){ free(mem); return 1; }
-    *mem = dart_allocator_heap(0);
-    task_req_s = dart_schema_compile(dart_allocator_alloc, mem, "CalibrateRequest { sweeps: u32 }", NULL);
-    task_prg_s = dart_schema_compile(dart_allocator_alloc, mem, "CalibrateProgress { done: u32, total: u32 }", NULL);
-    task_rsp_s = dart_schema_compile(dart_allocator_alloc, mem, "CalibrateResult { ok: bool, points: u32 }", NULL);
+    *mem = ramble_allocator_heap(0);
+    task_req_s = ramble_schema_compile(ramble_allocator_alloc, mem, "CalibrateRequest { sweeps: u32 }", NULL);
+    task_prg_s = ramble_schema_compile(ramble_allocator_alloc, mem, "CalibrateProgress { done: u32, total: u32 }", NULL);
+    task_rsp_s = ramble_schema_compile(ramble_allocator_alloc, mem, "CalibrateResult { ok: bool, points: u32 }", NULL);
     if (!task_req_s || !task_prg_s || !task_rsp_s) return 0;
     if (def)
-        task_def = dart_node_create_task_definition(node, TASK_NAME, task_req_s, task_prg_s,
+        task_def = ramble_node_create_task_definition(node, TASK_NAME, task_req_s, task_prg_s,
                                                     task_rsp_s, on_calibrate, NULL, NULL);
     else
-        task_remote = dart_node_create_remote_task(node, TASK_NAME, task_req_s, task_prg_s,
+        task_remote = ramble_node_create_remote_task(node, TASK_NAME, task_req_s, task_prg_s,
                                                    task_rsp_s, NULL);
     task_next_call_ms = now_ms() + 3000;   /* first call once matching settles */
     return def ? task_def != NULL : task_remote != NULL;
@@ -148,19 +148,19 @@ typedef struct { const char *name; const char **pubs; const char **subs; } Profi
 
 /* open the node, declare its interest, and record its pub topics into pubs[] (up to
    MAX_PUBS) so the main loop can publish to them. *n_pubs gets the count. */
-static DartNode *open_node(const Profile *p, uint16_t domain, const char *ifc,
+static RambleNode *open_node(const Profile *p, uint16_t domain, const char *ifc,
                            PubCh *pubs, int *n_pubs){
-    DartAllocator mem = dart_allocator_heap(0);
-    DartNode *n;
+    RambleAllocator mem = ramble_allocator_heap(0);
+    RambleNode *n;
     int i;
     *n_pubs = 0;
-    n = dart_node_open(&mem, p->name, NULL, NULL, &(DartNodeOpts){
+    n = ramble_node_open(&mem, p->name, NULL, NULL, &(RambleNodeOpts){
         .domain = domain, .max_topics = 16,
         .net = { .multicast_interface = ifc } });
     if (!n){ fprintf(stderr, "  open %s failed\n", p->name); return NULL; }
     for (i = 0; p->pubs && p->pubs[i]; i++){
-        DartTopic *ch = dart_node_create_topic(n, p->pubs[i], DART_PUB_ONLY, NULL, &(DartTopicOpts){
-            .qos = { .reliability = reliable(p->pubs[i]) ? DART_RELIABLE : DART_BEST_EFFORT,
+        RambleTopic *ch = ramble_node_create_topic(n, p->pubs[i], RAMBLE_PUB_ONLY, NULL, &(RambleTopicOpts){
+            .qos = { .reliability = reliable(p->pubs[i]) ? RAMBLE_RELIABLE : RAMBLE_BEST_EFFORT,
                      .keep_last = 16 } });
         if (ch && *n_pubs < MAX_PUBS){
             PubCh *pc = &pubs[(*n_pubs)++];
@@ -169,17 +169,17 @@ static DartNode *open_node(const Profile *p, uint16_t domain, const char *ifc,
         }
     }
     for (i = 0; p->subs && p->subs[i]; i++)
-        dart_node_create_topic(n, p->subs[i], DART_SUB_ONLY, NULL, &(DartTopicOpts){
-            .qos = { .reliability = reliable(p->subs[i]) ? DART_RELIABLE : DART_BEST_EFFORT } });
+        ramble_node_create_topic(n, p->subs[i], RAMBLE_SUB_ONLY, NULL, &(RambleTopicOpts){
+            .qos = { .reliability = reliable(p->subs[i]) ? RAMBLE_RELIABLE : RAMBLE_BEST_EFFORT } });
     return n;
 }
 
 int main(int argc, char **argv){
-    uint16_t domain = 0;             /* DART default domain (matches the explorer's default) */
+    uint16_t domain = 0;             /* Ramble default domain (matches the explorer's default) */
     const char *ifc = "127.0.0.1";   /* single-host loopback, matching the default observer */
     const char *want = NULL;         /* which profile to run */
     const Profile *prof = NULL;
-    DartNode *node;
+    RambleNode *node;
     PubCh pubs[MAX_PUBS];
     int n_pubs = 0, i;
     unsigned long long start_ms;
@@ -241,14 +241,14 @@ int main(int argc, char **argv){
                                    (double)(t - start_ms) / 1000.0);
                 if (len < 0) len = 0;
                 if (len > (int)sizeof buf) len = (int)sizeof buf;
-                dart_topic_send(pubs[i].ch, dart_bytes(buf, (size_t)len), NULL);
+                ramble_topic_send(pubs[i].ch, ramble_bytes(buf, (size_t)len), NULL);
                 pubs[i].seq++;
                 pubs[i].next_ms = t + pubs[i].period_ms;
             }
         }
-        dart_node_poll(node, 10);
+        ramble_node_poll(node, 10);
     }
 
-    dart_node_close(node, 1);
+    ramble_node_close(node, 1);
     return 0;
 }

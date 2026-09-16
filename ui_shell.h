@@ -6,8 +6,8 @@
 static void ui_logo(const Palette *P){
     CLAY({ .layout = { .childGap = (uint16_t)UISC(8), .childAlignment = { .y = CLAY_ALIGN_Y_CENTER },
                        .padding = { .left = (uint16_t)UISC(2), .right = (uint16_t)UISC(8) } } }) {
-        ui_icon(ICON_LOGO, 22, UI_NONE);   /* Logo.svg, full color (drawn untinted) */
-        CLAY_TEXT(CLAY_STRING("Ramble"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_BOLD, FS_VALUE),
+        ui_icon(ICON_LOGO, 22, UI_NONE);   /* Logo.png, full color (drawn untinted) */
+        CLAY_TEXT(CLAY_STRING("Rant"), CLAY_TEXT_CONFIG({ UI_FONT(FAM_SANS, WT_BOLD, FS_VALUE),
                                                           .textColor = P->text, .wrapMode = CLAY_TEXT_WRAP_NONE }));
     }
 }

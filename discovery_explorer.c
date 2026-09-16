@@ -24,6 +24,12 @@
 #include "nanosvg.h"
 #define NANOSVGRAST_IMPLEMENTATION
 #include "nanosvgrast.h"
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_NO_STDIO
+#include "stb_image.h"
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include "stb_image_resize2.h"
 
 #include "net_capture.h"
 #include "ui_theme.h"
@@ -70,7 +76,7 @@ int main(int argc, char **argv){
     {   int parsed = cap_parse_args(argc, argv, &cfg);
         if (parsed <= 0) return parsed < 0 ? 1 : 0;
     }
-    printf("Ramble Explorer\n  observer \"%s\"  domain %u  group %s:%u  interface %s\n",
+    printf("Rant Explorer\n  observer \"%s\"  domain %u  group %s:%u  interface %s\n",
            cfg.name, cfg.domain, cfg.group, cfg.port, cfg.ifc ? cfg.ifc : "(auto)");
     printf("  hotkey: F12 = toggle the Clay layout inspector\n");
 
@@ -83,22 +89,23 @@ int main(int argc, char **argv){
         fprintf(stderr, "TTF_Init failed: %s\n", SDL_GetError());
         return 1;
     }
-    if (!SDL_CreateWindowAndRenderer("Ramble Explorer", 1280, 800,
+    if (!SDL_CreateWindowAndRenderer("Rant Explorer", 1280, 800,
             SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY, &win, &ren)){
         fprintf(stderr, "SDL_CreateWindowAndRenderer failed: %s\n", SDL_GetError());
         return 1;
     }
     SDL_SetRenderVSync(ren, 1);   /* paced to the display, the service thread polls */
     SDL_StartTextInput(win);   /* deliver SDL_EVENT_TEXT_INPUT for the text boxes */
+    ui_window_icon(win);
 
     dpi = SDL_GetWindowPixelDensity(win);   /* physical px per logical px (1.0 = 100%) */
     if (dpi <= 0.0f) dpi = 1.0f;
-    {   const char *z = getenv("RAMBLE_UI_ZOOM");   /* optional extra zoom on the CSS px */
+    {   const char *z = getenv("RANT_UI_ZOOM");   /* optional extra zoom on the CSS px */
         ui_scale = z ? (float)atof(z) : 1.0f;
         if (ui_scale < 0.5f) ui_scale = 0.5f;
         if (ui_scale > 4.0f) ui_scale = 4.0f;
     }
-    printf("  display pixel density %.2f, UI zoom %.2f (override with RAMBLE_UI_ZOOM)\n",
+    printf("  display pixel density %.2f, UI zoom %.2f (override with RANT_UI_ZOOM)\n",
            (double)dpi, (double)ui_scale);
 
     if (!ui_fonts_load(dpi)){
@@ -120,11 +127,11 @@ int main(int argc, char **argv){
     Clay_SetMeasureTextFunction(ui_measure_text, g_fonts);
 
     app_init(&app, &g_data);
-    {   const char *tab = getenv("RAMBLE_UI_TAB");   /* optional: open straight on a tab */
+    {   const char *tab = getenv("RANT_UI_TAB");   /* optional: open straight on a tab */
         if (tab){ if (!strcmp(tab, "topics")) app.tab = TAB_TOPICS;
                   else if (!strcmp(tab, "nodes")) app.tab = TAB_NODES; }
     }
-    {   const char *tp = getenv("RAMBLE_UI_TOPIC");   /* select a topic and drawer once it appears */
+    {   const char *tp = getenv("RANT_UI_TOPIC");   /* select a topic and drawer once it appears */
         if (tp && *tp){ snprintf(app.select_topic, sizeof app.select_topic, "%s", tp); app.drawer_open = 1; }
     }
 
@@ -133,9 +140,9 @@ int main(int argc, char **argv){
     app.cap = &cap;          /* lets the Topics tab subscribe and read the live feed */
 
     last_ticks = SDL_GetTicks();
-    /* an optional readout, RAMBLE_UI_FPS=1: the service thread owns the poll, so this fps is
+    /* an optional readout, RANT_UI_FPS=1: the service thread owns the poll, so this fps is
        the render rate and render ms the per frame layout and text work */
-    int      fps_show = getenv("RAMBLE_UI_FPS") != NULL;
+    int      fps_show = getenv("RANT_UI_FPS") != NULL;
     uint64_t fps_t0 = last_ticks; int fps_frames = 0; double fps_render_ms = 0.0;
     for (;;){
         SDL_Event ev;

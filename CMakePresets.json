@@ -1,0 +1,43 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21 },
+  "configurePresets": [
+    {
+      "name": "windows",
+      "displayName": "Windows (Visual Studio)",
+      "description": "Newest installed Visual Studio, Rant from the pinned release",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux (Ninja)",
+      "description": "Ninja, Rant from the pinned release",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "windows-local",
+      "inherits": "windows",
+      "displayName": "Windows (Visual Studio), local Rant",
+      "description": "Rant from the ../Rant working tree",
+      "cacheVariables": { "CPM_rant_SOURCE": "${sourceDir}/../Rant" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "linux-local",
+      "inherits": "linux",
+      "displayName": "Linux (Ninja), local Rant",
+      "description": "Rant from the ../Rant working tree",
+      "cacheVariables": { "CPM_rant_SOURCE": "${sourceDir}/../Rant" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows", "configurePreset": "windows", "configuration": "Release" },
+    { "name": "linux", "configurePreset": "linux", "configuration": "Release" },
+    { "name": "windows-local", "configurePreset": "windows-local", "configuration": "Release" },
+    { "name": "linux-local", "configurePreset": "linux-local", "configuration": "Release" }
+  ]
+}

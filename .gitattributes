@@ -1,0 +1,2 @@
+# Store text as LF on every machine. Binaries are detected and left alone.
+* text=auto eol=lf

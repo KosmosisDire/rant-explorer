@@ -1,0 +1,10 @@
+# CMake build trees and the built exes
+/build/
+/bin/
+
+# Editor and OS files
+.vs/
+.vscode/
+*.user
+Thumbs.db
+.DS_Store

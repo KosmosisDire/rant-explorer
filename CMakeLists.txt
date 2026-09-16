@@ -1,38 +1,38 @@
-# The explorer: Clay layout plus SDL3, with SDL3, SDL3_ttf and clay.h fetched at pinned
-# tags and Ramble from ../dist. Standalone or from the root (spec/explorer.md).
+# The explorer: Clay layout plus SDL3. CPM fetches Rant, SDL3 and SDL3_ttf, and clay.h,
+# nanosvg and stb are single headers downloaded at configure (spec/explorer.md in the Rant repo).
 
 cmake_minimum_required(VERSION 3.19)
-project(ramble_explorer C)
+project(rant_explorer C)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# Static CRT (see the module): a copied exe must run with no VC++ redistributable.
-# Before FetchContent, so SDL3 and vendored freetype build against the same runtime.
-include("${CMAKE_CURRENT_SOURCE_DIR}/../tools/static_runtime.cmake")
-
-# Standalone: own the output dir and define a minimal ramble target over ../dist. Under the
-# root build the ramble target already exists.
-if(NOT TARGET ramble)
-  if(CMAKE_CONFIGURATION_TYPES)
-    set(CMAKE_CONFIGURATION_TYPES "Release;Debug;RelWithDebInfo;MinSizeRel"
-        CACHE STRING "Build configs (Release first = the default)" FORCE)
-  endif()
-  get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
-  # land binaries in bin/ like the root build, every config shares it (docs/building.md)
-  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${REPO_ROOT}/bin")
-  foreach(_cfg ${CMAKE_CONFIGURATION_TYPES})
-    string(TOUPPER "${_cfg}" _CFG)
-    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${_CFG} "${REPO_ROOT}/bin")
-  endforeach()
-  add_library(ramble INTERFACE)
-  target_include_directories(ramble INTERFACE "${REPO_ROOT}/dist")
-  include("${REPO_ROOT}/tools/ramble_platform.cmake")
+# Release first so a bare multi config build is Release. Every config lands in bin/.
+if(CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_CONFIGURATION_TYPES "Release;Debug;RelWithDebInfo;MinSizeRel"
+      CACHE STRING "Build configs (Release first = the default)" FORCE)
 endif()
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+foreach(_cfg ${CMAKE_CONFIGURATION_TYPES})
+  string(TOUPPER "${_cfg}" _CFG)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${_CFG} "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+endforeach()
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/get_cpm.cmake")
+
+# The explorer speaks this release's announce wire. The local presets set CPM_rant_SOURCE
+# to ../Rant to build against the working tree instead.
+CPMAddPackage(NAME rant
+  GITHUB_REPOSITORY KosmosisDire/Rant
+  VERSION 0.0.14
+  EXCLUDE_FROM_ALL YES)
+
+# Static CRT: a copied exe must run with no VC++ redistributable. Before SDL3, so SDL3 and
+# vendored freetype build against the same runtime.
+include("${rant_SOURCE_DIR}/tools/static_runtime.cmake")
+
 set(DEPS "${CMAKE_BINARY_DIR}/deps")
 file(MAKE_DIRECTORY "${DEPS}/include")
-
-include(FetchContent)
 
 function(fetch url dest)
   if(NOT EXISTS "${dest}")
@@ -84,51 +84,61 @@ set(NSVG_RAW "https://raw.githubusercontent.com/memononen/nanosvg/master/src")
 fetch("${NSVG_RAW}/nanosvg.h"     "${DEPS}/include/nanosvg.h")
 fetch("${NSVG_RAW}/nanosvgrast.h" "${DEPS}/include/nanosvgrast.h")
 
+# stb decodes and shrinks Logo.png, the top bar logo and the window icon on every platform.
+set(STB_RAW "https://raw.githubusercontent.com/nothings/stb/master")
+fetch("${STB_RAW}/stb_image.h"         "${DEPS}/include/stb_image.h")
+fetch("${STB_RAW}/stb_image_resize2.h" "${DEPS}/include/stb_image_resize2.h")
+
+# Logo.png becomes a byte array header. Written only on change so an unchanged logo rebuilds nothing.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Logo.png")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/Logo.png" _logo_hex HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," _logo_hex "${_logo_hex}")
+set(_logo_h "/* generated from Logo.png by CMakeLists.txt */\nstatic const unsigned char UI_LOGO_PNG[] = {${_logo_hex}};\n")
+set(_logo_old "")
+if(EXISTS "${DEPS}/include/logo_png.h")
+  file(READ "${DEPS}/include/logo_png.h" _logo_old)
+endif()
+if(NOT _logo_old STREQUAL _logo_h)
+  file(WRITE "${DEPS}/include/logo_png.h" "${_logo_h}")
+endif()
+
 # Fonts are the OS system fonts (system-ui / ui-monospace), loaded by path at
 # runtime to match the mockup per platform. Nothing to fetch.
 
 # SDL3 + SDL_ttf, built from source, static (same result on Windows/Linux, no packages).
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(SDL_SHARED   OFF CACHE BOOL "" FORCE)
-set(SDL_STATIC   ON  CACHE BOOL "" FORCE)
-set(SDL_TEST         OFF CACHE BOOL "" FORCE)
-set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
-set(SDL_EXAMPLES     OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(SDL3
+CPMAddPackage(NAME SDL3
   URL https://github.com/libsdl-org/SDL/releases/download/release-3.2.16/SDL3-3.2.16.tar.gz
-  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-FetchContent_MakeAvailable(SDL3)
+  VERSION 3.2.16
+  EXCLUDE_FROM_ALL YES
+  OPTIONS "BUILD_SHARED_LIBS OFF" "SDL_SHARED OFF" "SDL_STATIC ON" "SDL_TEST OFF"
+          "SDL_TEST_LIBRARY OFF" "SDL_EXAMPLES OFF")
 
 # SDL_ttf vendors FreeType from its git submodule, which the tarball omits. HarfBuzz and
 # PlutoSVG off keep it lean, so only external/freetype is pulled.
-set(SDLTTF_VENDORED ON  CACHE BOOL "" FORCE)
-set(SDLTTF_HARFBUZZ OFF CACHE BOOL "" FORCE)
-set(SDLTTF_PLUTOSVG OFF CACHE BOOL "" FORCE)
-set(SDLTTF_SAMPLES  OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(SDL3_ttf
-  GIT_REPOSITORY https://github.com/libsdl-org/SDL_ttf.git
+CPMAddPackage(NAME SDL3_ttf
+  GITHUB_REPOSITORY libsdl-org/SDL_ttf
   GIT_TAG release-3.2.2
-  GIT_SUBMODULES external/freetype)
-FetchContent_MakeAvailable(SDL3_ttf)
+  VERSION 3.2.2
+  GIT_SUBMODULES external/freetype
+  EXCLUDE_FROM_ALL YES
+  OPTIONS "BUILD_SHARED_LIBS OFF" "SDLTTF_VENDORED ON" "SDLTTF_HARFBUZZ OFF"
+          "SDLTTF_PLUTOSVG OFF" "SDLTTF_SAMPLES OFF")
 
-# Two TUs: discovery_explorer.c is the SDL3/Clay UI, net_capture.c owns Ramble + winsock.
-add_executable(ramble_explorer discovery_explorer.c net_capture.c)
-target_include_directories(ramble_explorer PRIVATE
+# Two TUs: discovery_explorer.c is the SDL3/Clay UI, net_capture.c owns Rant + winsock.
+# Each defines its own implementation flavour, so they link the headers, never rant_host.
+add_executable(rant_explorer discovery_explorer.c net_capture.c)
+target_include_directories(rant_explorer PRIVATE
   "${DEPS}/include" "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(ramble_explorer PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf
-                      ramble ramble_platform)
-if(NOT WIN32)
-  target_link_libraries(ramble_explorer PRIVATE m)
+target_link_libraries(rant_explorer PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf
+                      rant::rant rant::rant_platform)
+if(WIN32)
+  target_sources(rant_explorer PRIVATE rant_explorer.rc)   # the exe file icon, Logo.ico
+else()
+  target_link_libraries(rant_explorer PRIVATE m)
 endif()
 
-# demo_scene: the sample mesh node run_demo.ps1 launches. Built here so it stays in
-# lockstep with dist/, since a stale copy speaks an old announce wire and never joins.
+# demo_scene: the sample mesh node run_demo.ps1 launches. Built here so it speaks the same
+# announce wire as the explorer, since a stale copy never joins.
 add_executable(demo_scene demo_scene.c)
 target_include_directories(demo_scene PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(demo_scene PRIVATE ramble ramble_platform)
-
-# regenerate dist/ before building when the root build owns that target
-if(TARGET dist)
-  add_dependencies(ramble_explorer dist)
-  add_dependencies(demo_scene dist)
-endif()
+target_link_libraries(demo_scene PRIVATE rant::rant rant::rant_platform)

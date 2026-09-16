@@ -6,7 +6,7 @@
 #include <SDL3_ttf/SDL_ttf.h>
 
 /* All sizes are the mockup's CSS px. Final px = css_px times ui_scale, a zoom set by main
-   from RAMBLE_UI_ZOOM, times ui_dpi, the display density set by ui_fonts_load. */
+   from RANT_UI_ZOOM, times ui_dpi, the display density set by ui_fonts_load. */
 static float ui_scale = 1.0f;
 static float ui_dpi   = 1.0f;
 #define UISC(px) ((float)(px) * ui_scale * ui_dpi)

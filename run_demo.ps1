@@ -1,19 +1,15 @@
 <#
-  run_demo.ps1 - start (or stop) the Ramble Explorer demo mesh.
+  Start or stop the explorer demo mesh: 6 nodes (perception, planner, lidar-driver,
+  camera-driver, controller, logger), one per process, each publishing a small payload
+  on its topics so the live feed shows real messages. See demo_scene.c.
 
-  Spins up the handoff sample mesh: 6 nodes (perception, planner, lidar-driver,
-  camera-driver, controller, logger) declaring a hierarchical topic set, one node
-  per process, each publishing a small payload on its topics so the explorer's live
-  feed shows real messages once you subscribe. See explore/demo_scene.c.
+  powershell -ExecutionPolicy Bypass -File .\run_demo.ps1             start
+  powershell -ExecutionPolicy Bypass -File .\run_demo.ps1 -Stop       stop
+  powershell -ExecutionPolicy Bypass -File .\run_demo.ps1 -Explorer   start and open the explorer
+  powershell -ExecutionPolicy Bypass -File .\run_demo.ps1 -Build      build first, then start
+  ... -Domain 7 -Interface 127.0.0.1
 
-  Usage (from the repo root):
-    powershell -ExecutionPolicy Bypass -File .\explore\run_demo.ps1            # start
-    powershell -ExecutionPolicy Bypass -File .\explore\run_demo.ps1 -Stop      # stop
-    powershell -ExecutionPolicy Bypass -File .\explore\run_demo.ps1 -Explorer  # start + open the explorer
-    powershell -ExecutionPolicy Bypass -File .\explore\run_demo.ps1 -Build     # (re)build demo_scene.exe, then start
-    ... -Domain 7 -Interface 127.0.0.1
-
-  First run pops a one-time Windows Firewall prompt for demo_scene.exe -- click Allow.
+  The first run asks once to allow demo_scene.exe through Windows Firewall.
 #>
 [CmdletBinding()]
 param(
@@ -25,9 +21,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$repo = Split-Path -Parent $PSScriptRoot          # repo root (parent of explore/)
-$exe  = Join-Path $repo "demo_scene.exe"
-$src  = Join-Path $PSScriptRoot "demo_scene.c"
+$bin      = Join-Path $PSScriptRoot "bin"
+$exe      = Join-Path $bin "demo_scene.exe"
 $profiles = @("perception","planner","lidar-driver","camera-driver","controller","logger")
 
 if ($Stop) {
@@ -37,26 +32,22 @@ if ($Stop) {
     return
 }
 
-# Rebuild if forced, missing or stale: a demo_scene built against an older dist/ speaks the
-# old announce wire and shows as nodes found but never joining. This gcc path is self contained.
-$dist  = Join-Path $repo "dist\ramble.h"
-$stale = $false
-if (Test-Path $exe) {
-    $exeTime = (Get-Item $exe).LastWriteTime
-    foreach ($dep in @($src, $dist)) {
-        if ((Test-Path $dep) -and (Get-Item $dep).LastWriteTime -gt $exeTime) { $stale = $true; break }
+# The build is incremental, so rebuilding keeps demo_scene on the explorer's announce wire.
+if ($Build -or -not (Test-Path $exe)) {
+    Push-Location $PSScriptRoot
+    try {
+        if (-not (Test-Path "build\windows\CMakeCache.txt")) {
+            & cmake --preset windows
+            if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+        }
+        & cmake --build --preset windows
+        if ($LASTEXITCODE -ne 0) { throw "build failed" }
+    } finally {
+        Pop-Location
     }
-}
-if ($Build -or -not (Test-Path $exe) -or $stale) {
-    if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
-        throw "demo_scene.exe missing or stale and gcc (MinGW) is not on PATH to (re)build it"
-    }
-    Write-Host "building demo_scene.exe ..."
-    & gcc -std=c99 -Wall -I"$repo\dist" "$src" -o "$exe" -lws2_32 -lbcrypt -lwinmm
-    if ($LASTEXITCODE -ne 0) { throw "build failed" }
 }
 
-# restart cleanly: stop any that are already up so we don't double them
+# Restart cleanly so the nodes are not doubled.
 Get-Process demo_scene -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 300
 
@@ -67,12 +58,11 @@ Start-Sleep -Milliseconds 500
 $n = @(Get-Process demo_scene -ErrorAction SilentlyContinue).Count
 Write-Host "started $n demo nodes on domain $Domain ($Interface): $($profiles -join ', ')"
 
+$explorerExe = Join-Path $bin "rant_explorer.exe"
 if ($Explorer) {
-    $dexe = Join-Path $repo "Debug\ramble_explorer.exe"
-    if (-not (Test-Path $dexe)) { $dexe = Join-Path $repo "ramble_explorer.exe" }
-    if (Test-Path $dexe) { Start-Process -FilePath $dexe -ArgumentList "--domain","$Domain","--if",$Interface }
-    else { Write-Host "explorer not built (cmake --build build --target ramble_explorer)" }
+    if (Test-Path $explorerExe) { Start-Process -FilePath $explorerExe -ArgumentList "--domain","$Domain","--if",$Interface }
+    else { Write-Host "explorer not built (run with -Build)" }
 } else {
-    Write-Host "open the explorer:  .\Debug\ramble_explorer.exe --domain $Domain --if $Interface"
+    Write-Host "open the explorer:  .\bin\rant_explorer.exe --domain $Domain --if $Interface"
 }
-Write-Host "stop them:          powershell -ExecutionPolicy Bypass -File .\explore\run_demo.ps1 -Stop"
+Write-Host "stop them:          powershell -ExecutionPolicy Bypass -File .\run_demo.ps1 -Stop"

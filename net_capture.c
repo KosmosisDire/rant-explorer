@@ -6,9 +6,9 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 
-#define RAMBLE_TRANSPORT_IMPLEMENTATION
-#define RAMBLE_NO_SHM
-#include "ramble_transport.h"
+#define RANT_TRANSPORT_IMPLEMENTATION
+#define RANT_NO_SHM
+#include "rant_transport.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,10 +41,10 @@ static int cap_grow(void *arr_ptr, int *cap, int need, size_t elem){
 }
 
 typedef struct {
-    char     name[RAMBLE_TOPIC_NAME_MAX + 1];   /* entity base name (mangling never surfaces) */
+    char     name[RANT_TOPIC_NAME_MAX + 1];     /* entity base name (mangling never surfaces) */
     uint16_t index;
     int      reliable;       /* offered (pub) / requested (sub) */
-    uint8_t  kind;           /* RambleEntityKind: 0 topic, else function/variable/task */
+    uint8_t  kind;           /* RantEntityKind: 0 topic, else function/variable/task */
     uint8_t  writable;       /* variable: a set channel is advertised */
     uint8_t  forceable;      /* variable: the owner permits force/unforce (allow_force) */
     uint8_t  cancellable;    /* task: the provider honors cancel (attrs) */
@@ -66,7 +66,7 @@ typedef struct {
     uint16_t frag;
     uint16_t meta_len;     /* always 0 now: the overlay length is not a reflected fact */
     uint32_t rtt_us, rtt_jitter_us, rtt_min_us, rtt_samples;   /* our measured round trip to it */
-    char     name[RAMBLE_NODE_NAME_MAX + 1];
+    char     name[RANT_NODE_NAME_MAX + 1];
     char     ip[48];       /* "a.b.c.d" or "[v6]" */
     uint16_t port;
     /* advertised entities grown to the peer's topic count: high water heap buffers
@@ -75,7 +75,7 @@ typedef struct {
     int      n_sub, sub_cap;
     CapTopic *pub;
     CapTopic *sub;
-    uint32_t topics_epoch;   /* the RamblePeerInfo.epoch the lists were last built from, the one
+    uint32_t topics_epoch;   /* the RantPeerInfo.epoch the lists were last built from, the one
                                 cache key since the node bumps it on any reflected change */
 
     /* observer-derived */
@@ -95,12 +95,12 @@ static Config  cap_cfg;          /* echoed into the snapshot for display */
 
 /* Threading: the service thread owns discovery, receive and timers, every explorer topic
    is queued and drains on the UI thread, only cap_on_event fires on it (spec/explorer.md). */
-static RambleNode *cap_node;
+static RantNode *cap_node;
 
 static void *cap_schema_alloc(void *user, void *ptr, size_t size);          /* defined below */
-static RambleSchema *cap_topic_schema_parse(RambleNode *node, const char *topic);/* defined below */
-static RambleSchema *cap_entity_schema_copy(RambleNode *node, const char *topic, int which);
-static void cap_schema_poll(RambleNode *node);                                 /* defined below */
+static RantSchema *cap_topic_schema_parse(RantNode *node, const char *topic);/* defined below */
+static RantSchema *cap_entity_schema_copy(RantNode *node, const char *topic, int which);
+static void cap_schema_poll(RantNode *node);                                   /* defined below */
 
 /* set by cap_on_event whenever the topology may have changed, so cap_schema_poll
    re checks every adopted schema on the next UI frame */
@@ -108,7 +108,7 @@ static int cap_schema_dirty;
 static unsigned long long cap_schema_next_ms;   /* a fallback: the ranking flips on silence,
                                                    which no event marks */
 
-/* one observer side topic the explorer is using: a ring of recent messages plus the Ramble
+/* one observer side topic the explorer is using: a ring of recent messages plus the Rant
    topics wiring it up, ch[0] best effort and ch[1] reliable, one live (spec/explorer.md). */
 #define CAP_MAX_SUBS 16000   /* distinct topics the explorer may show data for at once,
                                 the announce ceiling (spec/explorer.md) */
@@ -122,12 +122,12 @@ typedef struct {
     uint16_t preview_len;
     int      mine;                        /* 1 = we published it (local echo) */
     int      forced;                      /* variable value published FORCED (prefix flag) */
-    int      call_status;                 /* function reply: RambleCallStatus (nonzero = failed) */
-    char     call_msg[RAMBLE_CALL_MSG_MAX + 1];   /* function reply: RambleResponse.message */
+    int      call_status;                 /* function reply: RantCallStatus (nonzero = failed) */
+    char     call_msg[RANT_CALL_MSG_MAX + 1];     /* function reply: RantResponse.message */
     int      decoded;                     /* 1 = fields[] holds the reflected decode */
     int      n_fields, total_fields;
-    char     type_name[RAMBLE_TOPIC_NAME_MAX + 1];   /* sender's schema root name when decoded */
-    char     sender[RAMBLE_NODE_NAME_MAX + 1];
+    char     type_name[RANT_TOPIC_NAME_MAX + 1];     /* sender's schema root name when decoded */
+    char     sender[RANT_NODE_NAME_MAX + 1];
     char     preview[CAP_MSG_PREVIEW];    /* decoded: a one line summary. raw: the payload head */
     CapMsgField fields[CAP_MSG_FIELDS];   /* per-field rendered decode (all depths) */
 } CapMsgRec;
@@ -141,10 +141,10 @@ typedef struct {
     uint8_t      kind;                   /* CAP_KIND_* entity kind, resolved from the peer view at
                                             first use (0 = plain topic). Locked in once channels exist. */
     uint64_t     generation;   /* the entity's mesh generation the channels were adopted at */
-    char         name[RAMBLE_TOPIC_NAME_MAX + 1];
-    RambleTopic *ch[2];   /* [0] best effort, [1] reliable, NULL until first needed. For a
+    char         name[RANT_TOPIC_NAME_MAX + 1];
+    RantTopic *ch[2];     /* [0] best effort, [1] reliable, NULL until first needed. For a
                            variable ch[1] is the value channel, a function has none */
-    RambleTopic   *set_ch;                 /* VARIABLE: our name@set publisher (kind VAR_SET) */
+    RantTopic     *set_ch;                 /* VARIABLE: our name@set publisher (kind VAR_SET) */
     /* one deadline bounded pending send, parked when a send races the forming match since
        the blocking match wait is disabled here. Newest overwrites, cap_poll flushes or drops. */
     uint8_t     *pend_data;              /* malloc'd payload, may be empty. pend_used gates */
@@ -152,9 +152,9 @@ typedef struct {
     uint8_t      pend_op;                /* VARIABLE: the set-channel op byte */
     uint8_t      pend_used;
     unsigned long long pend_expire_ms;
-    RambleFunction *fn;   /* FUNCTION and TASK: our caller handle, subscribe = watch own calls */
-    RambleSchema  *req_schema;   /* FUNCTION and TASK: our parsed request schema for the form */
-    RambleSchema  *rsp_schema;   /* FUNCTION and TASK: our parsed response schema for replies */
+    RantFunction *fn;     /* FUNCTION and TASK: our caller handle, subscribe = watch own calls */
+    RantSchema    *req_schema;   /* FUNCTION and TASK: our parsed request schema for the form */
+    RantSchema    *rsp_schema;   /* FUNCTION and TASK: our parsed response schema for replies */
     int          forced;                 /* VARIABLE: the newest value carried the FORCED flag */
     uint32_t     write_seq;              /* VARIABLE: the newest value's write counter */
     /* VARIABLE: the newest value re spelled in publish form syntax so the form can open on
@@ -163,9 +163,9 @@ typedef struct {
     int           n_form_vals;           /* entries filled (0 = no decodable value yet) */
     /* TASK: entirely raw wire, no pattern handle (spec/explorer.md). prg_ch taps the
        progress, req_raw carries calls and cancel ops, rsp_ch receives our directed responses. */
-    RambleTopic   *prg_ch;   /* TASK: the raw @prg tap, best effort so it never stalls the task */
-    RambleTopic   *req_raw;              /* TASK: raw @req publisher (calls + cancel ops) */
-    RambleTopic   *rsp_ch;               /* TASK: raw @rsp subscriber (RUNNING + terminals) */
+    RantTopic     *prg_ch;   /* TASK: the raw @prg tap, best effort so it never stalls the task */
+    RantTopic     *req_raw;              /* TASK: raw @req publisher (calls + cancel ops) */
+    RantTopic     *rsp_ch;               /* TASK: raw @rsp subscriber (RUNNING + terminals) */
     uint16_t     prg_index, rsp_index;   /* their local indices (intake demux keys) */
     int          call_phase;             /* CAP_TCALL_* of our own newest call */
     uint32_t     call_id;                /* that call's id (our own per-caller counter) */
@@ -173,8 +173,8 @@ typedef struct {
     uint32_t     call_provider;          /* the peer the call was directed at (cancel target) */
     unsigned long long call_deadline_ms; /* until-first-response bound (RUNNING drops it) */
     uint32_t     prg_count;              /* progress payloads seen for the current call */
-    int          task_status;            /* its terminal RambleCallStatus */
-    char         task_msg[RAMBLE_CALL_MSG_MAX + 1];   /* its terminal response message */
+    int          task_status;            /* its terminal RantCallStatus */
+    char         task_msg[RANT_CALL_MSG_MAX + 1];     /* its terminal response message */
     CapMsgRec   *prg_last;               /* newest decoded progress (lazily allocated) */
     int          prg_have;               /* prg_last holds the current call's newest update */
     uint16_t     index[2];               /* their topic indices (valid where ch[i] != NULL) */
@@ -193,7 +193,7 @@ typedef struct {
     int          jitter_n;   /* samples folded in, gates the estimate until warm */
     CapMiniPreview mini;                 /* newest value, compact (the topic list's VALUE column) */
     uint64_t     mini_hash;              /* schema hash the recognition below was formed under */
-    uint8_t      mini_std;   /* the RambleStdType of that schema's root, recognized once */
+    uint8_t      mini_std;   /* the RantStdType of that schema's root, recognized once */
 } CapSub;
 
 static CapSub cap_subs[CAP_MAX_SUBS];
@@ -205,7 +205,7 @@ static CapSub cap_subs[CAP_MAX_SUBS];
 #define CAP_TASK_OP_CALL   0u      /* @req op: a call (payload = the request) */
 #define CAP_TASK_OP_CANCEL 1u   /* the @req cancel op: an empty payload is the sender's own call, a
                                    [u32 caller_lo] payload names another caller's */
-#define CAP_CALL_TIMEOUT_MS 5000ull /* until-first-response bound (RAMBLE_CALL_TIMEOUT_US) */
+#define CAP_CALL_TIMEOUT_MS 5000ull /* until-first-response bound (RANT_CALL_TIMEOUT_US) */
 
 static uint32_t cap_self_lo;       /* our own uuid low-32 (the @prg header's caller key) */
 
@@ -234,14 +234,14 @@ static CapSub *cap_sub_get(const char *name){          /* find or claim a slot *
     if (s) return s;
     /* claiming runs on the UI thread while the service thread's event callback may walk
        the table (cap_sub_by_index): publish the slot atomically under the node lock */
-    if (cap_node) ramble_node_lock(cap_node);
+    if (cap_node) rant_node_lock(cap_node);
     for (i = 0; i < CAP_MAX_SUBS; i++) if (!cap_subs[i].used){
         s = &cap_subs[i]; memset(s, 0, sizeof *s);
         snprintf(s->name, sizeof s->name, "%s", name);
         s->used = 1;
         break;
     }
-    if (cap_node) ramble_node_unlock(cap_node);
+    if (cap_node) rant_node_unlock(cap_node);
     return s;
 }
 static CapSub *cap_sub_by_index(uint16_t index){
@@ -255,7 +255,7 @@ static CapSub *cap_sub_by_index(uint16_t index){
 }
 
 /* Reflected decode: the explorer subscribes without a schema of its own, so a message's
-   RambleMsg.schema is the sender's and each becomes per field rows as the writer declared. */
+   RantMsg.schema is the sender's and each becomes per field rows as the writer declared. */
 static int cap_val_append(char *dst, int cap, int at, const char *fmt, ...){
     va_list ap; int n;
     if (at >= cap - 1) return cap - 1;
@@ -267,31 +267,31 @@ static int cap_val_append(char *dst, int cap, int at, const char *fmt, ...){
 }
 /* an array value, elements decoded by their kind. Appends at most max_items of them, 0 =
    as many as fit, then " .." if any were left out. fixed_float picks fixed width floats. */
-static void cap_fmt_arr(char *dst, int cap, int *at, RambleBytes a, uint8_t elem, uint16_t count,
+static void cap_fmt_arr(char *dst, int cap, int *at, RantBytes a, uint8_t elem, uint16_t count,
                         uint16_t str_cap, uint16_t max_items, int fixed_float){
-    uint32_t esz = (elem == RAMBLE_STR) ? 2u + str_cap
-                                      : ramble_schema_scalar_size((RambleSchemaTypeKind)elem);
+    uint32_t esz = (elem == RANT_STR) ? 2u + str_cap
+                                      : rant_schema_scalar_size((RantSchemaTypeKind)elem);
     uint16_t limit = (max_items && max_items < count) ? max_items : count;
     uint16_t j;
     *at = cap_val_append(dst, cap, *at, "[");
     for (j = 0; j < limit && esz && *at < cap - 8; j++){   /* keep room for " ..]" */
         const uint8_t *p = a.data + (size_t)j * esz;
         if (j) *at = cap_val_append(dst, cap, *at, " ");
-        switch ((RambleSchemaTypeKind)elem){
-            case RAMBLE_U8:  *at = cap_val_append(dst,cap,*at,"%u",  p[0]); break;
-            case RAMBLE_U16: *at = cap_val_append(dst,cap,*at,"%u",  i_ramble_le_r16(p)); break;
-            case RAMBLE_U32: *at = cap_val_append(dst,cap,*at,"%lu", (unsigned long)i_ramble_le_r32(p)); break;
-            case RAMBLE_U64: *at = cap_val_append(dst,cap,*at,"%llu",(unsigned long long)i_ramble_le_r64(p)); break;
-            case RAMBLE_I8:  *at = cap_val_append(dst,cap,*at,"%d",  (int)(int8_t)p[0]); break;
-            case RAMBLE_I16: *at = cap_val_append(dst,cap,*at,"%d",  (int)(int16_t)i_ramble_le_r16(p)); break;
-            case RAMBLE_I32: *at = cap_val_append(dst,cap,*at,"%ld", (long)(int32_t)i_ramble_le_r32(p)); break;
-            case RAMBLE_I64: *at = cap_val_append(dst,cap,*at,"%lld",(long long)(int64_t)i_ramble_le_r64(p)); break;
-            case RAMBLE_F32: { uint32_t b = i_ramble_le_r32(p); float  v; memcpy(&v,&b,4);
+        switch ((RantSchemaTypeKind)elem){
+            case RANT_U8:    *at = cap_val_append(dst,cap,*at,"%u",  p[0]); break;
+            case RANT_U16: *at = cap_val_append(dst,cap,*at,"%u",  i_rant_le_r16(p)); break;
+            case RANT_U32: *at = cap_val_append(dst,cap,*at,"%lu", (unsigned long)i_rant_le_r32(p)); break;
+            case RANT_U64: *at = cap_val_append(dst,cap,*at,"%llu",(unsigned long long)i_rant_le_r64(p)); break;
+            case RANT_I8:    *at = cap_val_append(dst,cap,*at,"%d",  (int)(int8_t)p[0]); break;
+            case RANT_I16: *at = cap_val_append(dst,cap,*at,"%d",  (int)(int16_t)i_rant_le_r16(p)); break;
+            case RANT_I32: *at = cap_val_append(dst,cap,*at,"%ld", (long)(int32_t)i_rant_le_r32(p)); break;
+            case RANT_I64: *at = cap_val_append(dst,cap,*at,"%lld",(long long)(int64_t)i_rant_le_r64(p)); break;
+            case RANT_F32: { uint32_t b = i_rant_le_r32(p); float      v; memcpy(&v,&b,4);
                              *at = cap_val_append(dst,cap,*at, fixed_float ? "%8.3f" : "%g",(double)v); } break;
-            case RAMBLE_F64: { uint64_t b = i_ramble_le_r64(p); double v; memcpy(&v,&b,8);
+            case RANT_F64: { uint64_t b = i_rant_le_r64(p); double v; memcpy(&v,&b,8);
                              *at = cap_val_append(dst,cap,*at, fixed_float ? "%8.3f" : "%g",v); } break;
-            case RAMBLE_BOOL: *at = cap_val_append(dst,cap,*at,"%s", p[0] ? "true" : "false"); break;
-            case RAMBLE_STR: { uint16_t l = i_ramble_le_r16(p); if (l > str_cap) l = str_cap;
+            case RANT_BOOL: *at = cap_val_append(dst,cap,*at,"%s", p[0] ? "true" : "false"); break;
+            case RANT_STR: { uint16_t l = i_rant_le_r16(p); if (l > str_cap) l = str_cap;
                              *at = cap_val_append(dst,cap,*at,"\"%.*s\"", (int)l, (const char *)p + 2); } break;
             default: break;
         }
@@ -300,22 +300,22 @@ static void cap_fmt_arr(char *dst, int cap, int *at, RambleBytes a, uint8_t elem
     *at = cap_val_append(dst, cap, *at, "]");
 }
 /* the live element count of a variable array's reflected value */
-static uint16_t cap_varr_count(const RambleSchemaFieldInfo *fi, const RambleValue *v){
-    uint32_t esz = (fi->elem == RAMBLE_STR) ? 2u + fi->str_cap
-                                          : ramble_schema_scalar_size((RambleSchemaTypeKind)fi->elem);
+static uint16_t cap_varr_count(const RantSchemaFieldInfo *fi, const RantValue *v){
+    uint32_t esz = (fi->elem == RANT_STR) ? 2u + fi->str_cap
+                                          : rant_schema_scalar_size((RantSchemaTypeKind)fi->elem);
     return esz ? (uint16_t)(v->bytes.len / esz) : 0;
 }
 
 /* a map body, "{k=v k2="s" nested={..} ..}", values by their own tags, depth capped */
-static void cap_fmt_dyn_value(char *dst, int cap, int *at, const RambleValue *v,
+static void cap_fmt_dyn_value(char *dst, int cap, int *at, const RantValue *v,
                               int depth, uint16_t max_items);
-static void cap_fmt_map_body(char *dst, int cap, int *at, RambleBytes body,
+static void cap_fmt_map_body(char *dst, int cap, int *at, RantBytes body,
                              int depth, uint16_t max_items){
-    uint16_t n = ramble_map_count(body), i, limit = (max_items && max_items < n) ? max_items : n;
+    uint16_t n = rant_map_count(body), i, limit = (max_items && max_items < n) ? max_items : n;
     *at = cap_val_append(dst, cap, *at, "{");
     for (i = 0; i < limit && *at < cap - 8; i++){
-        RambleString k; RambleValue v;
-        if (!ramble_map_at(body, i, &k, &v)) break;
+        RantString k; RantValue v;
+        if (!rant_map_at(body, i, &k, &v)) break;
         *at = cap_val_append(dst, cap, *at, i ? " %.*s=" : "%.*s=",
                              (int)k.len, k.data ? k.data : "");
         cap_fmt_dyn_value(dst, cap, at, &v, depth, max_items);
@@ -323,26 +323,26 @@ static void cap_fmt_map_body(char *dst, int cap, int *at, RambleBytes body,
     if (i < n) *at = cap_val_append(dst, cap, *at, " ..");
     *at = cap_val_append(dst, cap, *at, "}");
 }
-static void cap_fmt_dyn_value(char *dst, int cap, int *at, const RambleValue *v,
+static void cap_fmt_dyn_value(char *dst, int cap, int *at, const RantValue *v,
                               int depth, uint16_t max_items){
-    switch ((RambleSchemaTypeKind)v->kind){
-        case RAMBLE_BOOL: *at = cap_val_append(dst, cap, *at, "%s", v->v.u ? "true" : "false"); break;
-        case RAMBLE_U8: case RAMBLE_U16: case RAMBLE_U32: case RAMBLE_U64:
+    switch ((RantSchemaTypeKind)v->kind){
+        case RANT_BOOL: *at = cap_val_append(dst, cap, *at, "%s", v->v.u ? "true" : "false"); break;
+        case RANT_U8: case RANT_U16: case RANT_U32: case RANT_U64:
             *at = cap_val_append(dst, cap, *at, "%llu", (unsigned long long)v->v.u); break;
-        case RAMBLE_I8: case RAMBLE_I16: case RAMBLE_I32: case RAMBLE_I64:
+        case RANT_I8: case RANT_I16: case RANT_I32: case RANT_I64:
             *at = cap_val_append(dst, cap, *at, "%lld", (long long)v->v.i); break;
-        case RAMBLE_F32: case RAMBLE_F64:
+        case RANT_F32: case RANT_F64:
             *at = cap_val_append(dst, cap, *at, "%g", v->v.f); break;
-        case RAMBLE_VSTR:
+        case RANT_VSTR:
             *at = cap_val_append(dst, cap, *at, "\"%.*s\"", (int)v->bytes.len,
                                  v->bytes.data ? (const char *)v->bytes.data : ""); break;
-        case RAMBLE_VARR: {
-            uint16_t n = ramble_map_array_count(v->bytes), j,
+        case RANT_VARR: {
+            uint16_t n = rant_map_array_count(v->bytes), j,
                      limit = (max_items && max_items < n) ? max_items : n;
             *at = cap_val_append(dst, cap, *at, "[");
             for (j = 0; j < limit && *at < cap - 8; j++){
-                RambleValue e;
-                if (!ramble_map_array_at(v->bytes, j, &e)) break;
+                RantValue e;
+                if (!rant_map_array_at(v->bytes, j, &e)) break;
                 if (j) *at = cap_val_append(dst, cap, *at, " ");
                 if (depth < 4) cap_fmt_dyn_value(dst, cap, at, &e, depth + 1, max_items);
                 else           *at = cap_val_append(dst, cap, *at, "..");
@@ -351,7 +351,7 @@ static void cap_fmt_dyn_value(char *dst, int cap, int *at, const RambleValue *v,
             *at = cap_val_append(dst, cap, *at, "]");
             break;
         }
-        case RAMBLE_MAP:
+        case RANT_MAP:
             if (depth < 4) cap_fmt_map_body(dst, cap, at, v->bytes, depth + 1, max_items);
             else           *at = cap_val_append(dst, cap, *at, "{..}");
             break;
@@ -359,32 +359,32 @@ static void cap_fmt_dyn_value(char *dst, int cap, int *at, const RambleValue *v,
     }
 }
 
-/* one field's value text from its reflected RambleValue. s and field resolve an enum's
+/* one field's value text from its reflected RantValue. s and field resolve an enum's
    number to its option name, and an unknown number falls back to the number. */
-static void cap_fmt_value(char *dst, int cap, const RambleSchema *s, uint16_t field,
-                          const RambleSchemaFieldInfo *fi, const RambleValue *v){
+static void cap_fmt_value(char *dst, int cap, const RantSchema *s, uint16_t field,
+                          const RantSchemaFieldInfo *fi, const RantValue *v){
     int at = 0;
-    switch ((RambleSchemaTypeKind)fi->kind){
-        case RAMBLE_ENUM: {
-            RambleString nm = ramble_enum_name_of(s, field, v->v.i);   /* the option name */
+    switch ((RantSchemaTypeKind)fi->kind){
+        case RANT_ENUM: {
+            RantString nm = rant_enum_name_of(s, field, v->v.i);       /* the option name */
             if (nm.len) snprintf(dst, (size_t)cap, "%.*s", (int)nm.len, nm.data);
             else        snprintf(dst, (size_t)cap, "%lld", (long long)v->v.i);
             break;
         }
-        case RAMBLE_BOOL: snprintf(dst, (size_t)cap, "%s", v->v.u ? "true" : "false"); break;
-        case RAMBLE_U8: case RAMBLE_U16: case RAMBLE_U32: case RAMBLE_U64:
+        case RANT_BOOL: snprintf(dst, (size_t)cap, "%s", v->v.u ? "true" : "false"); break;
+        case RANT_U8: case RANT_U16: case RANT_U32: case RANT_U64:
             snprintf(dst, (size_t)cap, "%llu", (unsigned long long)v->v.u); break;
-        case RAMBLE_I8: case RAMBLE_I16: case RAMBLE_I32: case RAMBLE_I64:
+        case RANT_I8: case RANT_I16: case RANT_I32: case RANT_I64:
             snprintf(dst, (size_t)cap, "%lld", (long long)v->v.i); break;
-        case RAMBLE_F32: case RAMBLE_F64:
+        case RANT_F32: case RANT_F64:
             snprintf(dst, (size_t)cap, "%g", v->v.f); break;
-        case RAMBLE_ARR:    dst[0] = '\0'; cap_fmt_arr(dst, cap, &at, v->bytes, fi->elem, fi->count, fi->str_cap, 0, 0); break;
-        case RAMBLE_VARR:   dst[0] = '\0'; cap_fmt_arr(dst, cap, &at, v->bytes, fi->elem, cap_varr_count(fi, v), fi->str_cap, 0, 0); break;
-        case RAMBLE_STR: case RAMBLE_VSTR:
+        case RANT_ARR:      dst[0] = '\0'; cap_fmt_arr(dst, cap, &at, v->bytes, fi->elem, fi->count, fi->str_cap, 0, 0); break;
+        case RANT_VARR:     dst[0] = '\0'; cap_fmt_arr(dst, cap, &at, v->bytes, fi->elem, cap_varr_count(fi, v), fi->str_cap, 0, 0); break;
+        case RANT_STR: case RANT_VSTR:
             snprintf(dst, (size_t)cap, "\"%.*s\"", (int)v->bytes.len,
                      v->bytes.data ? (const char *)v->bytes.data : ""); break;
-        case RAMBLE_MAP:    dst[0] = '\0'; cap_fmt_map_body(dst, cap, &at, v->bytes, 0, 0); break;
-        case RAMBLE_STRUCT: snprintf(dst, (size_t)cap, "{...}"); break;
+        case RANT_MAP:      dst[0] = '\0'; cap_fmt_map_body(dst, cap, &at, v->bytes, 0, 0); break;
+        case RANT_STRUCT: snprintf(dst, (size_t)cap, "{...}"); break;
         default:          snprintf(dst, (size_t)cap, "?"); break;
     }
 }
@@ -399,15 +399,15 @@ static void cap_fmt_float(char *dst, int cap, int *at, double v){
 
 /* advance past the field at `idx` and, if it is a struct, all of its members (the flat
    table is depth-first: a struct's subtree is every following entry deeper than it) */
-static uint16_t cap_field_skip(const RambleSchema *s, uint16_t nf, uint16_t idx){
-    RambleSchemaFieldInfo fi;
+static uint16_t cap_field_skip(const RantSchema *s, uint16_t nf, uint16_t idx){
+    RantSchemaFieldInfo fi;
     uint16_t depth;
-    if (!ramble_schema_field_at(s, idx, &fi)) return (uint16_t)(idx + 1);
+    if (!rant_schema_field_at(s, idx, &fi)) return (uint16_t)(idx + 1);
     depth = fi.depth;
     idx++;
     while (idx < nf){
-        RambleSchemaFieldInfo next;
-        if (!ramble_schema_field_at(s, idx, &next) || next.depth <= depth) break;
+        RantSchemaFieldInfo next;
+        if (!rant_schema_field_at(s, idx, &next) || next.depth <= depth) break;
         idx++;
     }
     return idx;
@@ -415,18 +415,18 @@ static uint16_t cap_field_skip(const RambleSchema *s, uint16_t nf, uint16_t idx)
 
 /* the preview's value for one field: scalars as cap_fmt_value, arrays and structs
    expanded up to CAP_PREVIEW_MAX_ITEMS and CAP_PREVIEW_MAX_DEPTH, deeper folds to "{...}" */
-static void cap_fmt_value_preview(char *dst, int cap, int *at, const RambleSchema *s, RambleBytes data,
-                                  uint16_t nf, uint16_t field_index, const RambleSchemaFieldInfo *fi,
-                                  const RambleValue *v){
-    if (fi->kind == RAMBLE_STRUCT){
+static void cap_fmt_value_preview(char *dst, int cap, int *at, const RantSchema *s, RantBytes data,
+                                  uint16_t nf, uint16_t field_index, const RantSchemaFieldInfo *fi,
+                                  const RantValue *v){
+    if (fi->kind == RANT_STRUCT){
         if (fi->depth < CAP_PREVIEW_MAX_DEPTH){
             uint16_t idx = (uint16_t)(field_index + 1);
             int shown = 0;
             *at = cap_val_append(dst, cap, *at, "{");
             while (idx < nf){
-                RambleSchemaFieldInfo mfi; RambleValue mv;
-                if (!ramble_schema_field_at(s, idx, &mfi) || mfi.depth <= fi->depth) break;
-                if (!ramble_get_value(data, s, idx, &mv)) break;
+                RantSchemaFieldInfo mfi; RantValue mv;
+                if (!rant_schema_field_at(s, idx, &mfi) || mfi.depth <= fi->depth) break;
+                if (!rant_get_value(data, s, idx, &mv)) break;
                 if (shown >= CAP_PREVIEW_MAX_ITEMS){
                     *at = cap_val_append(dst, cap, *at, " ..");
                     break;
@@ -441,16 +441,16 @@ static void cap_fmt_value_preview(char *dst, int cap, int *at, const RambleSchem
         } else {
             *at = cap_val_append(dst, cap, *at, "{...}");
         }
-    } else if (fi->kind == RAMBLE_ARR){
+    } else if (fi->kind == RANT_ARR){
         cap_fmt_arr(dst, cap, at, v->bytes, fi->elem, fi->count, fi->str_cap, CAP_PREVIEW_MAX_ITEMS, 1);
-    } else if (fi->kind == RAMBLE_VARR){
+    } else if (fi->kind == RANT_VARR){
         cap_fmt_arr(dst, cap, at, v->bytes, fi->elem, cap_varr_count(fi, v), fi->str_cap, CAP_PREVIEW_MAX_ITEMS, 1);
-    } else if (fi->kind == RAMBLE_STR || fi->kind == RAMBLE_VSTR){
+    } else if (fi->kind == RANT_STR || fi->kind == RANT_VSTR){
         *at = cap_val_append(dst, cap, *at, "\"%.*s\"", (int)v->bytes.len,
                              v->bytes.data ? (const char *)v->bytes.data : "");
-    } else if (fi->kind == RAMBLE_MAP){
+    } else if (fi->kind == RANT_MAP){
         cap_fmt_map_body(dst, cap, at, v->bytes, 0, CAP_PREVIEW_MAX_ITEMS);
-    } else if (fi->kind == RAMBLE_F32 || fi->kind == RAMBLE_F64){
+    } else if (fi->kind == RANT_F32 || fi->kind == RANT_F64){
         cap_fmt_float(dst, cap, at, v->v.f);
     } else {
         char one[32];
@@ -459,23 +459,23 @@ static void cap_fmt_value_preview(char *dst, int cap, int *at, const RambleSchem
     }
 }
 
-static void cap_field_type_str(char *dst, size_t cap, const RambleSchemaFieldInfo *fi);
+static void cap_field_type_str(char *dst, size_t cap, const RantSchemaFieldInfo *fi);
 
 /* A field's UI label: its name, or, for the anonymous field of a BARE-TYPE schema
    (`bool`, `f32[]`, ...), the type itself, so no row ever renders blank. */
-static void cap_field_label(char *dst, size_t cap, const RambleSchemaFieldInfo *fi){
+static void cap_field_label(char *dst, size_t cap, const RantSchemaFieldInfo *fi){
     if (fi->name.len) snprintf(dst, cap, "%.*s", (int)fi->name.len, fi->name.data);
     else              cap_field_type_str(dst, cap, fi);
 }
 
 /* A schema's display type: its root type name, or, for a bare type (an anonymous root),
    the type itself. Never empty for a decodable schema. */
-static void cap_schema_type_name(char *dst, size_t cap, const RambleSchema *sch){
-    RambleString tn = ramble_schema_name(sch);
-    RambleSchemaFieldInfo fi;
+static void cap_schema_type_name(char *dst, size_t cap, const RantSchema *sch){
+    RantString tn = rant_schema_name(sch);
+    RantSchemaFieldInfo fi;
     if (tn.len) snprintf(dst, cap, "%.*s", (int)tn.len, tn.data);
-    else if (ramble_schema_field_count(sch) == 1 && ramble_schema_field_at(sch, 0, &fi)
-             && fi.name.len == 0 && fi.kind != RAMBLE_STRUCT)
+    else if (rant_schema_field_count(sch) == 1 && rant_schema_field_at(sch, 0, &fi)
+             && fi.name.len == 0 && fi.kind != RANT_STRUCT)
         cap_field_type_str(dst, cap, &fi);
     else if (cap) dst[0] = '\0';
 }
@@ -493,33 +493,33 @@ static void cap_form_fmt_float(char *dst, size_t cap, double v, int is32){
 
 /* an array's elements as the form spells them: comma separated, no brackets, no quotes.
    0 = no form text, an unsupported element or a string holding the separator. */
-static int cap_form_fmt_elems(char *dst, int cap, RambleBytes a, uint8_t elem,
+static int cap_form_fmt_elems(char *dst, int cap, RantBytes a, uint8_t elem,
                               uint16_t count, uint16_t str_cap){
-    uint32_t esz = (elem == RAMBLE_STR) ? 2u + str_cap
-                                      : ramble_schema_scalar_size((RambleSchemaTypeKind)elem);
+    uint32_t esz = (elem == RANT_STR) ? 2u + str_cap
+                                      : rant_schema_scalar_size((RantSchemaTypeKind)elem);
     int at = 0;
     uint16_t j;
     if (!esz && count) return 0;
     for (j = 0; j < count; j++){
         const uint8_t *p = a.data + (size_t)j * esz;
         if (j) at = cap_val_append(dst, cap, at, ", ");
-        switch ((RambleSchemaTypeKind)elem){
-            case RAMBLE_U8:  at = cap_val_append(dst,cap,at,"%u",  p[0]); break;
-            case RAMBLE_U16: at = cap_val_append(dst,cap,at,"%u",  i_ramble_le_r16(p)); break;
-            case RAMBLE_U32: at = cap_val_append(dst,cap,at,"%lu", (unsigned long)i_ramble_le_r32(p)); break;
-            case RAMBLE_U64: at = cap_val_append(dst,cap,at,"%llu",(unsigned long long)i_ramble_le_r64(p)); break;
-            case RAMBLE_I8:  at = cap_val_append(dst,cap,at,"%d",  (int)(int8_t)p[0]); break;
-            case RAMBLE_I16: at = cap_val_append(dst,cap,at,"%d",  (int)(int16_t)i_ramble_le_r16(p)); break;
-            case RAMBLE_I32: at = cap_val_append(dst,cap,at,"%ld", (long)(int32_t)i_ramble_le_r32(p)); break;
-            case RAMBLE_I64: at = cap_val_append(dst,cap,at,"%lld",(long long)(int64_t)i_ramble_le_r64(p)); break;
-            case RAMBLE_F32: { uint32_t b = i_ramble_le_r32(p); float  v; char f[40]; memcpy(&v,&b,4);
+        switch ((RantSchemaTypeKind)elem){
+            case RANT_U8:    at = cap_val_append(dst,cap,at,"%u",  p[0]); break;
+            case RANT_U16: at = cap_val_append(dst,cap,at,"%u",  i_rant_le_r16(p)); break;
+            case RANT_U32: at = cap_val_append(dst,cap,at,"%lu", (unsigned long)i_rant_le_r32(p)); break;
+            case RANT_U64: at = cap_val_append(dst,cap,at,"%llu",(unsigned long long)i_rant_le_r64(p)); break;
+            case RANT_I8:    at = cap_val_append(dst,cap,at,"%d",  (int)(int8_t)p[0]); break;
+            case RANT_I16: at = cap_val_append(dst,cap,at,"%d",  (int)(int16_t)i_rant_le_r16(p)); break;
+            case RANT_I32: at = cap_val_append(dst,cap,at,"%ld", (long)(int32_t)i_rant_le_r32(p)); break;
+            case RANT_I64: at = cap_val_append(dst,cap,at,"%lld",(long long)(int64_t)i_rant_le_r64(p)); break;
+            case RANT_F32: { uint32_t b = i_rant_le_r32(p); float      v; char f[40]; memcpy(&v,&b,4);
                              cap_form_fmt_float(f, sizeof f, (double)v, 1);
                              at = cap_val_append(dst,cap,at,"%s",f); } break;
-            case RAMBLE_F64: { uint64_t b = i_ramble_le_r64(p); double v; char f[40]; memcpy(&v,&b,8);
+            case RANT_F64: { uint64_t b = i_rant_le_r64(p); double v; char f[40]; memcpy(&v,&b,8);
                              cap_form_fmt_float(f, sizeof f, v, 0);
                              at = cap_val_append(dst,cap,at,"%s",f); } break;
-            case RAMBLE_BOOL: at = cap_val_append(dst,cap,at,"%s", p[0] ? "true" : "false"); break;
-            case RAMBLE_STR: { uint16_t l = i_ramble_le_r16(p);
+            case RANT_BOOL: at = cap_val_append(dst,cap,at,"%s", p[0] ? "true" : "false"); break;
+            case RANT_STR: { uint16_t l = i_rant_le_r16(p);
                              if (l > str_cap) l = str_cap;
                              if (memchr(p + 2, ',', l)) return 0;   /* the form's own separator */
                              at = cap_val_append(dst,cap,at,"%.*s", (int)l, (const char *)p + 2); } break;
@@ -531,34 +531,34 @@ static int cap_form_fmt_elems(char *dst, int cap, RambleBytes a, uint8_t elem,
 
 /* One field's value in form syntax. 0 = it has none (a struct or map row) or the text does
    not fit cap, where empty is honest: an empty field keeps the default, a cut one sends junk. */
-static int cap_form_fmt_field(char *dst, size_t cap, const RambleSchema *s, uint16_t field,
-                              const RambleSchemaFieldInfo *fi, const RambleValue *v){
+static int cap_form_fmt_field(char *dst, size_t cap, const RantSchema *s, uint16_t field,
+                              const RantSchemaFieldInfo *fi, const RantValue *v){
     char buf[512];                           /* rendered full width, then taken only if it fits */
     size_t len;
     buf[0] = '\0';
-    switch ((RambleSchemaTypeKind)fi->kind){
-        case RAMBLE_BOOL: snprintf(buf, sizeof buf, "%s", v->v.u ? "true" : "false"); break;
-        case RAMBLE_U8: case RAMBLE_U16: case RAMBLE_U32: case RAMBLE_U64:
+    switch ((RantSchemaTypeKind)fi->kind){
+        case RANT_BOOL: snprintf(buf, sizeof buf, "%s", v->v.u ? "true" : "false"); break;
+        case RANT_U8: case RANT_U16: case RANT_U32: case RANT_U64:
             snprintf(buf, sizeof buf, "%llu", (unsigned long long)v->v.u); break;
-        case RAMBLE_I8: case RAMBLE_I16: case RAMBLE_I32: case RAMBLE_I64:
+        case RANT_I8: case RANT_I16: case RANT_I32: case RANT_I64:
             snprintf(buf, sizeof buf, "%lld", (long long)v->v.i); break;
-        case RAMBLE_F32: case RAMBLE_F64:
-            cap_form_fmt_float(buf, sizeof buf, v->v.f, fi->kind == RAMBLE_F32); break;
-        case RAMBLE_ENUM: {   /* the option NAME the dropdown lists, else the number */
-            RambleString nm = ramble_enum_name_of(s, field, v->v.i);
+        case RANT_F32: case RANT_F64:
+            cap_form_fmt_float(buf, sizeof buf, v->v.f, fi->kind == RANT_F32); break;
+        case RANT_ENUM: {     /* the option NAME the dropdown lists, else the number */
+            RantString nm = rant_enum_name_of(s, field, v->v.i);
             if (nm.len) snprintf(buf, sizeof buf, "%.*s", (int)nm.len, nm.data);
             else        snprintf(buf, sizeof buf, "%lld", (long long)v->v.i);
             break;
         }
-        case RAMBLE_STR: case RAMBLE_VSTR:       /* unquoted: the box text IS the content */
+        case RANT_STR: case RANT_VSTR:           /* unquoted: the box text IS the content */
             snprintf(buf, sizeof buf, "%.*s", (int)v->bytes.len,
                      v->bytes.data ? (const char *)v->bytes.data : "");
             break;
-        case RAMBLE_ARR:
+        case RANT_ARR:
             if (!cap_form_fmt_elems(buf, (int)sizeof buf, v->bytes, fi->elem, fi->count, fi->str_cap))
                 return 0;
             break;
-        case RAMBLE_VARR:
+        case RANT_VARR:
             if (!cap_form_fmt_elems(buf, (int)sizeof buf, v->bytes, fi->elem,
                                     cap_varr_count(fi, v), fi->str_cap))
                 return 0;
@@ -573,15 +573,15 @@ static int cap_form_fmt_field(char *dst, size_t cap, const RambleSchema *s, uint
 
 /* reflect a message into per field rows at every depth plus a one line summary of the top
    level fields with arrays and structs expanded inline */
-static void cap_decode_fields(CapMsgRec *m, RambleBytes data, const RambleSchema *s){
-    uint16_t i, nf = ramble_schema_field_count(s);
+static void cap_decode_fields(CapMsgRec *m, RantBytes data, const RantSchema *s){
+    uint16_t i, nf = rant_schema_field_count(s);
     int at = 0;
     m->n_fields = 0;
     m->total_fields = nf;
     m->preview[0] = '\0';
     for (i = 0; i < nf; i++){
-        RambleSchemaFieldInfo fi; RambleValue v;
-        if (!ramble_schema_field_at(s, i, &fi) || !ramble_get_value(data, s, i, &v)) break;
+        RantSchemaFieldInfo fi; RantValue v;
+        if (!rant_schema_field_at(s, i, &fi) || !rant_get_value(data, s, i, &v)) break;
         if (m->n_fields < CAP_MSG_FIELDS){
             CapMsgField *f = &m->fields[m->n_fields++];
             cap_field_label(f->name, sizeof f->name, &fi);
@@ -609,15 +609,15 @@ static void cap_stamp(CapMsgRec *m, uint64_t recv_us, uint64_t written_us){
 
 /* fill one message record, a ring slot or the task layer's latest progress copy. With a
    schema the message is reflected into field rows, raw bytes else. */
-static void cap_rec_fill(CapMsgRec *m, RambleString sender, const void *data, size_t len, int mine,
-                         const RambleSchema *schema, uint64_t recv_us, uint64_t written_us){
+static void cap_rec_fill(CapMsgRec *m, RantString sender, const void *data, size_t len, int mine,
+                         const RantSchema *schema, uint64_t recv_us, uint64_t written_us){
     cap_stamp(m, recv_us, written_us);
     m->len = (uint32_t)len;
     m->decoded = 0; m->type_name[0] = '\0';
     m->n_fields = m->total_fields = 0;
     m->preview_len = 0;
     if (schema){
-        cap_decode_fields(m, ramble_bytes(data, len), schema);
+        cap_decode_fields(m, rant_bytes(data, len), schema);
         m->decoded = 1;
         cap_schema_type_name(m->type_name, sizeof m->type_name, schema);
     } else {
@@ -637,17 +637,17 @@ static void cap_rec_fill(CapMsgRec *m, RambleString sender, const void *data, si
 #pragma warning(push)
 #pragma warning(disable:5287)   /* comparing the two enums is the point of this assert */
 #endif
-typedef char cap_std_mirror_check[      /* CAP_STD_* must mirror RambleStdType by value */
-    ((int)CAP_STD_FLOAT2  == (int)RAMBLE_STD_FLOAT2  && (int)CAP_STD_QUATERNION == (int)RAMBLE_STD_QUATERNION &&
-     (int)CAP_STD_COLOR   == (int)RAMBLE_STD_COLOR   && (int)CAP_STD_GEOPOINT   == (int)RAMBLE_STD_GEOPOINT &&
-     (int)CAP_STD_URI     == (int)RAMBLE_STD_URI     && (int)CAP_STD_MATRIX4X4  == (int)RAMBLE_STD_MATRIX4X4 &&
-     (int)CAP_STD_EXTERNAL_VIDEO_STREAM == (int)RAMBLE_STD_EXTERNALVIDEOSTREAM) ? 1 : -1];
+typedef char cap_std_mirror_check[      /* CAP_STD_* must mirror RantStdType by value */
+    ((int)CAP_STD_FLOAT2  == (int)RANT_STD_FLOAT2    && (int)CAP_STD_QUATERNION == (int)RANT_STD_QUATERNION &&
+     (int)CAP_STD_COLOR   == (int)RANT_STD_COLOR     && (int)CAP_STD_GEOPOINT   == (int)RANT_STD_GEOPOINT &&
+     (int)CAP_STD_URI     == (int)RANT_STD_URI       && (int)CAP_STD_MATRIX4X4  == (int)RANT_STD_MATRIX4X4 &&
+     (int)CAP_STD_EXTERNAL_VIDEO_STREAM == (int)RANT_STD_EXTERNALVIDEOSTREAM) ? 1 : -1];
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
 
 /* copy the fixed head of the payload into a std type mirror, 0 = the payload is too short */
-static int cap_mini_take(RambleBytes d, size_t need, void *out){
+static int cap_mini_take(RantBytes d, size_t need, void *out){
     if (!d.data || d.len < need) return 0;
     memcpy(out, d.data, need);
     return 1;
@@ -711,62 +711,62 @@ static void cap_mini_size(char *dst, int *at, uint64_t n){
 
 /* the media types read through reflection, since their tails are variable. Field indices
    are exact because recognition verified the shape. Enum values print their option names. */
-static void cap_mini_media(CapMiniPreview *o, int std, RambleBytes d, const RambleSchema *s){
-    RambleValue v;
+static void cap_mini_media(CapMiniPreview *o, int std, RantBytes d, const RantSchema *s){
+    RantValue v;
     int at = 0;
     if (std == CAP_STD_URI){                       /* string<256> root: the text IS the value */
-        if (ramble_get_value(d, s, 0, &v) && v.bytes.len)
+        if (rant_get_value(d, s, 0, &v) && v.bytes.len)
             snprintf(o->text, sizeof o->text, "%.*s", (int)v.bytes.len, (const char *)v.bytes.data);
         else
             snprintf(o->text, sizeof o->text, "(empty)");
     } else if (std == CAP_STD_IMAGE){              /* width height stride format data */
         uint64_t w = 0, h = 0, bytes = 0;
-        RambleString fn = ramble_string(0, 0);
-        if (ramble_get_value(d, s, 0, &v)) w = v.v.u;
-        if (ramble_get_value(d, s, 1, &v)) h = v.v.u;
-        if (ramble_get_value(d, s, 3, &v)) fn = ramble_enum_name_of(s, 3, v.v.i);
-        if (ramble_get_value(d, s, 4, &v)) bytes = v.bytes.len;
+        RantString fn = rant_string(0, 0);
+        if (rant_get_value(d, s, 0, &v)) w = v.v.u;
+        if (rant_get_value(d, s, 1, &v)) h = v.v.u;
+        if (rant_get_value(d, s, 3, &v)) fn = rant_enum_name_of(s, 3, v.v.i);
+        if (rant_get_value(d, s, 4, &v)) bytes = v.bytes.len;
         at = cap_val_append(o->text, CAP_MINI_TEXT, at, "%.*s %llux%llu ",
                             fn.len ? (int)fn.len : 3, fn.len ? fn.data : "img",
                             (unsigned long long)w, (unsigned long long)h);
         cap_mini_size(o->text, &at, bytes);
     } else if (std == CAP_STD_VIDEOFRAME){         /* codec width height keyframe pts data */
         uint64_t w = 0, h = 0, key = 0;
-        RambleString cn = ramble_string(0, 0);
-        if (ramble_get_value(d, s, 0, &v)) cn = ramble_enum_name_of(s, 0, v.v.i);
-        if (ramble_get_value(d, s, 1, &v)) w = v.v.u;
-        if (ramble_get_value(d, s, 2, &v)) h = v.v.u;
-        if (ramble_get_value(d, s, 3, &v)) key = v.v.u;
+        RantString cn = rant_string(0, 0);
+        if (rant_get_value(d, s, 0, &v)) cn = rant_enum_name_of(s, 0, v.v.i);
+        if (rant_get_value(d, s, 1, &v)) w = v.v.u;
+        if (rant_get_value(d, s, 2, &v)) h = v.v.u;
+        if (rant_get_value(d, s, 3, &v)) key = v.v.u;
         at = cap_val_append(o->text, CAP_MINI_TEXT, at, "%.*s",
                             cn.len ? (int)cn.len : 1, cn.len ? cn.data : "?");
         if (w && h) at = cap_val_append(o->text, CAP_MINI_TEXT, at, " %llux%llu",
                                         (unsigned long long)w, (unsigned long long)h);
-        else if (ramble_get_value(d, s, 5, &v)){
+        else if (rant_get_value(d, s, 5, &v)){
             at = cap_val_append(o->text, CAP_MINI_TEXT, at, " ");
             cap_mini_size(o->text, &at, v.bytes.len);
         }
         if (key) cap_val_append(o->text, CAP_MINI_TEXT, at, " key");
     } else {   /* EXTERNAL_VIDEO_STREAM: kind codec w h url name */
-        RambleString kn = ramble_string(0, 0), label = ramble_string(0, 0);
-        if (ramble_get_value(d, s, 0, &v)) kn = ramble_enum_name_of(s, 0, v.v.i);
-        if (ramble_get_value(d, s, 5, &v) && v.bytes.len)
-            label = ramble_string((const char *)v.bytes.data, v.bytes.len);   /* name preferred */
-        else if (ramble_get_value(d, s, 4, &v) && v.bytes.len)
-            label = ramble_string((const char *)v.bytes.data, v.bytes.len);   /* else the url */
+        RantString kn = rant_string(0, 0), label = rant_string(0, 0);
+        if (rant_get_value(d, s, 0, &v)) kn = rant_enum_name_of(s, 0, v.v.i);
+        if (rant_get_value(d, s, 5, &v) && v.bytes.len)
+            label = rant_string((const char *)v.bytes.data, v.bytes.len);     /* name preferred */
+        else if (rant_get_value(d, s, 4, &v) && v.bytes.len)
+            label = rant_string((const char *)v.bytes.data, v.bytes.len);     /* else the url */
         snprintf(o->text, sizeof o->text, "%.*s %.*s",
                  kn.len ? (int)kn.len : 1, kn.len ? kn.data : "?",
                  (int)label.len, label.data ? label.data : "");
     }
 }
 
-static void cap_mini_update(CapSub *s, RambleBytes d, const RambleSchema *schema, const CapMsgRec *m){
+static void cap_mini_update(CapSub *s, RantBytes d, const RantSchema *schema, const CapMsgRec *m){
     CapMiniPreview *o = &s->mini;
     int std = 0;
     if (schema){                                   /* recognition is per schema, cached by hash */
-        uint64_t h = ramble_schema_hash(schema);
+        uint64_t h = rant_schema_hash(schema);
         if (h != s->mini_hash){
             s->mini_hash = h;
-            s->mini_std  = (uint8_t)ramble_std_recognize(schema, cap_schema_alloc, NULL);
+            s->mini_std  = (uint8_t)rant_std_recognize(schema, cap_schema_alloc, NULL);
         }
         std = s->mini_std;
     }
@@ -774,17 +774,17 @@ static void cap_mini_update(CapSub *s, RambleBytes d, const RambleSchema *schema
     o->mat_n = 0;
     o->text[0] = '\0';
     switch (std){
-        case CAP_STD_FLOAT2:  { RambleFloat2  t; if (cap_mini_take(d, sizeof t, &t)){ double v[2] = { t.x, t.y };           cap_mini_vec(o->text, v, 2); } break; }
-        case CAP_STD_FLOAT3:  { RambleFloat3  t; if (cap_mini_take(d, sizeof t, &t)){ double v[3] = { t.x, t.y, t.z };      cap_mini_vec(o->text, v, 3); } break; }
-        case CAP_STD_FLOAT4:  { RambleFloat4  t; if (cap_mini_take(d, sizeof t, &t)){ double v[4] = { t.x, t.y, t.z, t.w }; cap_mini_vec(o->text, v, 4); } break; }
-        case CAP_STD_DOUBLE2: { RambleDouble2 t; if (cap_mini_take(d, sizeof t, &t)){ double v[2] = { t.x, t.y };           cap_mini_vec(o->text, v, 2); } break; }
-        case CAP_STD_DOUBLE3: { RambleDouble3 t; if (cap_mini_take(d, sizeof t, &t)){ double v[3] = { t.x, t.y, t.z };      cap_mini_vec(o->text, v, 3); } break; }
-        case CAP_STD_DOUBLE4: { RambleDouble4 t; if (cap_mini_take(d, sizeof t, &t)){ double v[4] = { t.x, t.y, t.z, t.w }; cap_mini_vec(o->text, v, 4); } break; }
-        case CAP_STD_INT2:  { RambleInt2 t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%ld, %ld", (long)t.x, (long)t.y); break; }
-        case CAP_STD_INT3:  { RambleInt3 t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%ld, %ld, %ld", (long)t.x, (long)t.y, (long)t.z); break; }
-        case CAP_STD_INT4:  { RambleInt4 t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%ld, %ld, %ld, %ld", (long)t.x, (long)t.y, (long)t.z, (long)t.w); break; }
+        case CAP_STD_FLOAT2:  { RantFloat2    t; if (cap_mini_take(d, sizeof t, &t)){ double v[2] = { t.x, t.y };           cap_mini_vec(o->text, v, 2); } break; }
+        case CAP_STD_FLOAT3:  { RantFloat3    t; if (cap_mini_take(d, sizeof t, &t)){ double v[3] = { t.x, t.y, t.z };      cap_mini_vec(o->text, v, 3); } break; }
+        case CAP_STD_FLOAT4:  { RantFloat4    t; if (cap_mini_take(d, sizeof t, &t)){ double v[4] = { t.x, t.y, t.z, t.w }; cap_mini_vec(o->text, v, 4); } break; }
+        case CAP_STD_DOUBLE2: { RantDouble2 t; if (cap_mini_take(d, sizeof t, &t)){ double v[2] = { t.x, t.y };             cap_mini_vec(o->text, v, 2); } break; }
+        case CAP_STD_DOUBLE3: { RantDouble3 t; if (cap_mini_take(d, sizeof t, &t)){ double v[3] = { t.x, t.y, t.z };        cap_mini_vec(o->text, v, 3); } break; }
+        case CAP_STD_DOUBLE4: { RantDouble4 t; if (cap_mini_take(d, sizeof t, &t)){ double v[4] = { t.x, t.y, t.z, t.w }; cap_mini_vec(o->text, v, 4); } break; }
+        case CAP_STD_INT2:  { RantInt2 t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%ld, %ld", (long)t.x, (long)t.y); break; }
+        case CAP_STD_INT3:  { RantInt3 t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%ld, %ld, %ld", (long)t.x, (long)t.y, (long)t.z); break; }
+        case CAP_STD_INT4:  { RantInt4 t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%ld, %ld, %ld, %ld", (long)t.x, (long)t.y, (long)t.z, (long)t.w); break; }
         case CAP_STD_QUATERNION: {
-            RambleQuaternion q;
+            RantQuaternion q;
             if (cap_mini_take(d, sizeof q, &q)){
                 char axis; double deg = cap_quat_angle_deg(q.x, q.y, q.z, q.w, &axis);
                 if (fabs(deg) < 0.05 && sqrt(q.x*q.x + q.y*q.y + q.z*q.z) < 1e-6)
@@ -795,17 +795,17 @@ static void cap_mini_update(CapSub *s, RambleBytes d, const RambleSchema *schema
             }
             break; }
         case CAP_STD_COLOR: {
-            RambleColor c;
+            RantColor c;
             if (cap_mini_take(d, sizeof c, &c)){
                 o->rgba[0] = c.r; o->rgba[1] = c.g; o->rgba[2] = c.b; o->rgba[3] = c.a;
                 if (c.a != 255) snprintf(o->text, sizeof o->text, "#%02X%02X%02X%02X", c.r, c.g, c.b, c.a);
                 else            snprintf(o->text, sizeof o->text, "#%02X%02X%02X", c.r, c.g, c.b);
             }
             break; }
-        case CAP_STD_RECT:  { RambleRect  t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%.4gx%.4g @%.4g,%.4g", t.w, t.h, t.x, t.y); break; }
-        case CAP_STD_RECTI: { RambleRectI t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%ldx%ld @%ld,%ld", (long)t.w, (long)t.h, (long)t.x, (long)t.y); break; }
+        case CAP_STD_RECT:  { RantRect    t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%.4gx%.4g @%.4g,%.4g", t.w, t.h, t.x, t.y); break; }
+        case CAP_STD_RECTI: { RantRectI t; if (cap_mini_take(d, sizeof t, &t)) snprintf(o->text, sizeof o->text, "%ldx%ld @%ld,%ld", (long)t.w, (long)t.h, (long)t.x, (long)t.y); break; }
         case CAP_STD_TRANSFORM: {
-            RambleTransform p;
+            RantTransform p;
             if (cap_mini_take(d, sizeof p, &p)){
                 int at = 0;
                 double deg = cap_quat_angle_deg(p.rotation.x, p.rotation.y,
@@ -817,22 +817,22 @@ static void cap_mini_update(CapSub *s, RambleBytes d, const RambleSchema *schema
             }
             break; }
         case CAP_STD_TWIST: {
-            RambleTwist t;
+            RantTwist t;
             if (cap_mini_take(d, sizeof t, &t))
                 snprintf(o->text, sizeof o->text, "%.3g m/s %.3g rad/s",
-                         ramble_double3_length(t.linear), ramble_double3_length(t.angular));
+                         rant_double3_length(t.linear), rant_double3_length(t.angular));
             break; }
         case CAP_STD_GEOPOINT: {
-            RambleGeoPoint g;
+            RantGeoPoint g;
             if (cap_mini_take(d, sizeof g, &g))
                 snprintf(o->text, sizeof o->text, "%.4f%c %.4f%c",
                          fabs(g.lat), g.lat < 0.0 ? 'S' : 'N',
                          fabs(g.lon), g.lon < 0.0 ? 'W' : 'E');
             break; }
         case CAP_STD_UUID: {
-            RambleUuid u;
+            RantUuid u;
             if (cap_mini_take(d, sizeof u, &u)){
-                if (ramble_uuid_is_nil(u)) snprintf(o->text, sizeof o->text, "nil");
+                if (rant_uuid_is_nil(u)) snprintf(o->text, sizeof o->text, "nil");
                 else snprintf(o->text, sizeof o->text, "%02x%02x%02x%02x..",
                               u.bytes[0], u.bytes[1], u.bytes[2], u.bytes[3]);
             }
@@ -840,7 +840,7 @@ static void cap_mini_update(CapSub *s, RambleBytes d, const RambleSchema *schema
         case CAP_STD_TIMESTAMP: { int64_t t; if (cap_mini_take(d, sizeof t, &t)) cap_mini_timestamp(o->text, t); break; }
         case CAP_STD_DURATION:  { int64_t t; if (cap_mini_take(d, sizeof t, &t)) cap_mini_duration(o->text, t);  break; }
         case CAP_STD_MATRIX3X3: {
-            RambleMatrix3x3 t;
+            RantMatrix3x3 t;
             if (cap_mini_take(d, sizeof t, &t)){
                 memcpy(o->cells, t.m, sizeof t.m);
                 o->mat_n = 3;
@@ -848,7 +848,7 @@ static void cap_mini_update(CapSub *s, RambleBytes d, const RambleSchema *schema
             }
             break; }
         case CAP_STD_MATRIX4X4: {
-            RambleMatrix4x4 t;
+            RantMatrix4x4 t;
             if (cap_mini_take(d, sizeof t, &t)){
                 memcpy(o->cells, t.m, sizeof t.m);
                 o->mat_n = 4;
@@ -876,9 +876,9 @@ static void cap_mini_update(CapSub *s, RambleBytes d, const RambleSchema *schema
         } else {
             /* a bare type root is a single value and reads well. A struct's full text never fits
                the column, so it stays blank for the feed and inspector */
-            RambleSchemaFieldInfo fi;
-            if (ramble_schema_field_count(schema) == 1 && ramble_schema_field_at(schema, 0, &fi)
-                && fi.name.len == 0 && fi.kind != RAMBLE_STRUCT){
+            RantSchemaFieldInfo fi;
+            if (rant_schema_field_count(schema) == 1 && rant_schema_field_at(schema, 0, &fi)
+                && fi.name.len == 0 && fi.kind != RANT_STRUCT){
                 const char *pv = m->preview;              /* drop the summary's fixed-width */
                 int n = m->preview_len;                   /* float padding */
                 while (n && *pv == ' '){ pv++; n--; }
@@ -891,20 +891,20 @@ static void cap_mini_update(CapSub *s, RambleBytes d, const RambleSchema *schema
 
 /* Re spell a variable's newest value as publish form text, so selecting it opens the form
    on the value it holds. Only variables carry this. UI thread only, like the ring. */
-static void cap_form_vals_update(CapSub *s, RambleBytes data, const RambleSchema *sch){
+static void cap_form_vals_update(CapSub *s, RantBytes data, const RantSchema *sch){
     uint16_t i, nf;
     if (!sch) return;
     if (!s->form_vals){   /* lazy, like the ring: an untouched variable costs nothing */
         s->form_vals = (CapFormValue *)calloc(CAP_SCHEMA_FIELDS, sizeof *s->form_vals);
         if (!s->form_vals) return;
     }
-    nf = ramble_schema_field_count(sch);
+    nf = rant_schema_field_count(sch);
     if (nf > CAP_SCHEMA_FIELDS) nf = CAP_SCHEMA_FIELDS;
     for (i = 0; i < nf; i++){
-        RambleSchemaFieldInfo fi; RambleValue v;
+        RantSchemaFieldInfo fi; RantValue v;
         CapFormValue *o = &s->form_vals[i];
         o->name[0] = o->value[0] = '\0';
-        if (!ramble_schema_field_at(sch, i, &fi) || !ramble_get_value(data, sch, i, &v)) break;
+        if (!rant_schema_field_at(sch, i, &fi) || !rant_get_value(data, sch, i, &v)) break;
         cap_field_label(o->name, sizeof o->name, &fi);
         cap_form_fmt_field(o->value, sizeof o->value, sch, i, &fi, &v);
     }
@@ -912,8 +912,8 @@ static void cap_form_vals_update(CapSub *s, RambleBytes data, const RambleSchema
 }
 
 /* append one message to a topic's ring (received or our own echo). Does not touch n_msgs. */
-static void cap_ring_push(CapSub *s, RambleString sender, const void *data, size_t len, int mine,
-                          const RambleSchema *schema, uint64_t recv_us, uint64_t written_us){
+static void cap_ring_push(CapSub *s, RantString sender, const void *data, size_t len, int mine,
+                          const RantSchema *schema, uint64_t recv_us, uint64_t written_us){
     CapMsgRec *m;
     if (!s->ring){                       /* lazy: first message on this topic allocates the ring */
         s->ring = (CapMsgRec *)calloc(CAP_FEED_MAX, sizeof *s->ring);
@@ -927,11 +927,11 @@ static void cap_ring_push(CapSub *s, RambleString sender, const void *data, size
     /* the VALUE column tracks the newest VALUE, so a function/task's call-log rows
        (requests, replies, synthesized timeouts) never overwrite it */
     if (s->kind != CAP_KIND_FUNCTION && s->kind != CAP_KIND_TASK)
-        cap_mini_update(s, ramble_bytes(data, len), schema, m);
+        cap_mini_update(s, rant_bytes(data, len), schema, m);
     /* a variable's newest value also seeds its publish form (the form writes the NEXT value,
        so it should start from the current one, not from zeros) */
     if (s->kind == CAP_KIND_VARIABLE)
-        cap_form_vals_update(s, ramble_bytes(data, len), schema);
+        cap_form_vals_update(s, rant_bytes(data, len), schema);
 }
 
 static unsigned long long cap_now_ms(void){
@@ -987,7 +987,7 @@ static void cap_logf(const char *fmt, ...){
     char *line;
     int n;
     va_list ap;
-    if (cap_node) ramble_node_lock(cap_node);
+    if (cap_node) rant_node_lock(cap_node);
     line = cap_log[cap_log_head];
     n = snprintf(line, CAP_LOG_LINE, "[%6.2fs] ", (double)t / 1000.0);
     va_start(ap, fmt);
@@ -996,7 +996,7 @@ static void cap_logf(const char *fmt, ...){
     cap_log_head = (cap_log_head + 1) % CAP_LOG_LINES;
     if (cap_log_count < CAP_LOG_LINES) cap_log_count++;
     fputs(line, stdout); fputc('\n', stdout);
-    if (cap_node) ramble_node_unlock(cap_node);
+    if (cap_node) rant_node_unlock(cap_node);
 }
 
 static CapPeer *cap_peer_find(uint32_t id){
@@ -1036,7 +1036,7 @@ static CapNodeLogLine cap_nodelog[CAP_NODELOG_MAX];
 static int      cap_nodelog_head, cap_nodelog_count;
 static uint16_t cap_nodelog_index[3] = { 0xFFFF, 0xFFFF, 0xFFFF };  /* our log topics' indices */
 
-/* the @ramble/meta watch state, declared here so cap_stop can reset it. The poll and
+/* the @rant/meta watch state, declared here so cap_stop can reset it. The poll and
    decode live below with the pattern interop */
 static char               cap_meta_node[CAP_NAME_CAP];   /* the watched node's name, empty = off */
 static CapMetaStats       cap_meta;                      /* latest decode (lock-bracketed) */
@@ -1048,17 +1048,17 @@ static unsigned long long cap_meta_last_ms;              /* last request time */
 static unsigned long long cap_meta_recv_ms;              /* when the snapshot arrived (0 = never) */
 static uint64_t           cap_meta_prev_cpu, cap_meta_prev_wall;   /* CPU%% deltas */
 
-/* a delivered @ramble/log line into the node log ring. 1 = consumed, not a topic feed */
-static int cap_nodelog_intake(const RambleMsg *msg){
+/* a delivered @rant/log line into the node log ring. 1 = consumed, not a topic feed */
+static int cap_nodelog_intake(const RantMsg *msg){
     int lvl;
     for (lvl = 0; lvl < 3; lvl++) if (cap_nodelog_index[lvl] == msg->topic_index) break;
     if (lvl == 3) return 0;
     {   CapNodeLogLine *L = &cap_nodelog[cap_nodelog_head];
-        RambleString txt = msg->schema ? ramble_get_string(msg->data, msg->schema, "text")
-                                     : ramble_string(NULL, 0);
+        RantString txt = msg->schema ? rant_get_string(msg->data, msg->schema, "text")
+                                     : rant_string(NULL, 0);
         size_t tl = txt.len < CAP_NODELOG_TEXT - 1 ? txt.len : CAP_NODELOG_TEXT - 1;
         L->level   = (uint8_t)lvl;
-        L->wall_us = msg->schema ? ramble_get_uint(msg->data, msg->schema, "wall_us") : 0;
+        L->wall_us = msg->schema ? rant_get_uint(msg->data, msg->schema, "wall_us") : 0;
         snprintf(L->node, sizeof L->node, "%.*s", (int)msg->publisher_name.len, msg->publisher_name.data);
         if (tl) memcpy(L->text, txt.data, tl);
         L->text[tl] = '\0';
@@ -1103,27 +1103,27 @@ static CapSub *cap_sub_by_rsp_index(uint16_t index){
 
 /* one directed @rsp message: the RUNNING ack or the terminal of OUR current call. The
    header splits as [u32 call_id][u8 status][u8 len][message]. UI thread (queued). */
-static void cap_task_rsp_intake(CapSub *s, const RambleMsg *msg){
+static void cap_task_rsp_intake(CapSub *s, const RantMsg *msg){
     const uint8_t *h = msg->header.data;
     uint32_t id; uint8_t status; size_t mlen;
     if (msg->header.len < CAP_RSP_PREFIX + 1u) return;
-    id = i_ramble_le_r32(h); status = h[4];
+    id = i_rant_le_r32(h); status = h[4];
     mlen = h[5];
     if (CAP_RSP_PREFIX + 1u + mlen > msg->header.len) mlen = msg->header.len - CAP_RSP_PREFIX - 1u;
-    if (cap_node) ramble_node_lock(cap_node);
+    if (cap_node) rant_node_lock(cap_node);
     if (id != s->call_id || s->call_phase == CAP_TCALL_IDLE){
-        if (cap_node) ramble_node_unlock(cap_node);
+        if (cap_node) rant_node_unlock(cap_node);
         return;                                      /* a stale call's straggler */
     }
-    if (status == (uint8_t)RAMBLE_CALL_RUNNING){       /* non-terminal: the deadline drops */
+    if (status == (uint8_t)RANT_CALL_RUNNING){         /* non-terminal: the deadline drops */
         if (s->call_phase == CAP_TCALL_SENT) s->call_phase = CAP_TCALL_RUNNING;
-        if (cap_node) ramble_node_unlock(cap_node);
+        if (cap_node) rant_node_unlock(cap_node);
         return;
     }
     s->call_phase  = CAP_TCALL_DONE;
     s->task_status = (int)status;
     snprintf(s->task_msg, sizeof s->task_msg, "%.*s", (int)mlen, (const char *)h + CAP_RSP_PREFIX + 1);
-    if (cap_node) ramble_node_unlock(cap_node);
+    if (cap_node) rant_node_unlock(cap_node);
     /* the terminal joins the call log (the ring is UI-thread-owned, like every feed) */
     cap_ring_push(s, msg->publisher_name, msg->data.data, msg->data.len, 0, msg->schema,
                   msg->recv_us, msg->written_us);
@@ -1137,12 +1137,12 @@ static void cap_task_rsp_intake(CapSub *s, const RambleMsg *msg){
 
 /* one @prg update off the raw tap: our own call's newest progress or a foreign run's row,
    on the UI thread, bracketed with the node lock. Progress never enters the feed ring. */
-static void cap_task_prg_intake(CapSub *s, const RambleMsg *msg){
+static void cap_task_prg_intake(CapSub *s, const RantMsg *msg){
     uint32_t lo, id;
     if (msg->header.len != CAP_PRG_PREFIX) return;
-    lo = i_ramble_le_r32(msg->header.data);
-    id = i_ramble_le_r32(msg->header.data + 4);
-    if (cap_node) ramble_node_lock(cap_node);
+    lo = i_rant_le_r32(msg->header.data);
+    id = i_rant_le_r32(msg->header.data + 4);
+    if (cap_node) rant_node_lock(cap_node);
     if (lo == cap_self_lo){   /* our own call, the remote's prg twin is shadowed */
         if (s->call_id == id && s->call_phase != CAP_TCALL_IDLE){
             if (s->call_phase == CAP_TCALL_SENT) s->call_phase = CAP_TCALL_RUNNING;
@@ -1193,7 +1193,7 @@ static void cap_task_prg_intake(CapSub *s, const RambleMsg *msg){
             r->preview[n] = '\0';
         }
     }
-    if (cap_node) ramble_node_unlock(cap_node);
+    if (cap_node) rant_node_unlock(cap_node);
 }
 
 /* task upkeep on the UI thread each frame: age out run rows that stopped updating and
@@ -1203,29 +1203,29 @@ static void cap_task_poll(void){
     int i, any = 0;
     for (i = 0; i < CAP_TASK_RUNS; i++) if (cap_runs[i].used) any = 1;
     if (any){
-        if (cap_node) ramble_node_lock(cap_node);
+        if (cap_node) rant_node_lock(cap_node);
         for (i = 0; i < CAP_TASK_RUNS; i++)
             if (cap_runs[i].used && now - cap_runs[i].last_ms > CAP_RUN_TTL_MS) cap_runs[i].used = 0;
-        if (cap_node) ramble_node_unlock(cap_node);
+        if (cap_node) rant_node_unlock(cap_node);
     }
     for (i = 0; i < CAP_MAX_SUBS; i++){
         CapSub *s = &cap_subs[i];
         int expire;
         if (!s->used || s->kind != CAP_KIND_TASK) continue;
-        if (cap_node) ramble_node_lock(cap_node);
+        if (cap_node) rant_node_lock(cap_node);
         expire = s->call_phase == CAP_TCALL_SENT && now > s->call_deadline_ms;
         if (expire){
             s->call_phase  = CAP_TCALL_DONE;
-            s->task_status = (int)RAMBLE_CALL_TIMEOUT;
+            s->task_status = (int)RANT_CALL_TIMEOUT;
             snprintf(s->task_msg, sizeof s->task_msg, "timeout");
         }
-        if (cap_node) ramble_node_unlock(cap_node);
+        if (cap_node) rant_node_unlock(cap_node);
         if (expire){   /* one synthesized call-log row, like a function's timed-out reply */
-            cap_ring_push(s, ramble_cstr("(no reply)"), NULL, 0, 0, NULL,
-                          cap_node ? i_ramble_node_now_us(cap_node) : 0, 0);
+            cap_ring_push(s, rant_cstr("(no reply)"), NULL, 0, 0, NULL,
+                          cap_node ? i_rant_node_now_us(cap_node) : 0, 0);
             if (s->ring){
                 int newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
-                s->ring[newest].call_status = (int)RAMBLE_CALL_TIMEOUT;
+                s->ring[newest].call_status = (int)RANT_CALL_TIMEOUT;
                 snprintf(s->ring[newest].call_msg, sizeof s->ring[newest].call_msg, "timeout");
             }
             s->n_msgs++;
@@ -1235,9 +1235,9 @@ static void cap_task_poll(void){
 
 /* the node's message sink: append a delivered message to its topic ring. Every explorer
    topic is queued, so this runs only on the UI thread and the rings need no locking. */
-static void cap_on_message(const RambleMsg *msg){
+static void cap_on_message(const RantMsg *msg){
     CapSub *s;
-    if (cap_nodelog_intake(msg)) return;      /* a @ramble/log line, not a topic feed */
+    if (cap_nodelog_intake(msg)) return;      /* a @rant/log line, not a topic feed */
     s = cap_sub_by_prg_index(msg->topic_index);
     if (s){ cap_task_prg_intake(s, msg); return; }   /* a task tap update, not a topic feed */
     s = cap_sub_by_rsp_index(msg->topic_index);
@@ -1252,17 +1252,17 @@ static void cap_on_message(const RambleMsg *msg){
     if (msg->header.len >= 5){   /* a variable value's prefix: [u8 flags][u32 write_seq] */
         int newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
         s->forced    = (msg->header.data[0] & 0x01) ? 1 : 0;
-        s->write_seq = i_ramble_le_r32(msg->header.data + 1);
+        s->write_seq = i_rant_le_r32(msg->header.data + 1);
         if (s->ring) s->ring[newest].forced = s->forced;   /* ring is NULL only if the push OOM'd */
     }
     s->n_msgs++;
 }
 
 /* the node's event sink: maintain the observer metrics and log, never calling back into
-   ramble. Runs on the service thread under the node lock, so the UI reads under a bracket. */
-static void cap_on_event(const RambleEvent *ev){
+   rant. Runs on the service thread under the node lock, so the UI reads under a bracket. */
+static void cap_on_event(const RantEvent *ev){
     switch (ev->kind){
-    case RAMBLE_PEER_UP: {
+    case RANT_PEER_UP: {
         CapPeer *p = cap_peer_get(ev->peer);
         cap_schema_dirty = 1;
         p->last_change_ms = cap_now_ms();
@@ -1272,33 +1272,33 @@ static void cap_on_event(const RambleEvent *ev){
         else
             cap_logf("UP    id=%u", ev->peer);
         break; }
-    case RAMBLE_PEER_INTEREST: {                       /* a peer's interest list was (re)applied */
+    case RANT_PEER_INTEREST: {                         /* a peer's interest list was (re)applied */
         CapPeer *p = cap_peer_find(ev->peer);
         cap_schema_dirty = 1;
         if (p){ p->updates++; p->last_change_ms = cap_now_ms(); }
         cap_logf("        interest  id=%u  pub-to=%u  sub-from=%u",
                  ev->peer, ev->publish_topics, ev->receive_topics);
         break; }
-    case RAMBLE_PEER_DOWN:
+    case RANT_PEER_DOWN:
         /* the record is freed by the next snapshot's sweep (a non-ACTIVE peer is not refreshed) */
         cap_schema_dirty = 1;
         cap_logf("DOWN  id=%u", ev->peer);
         break;
-    case RAMBLE_MSG_LOST: {                            /* reliable subscriber skipped past a gap */
+    case RANT_MSG_LOST: {                              /* reliable subscriber skipped past a gap */
         CapSub *s = cap_sub_by_index(ev->topic);
         if (s) s->n_drops += ev->lost_count;
         cap_logf("        LOST  ch=%u peer=%u first=%llu count=%llu", ev->topic, ev->peer,
                  (unsigned long long)ev->lost_first, (unsigned long long)ev->lost_count);
         break; }
-    case RAMBLE_ERROR: {   /* every failure funnels here. Mark the sub if topic scoped */
+    case RANT_ERROR: {     /* every failure funnels here. Mark the sub if topic scoped */
         char line[160];
-        if (ev->error == RAMBLE_E_QOS_INCOMPATIBLE || ev->error == RAMBLE_E_SCHEMA_MISMATCH ||
-            ev->error == RAMBLE_E_MSG_TOO_BIG){
+        if (ev->error == RANT_E_QOS_INCOMPATIBLE || ev->error == RANT_E_SCHEMA_MISMATCH ||
+            ev->error == RANT_E_MSG_TOO_BIG){
             CapSub *s = cap_sub_by_index(ev->topic);
             if (s) s->error = 1;
-            if (ev->error == RAMBLE_E_SCHEMA_MISMATCH) cap_schema_dirty = 1;
+            if (ev->error == RANT_E_SCHEMA_MISMATCH) cap_schema_dirty = 1;
         }
-        cap_logf("        %s", ramble_event_str(ev, line, sizeof line));
+        cap_logf("        %s", rant_event_str(ev, line, sizeof line));
         break; }
     default: break;
     }
@@ -1312,7 +1312,7 @@ void cap_defaults(Config *c){
     c->group  = "239.255.0.7";
     c->port   = 7400;
     c->ifc    = NULL;
-    c->name   = "ramble-explorer";
+    c->name   = "rant-explorer";
 }
 
 static void cap_usage(const char *argv0){
@@ -1321,7 +1321,7 @@ static void cap_usage(const char *argv0){
            "  --group IP   discovery multicast group   (default 239.255.0.7)\n"
            "  --port  N    discovery port              (default 7400)\n"
            "  --if    IP   pin to one interface IP     (default all; 127.0.0.1 = single-host)\n"
-           "  --name  STR  this observer node's name   (default ramble-explorer)\n", argv0);
+           "  --name  STR  this observer node's name   (default rant-explorer)\n", argv0);
 }
 
 int cap_parse_args(int argc, char **argv, Config *c){
@@ -1341,8 +1341,8 @@ int cap_parse_args(int argc, char **argv, Config *c){
 }
 
 int cap_start(Capture *cap, const Config *cfg){
-    RambleAllocator mem;
-    RambleNode *node;
+    RantAllocator mem;
+    RantNode *node;
 
     memset(cap, 0, sizeof *cap);
     cap_start_ms = cap_now_ms();
@@ -1350,8 +1350,8 @@ int cap_start(Capture *cap, const Config *cfg){
 
     /* a real node owning its memory via a dynamic allocator. It starts with no topics and
        subscribes on demand, CAP_OBSERVER_CHANNELS bounds those. */
-    mem  = ramble_allocator_heap(0);
-    node = ramble_node_open(&mem, cfg->name, cap_on_message, cap_on_event, &(RambleNodeOpts){
+    mem  = rant_allocator_heap(0);
+    node = rant_node_open(&mem, cfg->name, cap_on_message, cap_on_event, &(RantNodeOpts){
         .domain        = cfg->domain,
         .max_topics  = CAP_OBSERVER_CHANNELS,
         .fetch_details = 1,   /* observer: fetch every peer topic's name + schema */
@@ -1363,30 +1363,30 @@ int cap_start(Capture *cap, const Config *cfg){
         .discovery     = { .max_peers = CAP_MAX_PEERS },
     });
     if (!node){
-        fprintf(stderr, "cap_start: ramble_node_open failed (port %u in use? interface?)\n", cfg->port);
+        fprintf(stderr, "cap_start: rant_node_open failed (port %u in use? interface?)\n", cfg->port);
         return 0;
     }
     cap->rt  = node;
     cap->mem = NULL;         /* the node owns its memory now, close frees it */
-    cap_base_mono_us = i_ramble_node_now_us(node);    /* the two feed-stamp origins, from the */
-    cap_base_wall_us = i_ramble_node_wall_us(node);   /* node's own clocks (see cap_stamp) */
-    cap_self_lo = i_ramble_le_r32(i_ramble_node_uuid(node));   /* our @prg caller key */
+    cap_base_mono_us = i_rant_node_now_us(node);      /* the two feed-stamp origins, from the */
+    cap_base_wall_us = i_rant_node_wall_us(node);     /* node's own clocks (see cap_stamp) */
+    cap_self_lo = i_rant_le_r32(i_rant_node_uuid(node));       /* our @prg caller key */
     cap_node = node;         /* the log/table serializer handle (see the THREADING note) */
-    {   /* join the mesh wide @ramble/log topics: widen our own built in handles to PUBSUB and
+    {   /* join the mesh wide @rant/log topics: widen our own built in handles to PUBSUB and
            switch them to consumer queues so the lines drain on the UI thread with the feeds */
         int lvl;
         for (lvl = 0; lvl < 3; lvl++){
-            RambleTopic *lc = ramble_node_log_topic(node, (RambleLogLevel)lvl);
-            RambleMsg m;
+            RantTopic *lc = rant_node_log_topic(node, (RantLogLevel)lvl);
+            RantMsg m;
             if (!lc) continue;
-            ramble_topic_set_role(lc, RAMBLE_PUBSUB);
-            cap_nodelog_index[lvl] = ramble_topic_index(lc);
-            (void)ramble_topic_take(lc, &m, 0);   /* first take switches it to queued delivery */
+            rant_topic_set_role(lc, RANT_PUBSUB);
+            cap_nodelog_index[lvl] = rant_topic_index(lc);
+            (void)rant_topic_take(lc, &m, 0);     /* first take switches it to queued delivery */
         }
     }
-    /* the service thread owns discovery, receive and timers from here. RAMBLE_ERR_NOSYS
+    /* the service thread owns discovery, receive and timers from here. RANT_ERR_NOSYS
        with threads compiled out falls back to the single threaded drive in cap_poll */
-    if (ramble_node_start(node) != RAMBLE_OK)
+    if (rant_node_start(node) != RANT_OK)
         cap_logf("service thread unavailable: polling on the UI thread");
     cap_logf("observer node \"%s\" started on domain %u (%s:%u)", cfg->name, cfg->domain, cfg->group, cfg->port);
     return 1;
@@ -1394,17 +1394,17 @@ int cap_start(Capture *cap, const Config *cfg){
 
 /* One UI frame tick: drain every subscribed topic's queue on this thread, so message
    handling and the UI never race. Without a service thread it also drives the loop. */
-static void cap_drain_replies(RambleNode *node);   /* defined with the pattern interop below */
+static void cap_drain_replies(RantNode *node);     /* defined with the pattern interop below */
 static void cap_pend_poll(void);                   /* flush/expire parked sends (same block) */
-static void cap_meta_poll(RambleNode *node);       /* the 1 Hz @ramble/meta poll (below) */
+static void cap_meta_poll(RantNode *node);         /* the 1 Hz @rant/meta poll (below) */
 
 int cap_poll(Capture *cap){
-    RambleNode *node = (RambleNode *)cap->rt;
+    RantNode *node = (RantNode *)cap->rt;
     int n;
     if (!node) return 0;
-    if (!ramble_node_is_started(node))
-        ramble_node_poll(node, 0);
-    n = ramble_node_dispatch(node, 0, 0);
+    if (!rant_node_is_started(node))
+        rant_node_poll(node, 0);
+    n = rant_node_dispatch(node, 0, 0);
     cap_drain_replies(node);   /* parked function replies into their feeds, UI thread */
     cap_pend_poll();           /* parked sends to the wire once matching resolves */
     cap_task_poll();           /* age out silent task-run rows */
@@ -1416,7 +1416,7 @@ int cap_poll(Capture *cap){
 void cap_stop(Capture *cap){
     int i;
     cap_node = NULL;
-    if (cap->rt) ramble_node_close((RambleNode *)cap->rt, 1);   /* stop, BYE, free */
+    if (cap->rt) rant_node_close((RantNode *)cap->rt, 1);       /* stop, BYE, free */
     cap->rt = NULL; cap->mem = NULL;
     /* release the observer's own heap (lazy feed rings, grown peer entity lists, parked
        sends), so a clean shutdown leaves nothing behind for a leak check */
@@ -1425,8 +1425,8 @@ void cap_stop(Capture *cap){
         free(cap_subs[i].pend_data); cap_subs[i].pend_data = NULL; cap_subs[i].pend_used = 0;
         free(cap_subs[i].prg_last); cap_subs[i].prg_last = NULL; cap_subs[i].prg_have = 0;
         free(cap_subs[i].form_vals); cap_subs[i].form_vals = NULL; cap_subs[i].n_form_vals = 0;
-        if (cap_subs[i].req_schema){ ramble_schema_free(cap_subs[i].req_schema, cap_schema_alloc, NULL); cap_subs[i].req_schema = NULL; }
-        if (cap_subs[i].rsp_schema){ ramble_schema_free(cap_subs[i].rsp_schema, cap_schema_alloc, NULL); cap_subs[i].rsp_schema = NULL; }
+        if (cap_subs[i].req_schema){ rant_schema_free(cap_subs[i].req_schema, cap_schema_alloc, NULL); cap_subs[i].req_schema = NULL; }
+        if (cap_subs[i].rsp_schema){ rant_schema_free(cap_subs[i].rsp_schema, cap_schema_alloc, NULL); cap_subs[i].rsp_schema = NULL; }
         cap_subs[i].used = 0;
     }
     memset(cap_runs, 0, sizeof cap_runs);
@@ -1453,28 +1453,28 @@ void cap_snapshot_free(CapSnapshot *snap){
     }
 }
 
-/* The 1 Hz @ramble/meta poll: a directed call at the watched node, decoded in the response
+/* The 1 Hz @rant/meta poll: a directed call at the watched node, decoded in the response
    callback on the service thread. A generation counter ties a reply to its watch. */
 
-static uint64_t cap_map_u64(RambleBytes body, const char *key){
-    RambleValue v;
-    return ramble_map_get(body, key, &v) ? v.v.u : 0;   /* the snapshot stores unsigned kinds */
+static uint64_t cap_map_u64(RantBytes body, const char *key){
+    RantValue v;
+    return rant_map_get(body, key, &v) ? v.v.u : 0;     /* the snapshot stores unsigned kinds */
 }
 
-static void cap_meta_on_reply(const RambleResponse *r){
+static void cap_meta_on_reply(const RantResponse *r){
     cap_meta_inflight = 0;
     if (cap_meta_req_gen != cap_meta_gen) return;        /* a reply for a previous watch */
-    if (r->status != RAMBLE_CALL_OK || !r->schema){ cap_meta.failing++; return; }
-    {   RambleBytes info = ramble_get_map(r->data, r->schema, "info");
-        RambleValue v;
+    if (r->status != RANT_CALL_OK || !r->schema){ cap_meta.failing++; return; }
+    {   RantBytes info = rant_get_map(r->data, r->schema, "info");
+        RantValue v;
         uint64_t wall = 0;
         if (!info.data){ cap_meta.failing++; return; }
         cap_meta.failing = 0;
         cap_meta.valid = 1;
         cap_meta_recv_ms = cap_now_ms();
-        if (ramble_map_get(info, "node", &v)){
-            RambleBytes nm = v.bytes;
-            RambleValue le;
+        if (rant_map_get(info, "node", &v)){
+            RantBytes nm = v.bytes;
+            RantValue le;
             wall = cap_map_u64(nm, "wall_us");
             cap_meta.uptime_s       = (double)cap_map_u64(nm, "uptime_us") / 1e6;
             cap_meta.mem_in_use     = cap_map_u64(nm, "mem_in_use");
@@ -1491,7 +1491,7 @@ static void cap_meta_on_reply(const RambleResponse *r){
             cap_meta.shm_rx         = (uint32_t)cap_map_u64(nm, "shm_rx");
             cap_meta.last_error     = (uint32_t)cap_map_u64(nm, "last_error");
             cap_meta.last_error_text[0] = '\0';
-            if (ramble_map_get(nm, "last_error_text", &le) && le.bytes.data){
+            if (rant_map_get(nm, "last_error_text", &le) && le.bytes.data){
                 size_t tl = le.bytes.len < sizeof cap_meta.last_error_text - 1
                           ? le.bytes.len : sizeof cap_meta.last_error_text - 1;
                 memcpy(cap_meta.last_error_text, le.bytes.data, tl);
@@ -1501,14 +1501,14 @@ static void cap_meta_on_reply(const RambleResponse *r){
         cap_meta.have_proc = 0;
         cap_meta.have_cpu = 0;
         cap_meta.cpu_pct = -1.0;
-        if (ramble_map_get(info, "proc", &v)){
-            RambleBytes pr = v.bytes;
+        if (rant_map_get(info, "proc", &v)){
+            RantBytes pr = v.bytes;
             cap_meta.have_proc = 1;
             cap_meta.pid      = cap_map_u64(pr, "pid");
             cap_meta.cpu_us   = cap_map_u64(pr, "cpu_us");
             cap_meta.rss      = cap_map_u64(pr, "rss");
             cap_meta.peak_rss = cap_map_u64(pr, "peak_rss");
-            { RambleValue cv; cap_meta.have_cpu = ramble_map_get(pr, "cpu_us", &cv); }
+            { RantValue cv; cap_meta.have_cpu = rant_map_get(pr, "cpu_us", &cv); }
             cap_meta.heap_total = cap_map_u64(pr, "heap_total");
             cap_meta.heap_free  = cap_map_u64(pr, "heap_free");
             cap_meta.heap_min_free = cap_map_u64(pr, "heap_min_free");
@@ -1520,16 +1520,16 @@ static void cap_meta_on_reply(const RambleResponse *r){
             cap_meta_prev_cpu  = cap_meta.cpu_us;
             cap_meta_prev_wall = wall;
         }
-        if (ramble_map_get(info, "topics", &v)){   /* absent when this poll did not ask: rows stand */
-            uint16_t cnt = ramble_map_array_count(v.bytes), i;
+        if (rant_map_get(info, "topics", &v)){   /* absent when this poll did not ask: rows stand */
+            uint16_t cnt = rant_map_array_count(v.bytes), i;
             cap_meta.n_topic_rows = 0;
             for (i = 0; i < cnt && cap_meta.n_topic_rows < CAP_META_TOPICS; i++){
-                RambleValue e, nv;
+                RantValue e, nv;
                 CapMetaTopic *tr;
-                if (!ramble_map_array_at(v.bytes, i, &e) || e.kind != RAMBLE_MAP) continue;
+                if (!rant_map_array_at(v.bytes, i, &e) || e.kind != RANT_MAP) continue;
                 tr = &cap_meta.topic_rows[cap_meta.n_topic_rows++];
                 tr->name[0] = '\0';
-                if (ramble_map_get(e.bytes, "name", &nv) && nv.bytes.data){
+                if (rant_map_get(e.bytes, "name", &nv) && nv.bytes.data){
                     size_t tl = nv.bytes.len < sizeof tr->name - 1 ? nv.bytes.len : sizeof tr->name - 1;
                     memcpy(tr->name, nv.bytes.data, tl); tr->name[tl] = '\0';
                 }
@@ -1543,19 +1543,19 @@ static void cap_meta_on_reply(const RambleResponse *r){
             }
         }
         cap_meta.n_peer_rows = 0;
-        if (ramble_map_get(info, "peers", &v)){
-            uint16_t cnt = ramble_map_array_count(v.bytes), i;
+        if (rant_map_get(info, "peers", &v)){
+            uint16_t cnt = rant_map_array_count(v.bytes), i;
             for (i = 0; i < cnt && cap_meta.n_peer_rows < CAP_META_PEERS; i++){
-                RambleValue e, nv;
+                RantValue e, nv;
                 CapMetaPeer *pr;
-                if (!ramble_map_array_at(v.bytes, i, &e) || e.kind != RAMBLE_MAP) continue;
+                if (!rant_map_array_at(v.bytes, i, &e) || e.kind != RANT_MAP) continue;
                 pr = &cap_meta.peer_rows[cap_meta.n_peer_rows++];
                 pr->name[0] = '\0';
-                if (ramble_map_get(e.bytes, "name", &nv) && nv.bytes.data){
+                if (rant_map_get(e.bytes, "name", &nv) && nv.bytes.data){
                     size_t tl = nv.bytes.len < sizeof pr->name - 1 ? nv.bytes.len : sizeof pr->name - 1;
                     memcpy(pr->name, nv.bytes.data, tl); pr->name[tl] = '\0';
                 }
-                pr->active        = ramble_map_get(e.bytes, "active", &nv) && nv.kind == RAMBLE_BOOL && nv.v.u != 0;
+                pr->active        = rant_map_get(e.bytes, "active", &nv) && nv.kind == RANT_BOOL && nv.v.u != 0;
                 pr->publish_to    = (uint32_t)cap_map_u64(e.bytes, "publish_to");
                 pr->receive_from  = (uint32_t)cap_map_u64(e.bytes, "receive_from");
                 pr->rtt_us        = (uint32_t)cap_map_u64(e.bytes, "rtt_us");
@@ -1567,20 +1567,20 @@ static void cap_meta_on_reply(const RambleResponse *r){
     }
 }
 
-static void cap_meta_poll(RambleNode *node){
+static void cap_meta_poll(RantNode *node){
     unsigned long long now = cap_now_ms();
     uint32_t pid = 0; int i;
-    RambleFunction *fn;
+    RantFunction *fn;
     if (!node || !cap_meta_node[0]) return;
     if (cap_meta_inflight || now - cap_meta_last_ms < 1000) return;
-    fn = ramble_node_meta_function(node);
+    fn = rant_node_meta_function(node);
     if (!fn) return;
     /* resolve the watched node's peer id from the cached peer table (written on the
        service thread under the node lock: bracket the read) */
-    ramble_node_lock(node);
+    rant_node_lock(node);
     for (i = 0; i < CAP_MAX_PEERS; i++)
         if (cap_peers[i].used && !strcmp(cap_peers[i].name, cap_meta_node)){ pid = cap_peers[i].local_id; break; }
-    ramble_node_unlock(node);
+    rant_node_unlock(node);
     if (!pid) return;                     /* not discovered / dropped: idle until it is */
     cap_meta_last_ms = now;
     cap_meta_inflight = 1;
@@ -1588,37 +1588,37 @@ static void cap_meta_poll(RambleNode *node){
     {   /* ask only for what this poll needs: node, proc and peers every time, the per topic
            counters every fifth poll, since that section is O(topics) on the wire */
         uint8_t req[4];
-        uint32_t mask = RAMBLE_META_NODE | RAMBLE_META_PROC | RAMBLE_META_PEERS;
-        if ((cap_meta_polls++ % 5u) == 0) mask |= RAMBLE_META_TOPICS;
-        i_ramble_le_w32(req, mask);
-        if (ramble_function_call_async(fn, ramble_bytes(req, sizeof req), cap_meta_on_reply, NULL,
-                                     &(RambleCallOpts){ .provider = pid }) != RAMBLE_OK)
+        uint32_t mask = RANT_META_NODE | RANT_META_PROC | RANT_META_PEERS;
+        if ((cap_meta_polls++ % 5u) == 0) mask |= RANT_META_TOPICS;
+        i_rant_le_w32(req, mask);
+        if (rant_function_call_async(fn, rant_bytes(req, sizeof req), cap_meta_on_reply, NULL,
+                                     &(RantCallOpts){ .provider = pid }) != RANT_OK)
             cap_meta_inflight = 0;
     }
 }
 
 void cap_meta_watch(Capture *cap, const char *node_name){
-    RambleNode *node = cap ? (RambleNode *)cap->rt : NULL;
+    RantNode *node = cap ? (RantNode *)cap->rt : NULL;
     if (!node) return;
     if (!node_name && !cap_meta_node[0]) return;                       /* already off */
     if (node_name && !strcmp(cap_meta_node, node_name)) return;        /* unchanged */
-    ramble_node_lock(node);
+    rant_node_lock(node);
     memset(&cap_meta, 0, sizeof cap_meta);
     cap_meta.cpu_pct = -1.0;
     cap_meta_gen++;                       /* orphan any in-flight reply */
     cap_meta_prev_cpu = cap_meta_prev_wall = 0;
     cap_meta_recv_ms = 0; cap_meta_last_ms = 0;
     snprintf(cap_meta_node, sizeof cap_meta_node, "%s", node_name ? node_name : "");
-    ramble_node_unlock(node);
+    rant_node_unlock(node);
 }
 
 int cap_meta_stats(const Capture *cap, CapMetaStats *out){
-    RambleNode *node = cap ? (RambleNode *)cap->rt : NULL;
+    RantNode *node = cap ? (RantNode *)cap->rt : NULL;
     if (!out) return 0;
     if (!node || !cap_meta_node[0]){ memset(out, 0, sizeof *out); return 0; }
-    ramble_node_lock(node);
+    rant_node_lock(node);
     *out = cap_meta;
-    ramble_node_unlock(node);
+    rant_node_unlock(node);
     out->age_s = cap_meta_recv_ms ? (double)(cap_now_ms() - cap_meta_recv_ms) / 1000.0 : -1.0;
     snprintf(out->node, sizeof out->node, "%s", cap_meta_node);
     return 1;
@@ -1668,25 +1668,25 @@ static void cap_primary_channel_name(char *dst, size_t cap, const char *topic, u
 typedef struct {
     int      used;
     CapSub  *s;
-    int      status;              /* RambleCallStatus */
+    int      status;              /* RantCallStatus */
     uint32_t provider;            /* peer id (0 = synthesized) */
     uint32_t len;                 /* true reply length */
     uint32_t kept;                /* bytes kept in data[] */
     uint64_t recv_us;             /* arrival (node monotonic): taken here, not at the drain */
     uint64_t written_us;          /* the provider's write stamp (0 = synthesized outcome) */
-    char     msg[RAMBLE_CALL_MSG_MAX + 1];   /* RambleResponse.message (status text if none sent) */
+    char     msg[RANT_CALL_MSG_MAX + 1];     /* RantResponse.message (status text if none sent) */
     uint8_t  data[CAP_REPLY_MAX];
 } CapReplyPending;
 static CapReplyPending cap_replies[CAP_REPLY_PENDING];
 
-static void cap_fn_on_reply(const RambleResponse *r){
+static void cap_fn_on_reply(const RantResponse *r){
     CapSub *s = (CapSub *)r->user;
     int i;
     for (i = 0; i < CAP_REPLY_PENDING; i++){
         CapReplyPending *pr = &cap_replies[i];
         if (pr->used) continue;
         pr->s = s; pr->status = (int)r->status; pr->provider = r->provider;
-        pr->recv_us = i_ramble_node_now_us(cap_node);   /* now: the drain is a frame away */
+        pr->recv_us = i_rant_node_now_us(cap_node);     /* now: the drain is a frame away */
         pr->written_us = r->written_us;
         {   size_t ml = r->message.len < sizeof pr->msg ? r->message.len : sizeof pr->msg - 1;
             if (ml) memcpy(pr->msg, r->message.data, ml);
@@ -1703,17 +1703,17 @@ static void cap_fn_on_reply(const RambleResponse *r){
 
 /* drain parked function replies into their feeds on the UI thread. The pending slots are
    written under the node lock, so the copy out brackets with it and the ring push does not. */
-static void cap_drain_replies(RambleNode *node){
+static void cap_drain_replies(RantNode *node){
     CapReplyPending local[CAP_REPLY_PENDING];
     int i, n = 0;
-    ramble_node_lock(node);
+    rant_node_lock(node);
     for (i = 0; i < CAP_REPLY_PENDING; i++)
         if (cap_replies[i].used){ local[n++] = cap_replies[i]; cap_replies[i].used = 0; }
-    ramble_node_unlock(node);
+    rant_node_unlock(node);
     for (i = 0; i < n; i++){
         CapReplyPending *pr = &local[i];
         CapSub *s = pr->s;
-        char sender[RAMBLE_NODE_NAME_MAX + 1] = "provider";
+        char sender[RANT_NODE_NAME_MAX + 1] = "provider";
         int k;
         if (!s || !s->used) continue;
         for (k = 0; k < CAP_MAX_PEERS; k++)   /* provider peer id to its display name */
@@ -1724,10 +1724,10 @@ static void cap_drain_replies(RambleNode *node){
         s->n_msgs++;
         {   /* one shape for every outcome: the payload decodes with our response schema copy when
                whole and valid, and the message and status ride the record for the UI */
-            const RambleSchema *sch = (pr->kept == pr->len) ? s->rsp_schema : NULL;
+            const RantSchema *sch = (pr->kept == pr->len) ? s->rsp_schema : NULL;
             int newest;
-            if (sch && !ramble_schema_validate(sch, ramble_bytes(pr->data, pr->kept))) sch = NULL;
-            cap_ring_push(s, ramble_cstr(pr->provider ? sender : "(no reply)"), pr->data, pr->kept,
+            if (sch && !rant_schema_validate(sch, rant_bytes(pr->data, pr->kept))) sch = NULL;
+            cap_ring_push(s, rant_cstr(pr->provider ? sender : "(no reply)"), pr->data, pr->kept,
                           0, sch, pr->recv_us, pr->written_us);
             newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
             if (s->ring){   /* ring is NULL only if the push OOM'd */
@@ -1738,42 +1738,42 @@ static void cap_drain_replies(RambleNode *node){
     }
 }
 
-static int cap_sub_reconcile_topic(CapSub *s, RambleNode *node, int want);
+static int cap_sub_reconcile_topic(CapSub *s, RantNode *node, int want);
 
 /* bring the topic's live channels in line with subscribed and publishing. A plain topic
    takes cap_sub_reconcile_topic, a pattern entity kind matched reliable channels. */
-static int cap_sub_reconcile(CapSub *s, RambleNode *node, int want){
+static int cap_sub_reconcile(CapSub *s, RantNode *node, int want){
     if (!s->kind && !s->ch[0] && !s->ch[1] && !s->fn)
         s->kind = cap_entity_kind(s->name, NULL);   /* resolve once, before any channel exists */
 
     if (s->kind == CAP_KIND_VARIABLE){
-        RambleRole role = s->subscribed ? RAMBLE_SUB_ONLY : RAMBLE_INACTIVE;
-        if (!s->ch[1] && role != RAMBLE_INACTIVE){
-            RambleSchema *sch = cap_topic_schema_parse(node, s->name);
-            RambleTopic *ch = i_ramble_node_create_pattern_topic(node, s->name, role, sch,
-                     &(RambleTopicOpts){ .qos = { .reliability = RAMBLE_RELIABLE, .catch_up = 1 } },
-                     RAMBLE_KIND_VARIABLE, CAP_VAR_PREFIX, 0,
+        RantRole role = s->subscribed ? RANT_SUB_ONLY : RANT_INACTIVE;
+        if (!s->ch[1] && role != RANT_INACTIVE){
+            RantSchema *sch = cap_topic_schema_parse(node, s->name);
+            RantTopic *ch = i_rant_node_create_pattern_topic(node, s->name, role, sch,
+                     &(RantTopicOpts){ .qos = { .reliability = RANT_RELIABLE, .catch_up = 1 } },
+                     RANT_KIND_VARIABLE, CAP_VAR_PREFIX, 0,
                      0 /*attrs: observer never owns*/, NULL, NULL);
-            if (sch) ramble_schema_free(sch, cap_schema_alloc, NULL);
+            if (sch) rant_schema_free(sch, cap_schema_alloc, NULL);
             if (!ch) return 0;
-            ramble_topic_dispatch(ch, 0, 0);   /* queued: deliveries drain on the UI thread */
-            ramble_node_lock(node);
-            s->index[1] = ramble_topic_index(ch);
+            rant_topic_dispatch(ch, 0, 0);     /* queued: deliveries drain on the UI thread */
+            rant_node_lock(node);
+            s->index[1] = rant_topic_index(ch);
             s->ch[1] = ch;
-            ramble_node_unlock(node);
+            rant_node_unlock(node);
         } else if (s->ch[1]){
-            ramble_topic_set_role(s->ch[1], role);
+            rant_topic_set_role(s->ch[1], role);
         }
         if (s->publishing && !s->set_ch){
-            char sn[RAMBLE_TOPIC_NAME_MAX + 8];
-            RambleSchema *sch = cap_topic_schema_parse(node, s->name);   /* set payload = value */
+            char sn[RANT_TOPIC_NAME_MAX + 8];
+            RantSchema *sch = cap_topic_schema_parse(node, s->name);     /* set payload = value */
             snprintf(sn, sizeof sn, "%s@set", s->name);
             /* no retention, catch_up 0: a set channel is multi writer, so retained ops could
                let a stale write win (spec/explorer.md). A racing op parks instead. */
-            s->set_ch = i_ramble_node_create_pattern_topic(node, sn, RAMBLE_PUB_ONLY, sch,
-                     &(RambleTopicOpts){ .qos = { .reliability = RAMBLE_RELIABLE } },
-                     RAMBLE_KIND_VAR_SET, CAP_SET_PREFIX, 0, 0, NULL, NULL);
-            if (sch) ramble_schema_free(sch, cap_schema_alloc, NULL);
+            s->set_ch = i_rant_node_create_pattern_topic(node, sn, RANT_PUB_ONLY, sch,
+                     &(RantTopicOpts){ .qos = { .reliability = RANT_RELIABLE } },
+                     RANT_KIND_VAR_SET, CAP_SET_PREFIX, 0, 0, NULL, NULL);
+            if (sch) rant_schema_free(sch, cap_schema_alloc, NULL);
             if (!s->set_ch) return 0;
         }
         s->reliable = 1;
@@ -1782,15 +1782,15 @@ static int cap_sub_reconcile(CapSub *s, RambleNode *node, int want){
     if (s->kind == CAP_KIND_FUNCTION){
         if (s->publishing) s->subscribed = 1;   /* calling implies watching the call log */
         if ((s->subscribed || s->publishing) && !s->fn){
-            RambleSchema *req, *rsp;
+            RantSchema *req, *rsp;
             /* the provider's schemas: our request channel must pass its schema gate, and
                the reply decode needs the response shape */
             req = cap_entity_schema_copy(node, s->name, 0);
             rsp = cap_entity_schema_copy(node, s->name, 1);
-            s->fn = ramble_node_create_remote_function(node, s->name, req, rsp, NULL);
+            s->fn = rant_node_create_remote_function(node, s->name, req, rsp, NULL);
             if (!s->fn){
-                if (req) ramble_schema_free(req, cap_schema_alloc, NULL);
-                if (rsp) ramble_schema_free(rsp, cap_schema_alloc, NULL);
+                if (req) rant_schema_free(req, cap_schema_alloc, NULL);
+                if (rsp) rant_schema_free(rsp, cap_schema_alloc, NULL);
                 return 0;
             }
             s->req_schema = req;   /* keep our parsed copies: form source + feed decode */
@@ -1802,51 +1802,51 @@ static int cap_sub_reconcile(CapSub *s, RambleNode *node, int want){
     if (s->kind == CAP_KIND_TASK){
         /* subscribe = watch every live run over the raw @prg tap, publish = also be a caller.
            All three channels are raw, a handle beside them would shadow (spec/explorer.md). */
-        RambleRole trole;
-        char cn[RAMBLE_TOPIC_NAME_MAX + 8];
+        RantRole trole;
+        char cn[RANT_TOPIC_NAME_MAX + 8];
         if (s->publishing) s->subscribed = 1;
-        trole = s->subscribed ? RAMBLE_SUB_ONLY : RAMBLE_INACTIVE;
-        if (!s->prg_ch && trole != RAMBLE_INACTIVE){
+        trole = s->subscribed ? RANT_SUB_ONLY : RANT_INACTIVE;
+        if (!s->prg_ch && trole != RANT_INACTIVE){
             /* the tap, BEST-EFFORT: RxO keeps an observer out of flow control, so it can
                never stall the task */
-            RambleSchema *prg;
+            RantSchema *prg;
             snprintf(cn, sizeof cn, "%s@prg", s->name);
             prg = cap_entity_schema_copy(node, s->name, 2);
-            s->prg_ch = i_ramble_node_create_pattern_topic(node, cn, trole, prg,
-                     &(RambleTopicOpts){ .qos = { .reliability = RAMBLE_BEST_EFFORT } },
-                     RAMBLE_KIND_TASK_PRG, CAP_PRG_PREFIX, 0, 0, NULL, NULL);
-            if (prg) ramble_schema_free(prg, cap_schema_alloc, NULL);
+            s->prg_ch = i_rant_node_create_pattern_topic(node, cn, trole, prg,
+                     &(RantTopicOpts){ .qos = { .reliability = RANT_BEST_EFFORT } },
+                     RANT_KIND_TASK_PRG, CAP_PRG_PREFIX, 0, 0, NULL, NULL);
+            if (prg) rant_schema_free(prg, cap_schema_alloc, NULL);
             if (!s->prg_ch) return 0;
-            ramble_topic_dispatch(s->prg_ch, 0, 0);   /* queued: updates drain on the UI thread */
-            ramble_node_lock(node);
-            s->prg_index = ramble_topic_index(s->prg_ch);
-            ramble_node_unlock(node);
+            rant_topic_dispatch(s->prg_ch, 0, 0);     /* queued: updates drain on the UI thread */
+            rant_node_lock(node);
+            s->prg_index = rant_topic_index(s->prg_ch);
+            rant_node_unlock(node);
         } else if (s->prg_ch){
-            ramble_topic_set_role(s->prg_ch, trole);
+            rant_topic_set_role(s->prg_ch, trole);
         }
-        if (!s->rsp_ch && trole != RAMBLE_INACTIVE){
+        if (!s->rsp_ch && trole != RANT_INACTIVE){
             /* our directed responses, RUNNING and terminals, reliable like the pattern's */
             snprintf(cn, sizeof cn, "%s@rsp", s->name);
-            s->rsp_ch = i_ramble_node_create_pattern_topic(node, cn, RAMBLE_SUB_ONLY, NULL,
-                     &(RambleTopicOpts){ .qos = { .reliability = RAMBLE_RELIABLE } },
-                     RAMBLE_KIND_TASK_RSP, CAP_RSP_PREFIX, 0, 0, NULL, NULL);
+            s->rsp_ch = i_rant_node_create_pattern_topic(node, cn, RANT_SUB_ONLY, NULL,
+                     &(RantTopicOpts){ .qos = { .reliability = RANT_RELIABLE } },
+                     RANT_KIND_TASK_RSP, CAP_RSP_PREFIX, 0, 0, NULL, NULL);
             if (!s->rsp_ch) return 0;
-            ramble_topic_dispatch(s->rsp_ch, 0, 0);
-            ramble_node_lock(node);
-            s->rsp_index = ramble_topic_index(s->rsp_ch);
-            ramble_node_unlock(node);
+            rant_topic_dispatch(s->rsp_ch, 0, 0);
+            rant_node_lock(node);
+            s->rsp_index = rant_topic_index(s->rsp_ch);
+            rant_node_unlock(node);
         }
-        if (!s->req_raw && trole != RAMBLE_INACTIVE){
+        if (!s->req_raw && trole != RANT_INACTIVE){
             /* calls and cancel ops out, carrying the provider's request schema so its gate
                matches. Created at subscribe so it is matched by the time a call happens. */
-            RambleSchema *req;
+            RantSchema *req;
             snprintf(cn, sizeof cn, "%s@req", s->name);
             req = cap_entity_schema_copy(node, s->name, 0);
-            s->req_raw = i_ramble_node_create_pattern_topic(node, cn, RAMBLE_PUB_ONLY, req,
-                     &(RambleTopicOpts){ .qos = { .reliability = RAMBLE_RELIABLE } },
-                     RAMBLE_KIND_TASK_REQ, CAP_REQ_PREFIX, 0, 0, NULL, NULL);
+            s->req_raw = i_rant_node_create_pattern_topic(node, cn, RANT_PUB_ONLY, req,
+                     &(RantTopicOpts){ .qos = { .reliability = RANT_RELIABLE } },
+                     RANT_KIND_TASK_REQ, CAP_REQ_PREFIX, 0, 0, NULL, NULL);
             if (!s->req_raw){
-                if (req) ramble_schema_free(req, cap_schema_alloc, NULL);
+                if (req) rant_schema_free(req, cap_schema_alloc, NULL);
                 return 0;
             }
             s->req_schema = req;   /* keep our parsed copy: form source + echo decode */
@@ -1859,45 +1859,45 @@ static int cap_sub_reconcile(CapSub *s, RambleNode *node, int want){
 
 /* the plain topic path: make the topic for want reliability live with the combined role,
    creating it once if needed, and turn the other one off. Returns 1 on success. */
-static int cap_sub_reconcile_topic(CapSub *s, RambleNode *node, int want){
-    RambleRole role = (s->subscribed && s->publishing) ? RAMBLE_PUBSUB
-                  :  s->subscribed                   ? RAMBLE_SUB_ONLY
-                  :  s->publishing                   ? RAMBLE_PUB_ONLY
-                  :                                    RAMBLE_INACTIVE;
+static int cap_sub_reconcile_topic(CapSub *s, RantNode *node, int want){
+    RantRole role = (s->subscribed && s->publishing) ? RANT_PUBSUB
+                  :  s->subscribed                   ? RANT_SUB_ONLY
+                  :  s->publishing                   ? RANT_PUB_ONLY
+                  :                                    RANT_INACTIVE;
     want = want ? 1 : 0;
-    if (role == RAMBLE_INACTIVE){
-        if (s->ch[0]) ramble_topic_set_role(s->ch[0], RAMBLE_INACTIVE);
-        if (s->ch[1]) ramble_topic_set_role(s->ch[1], RAMBLE_INACTIVE);
+    if (role == RANT_INACTIVE){
+        if (s->ch[0]) rant_topic_set_role(s->ch[0], RANT_INACTIVE);
+        if (s->ch[1]) rant_topic_set_role(s->ch[1], RANT_INACTIVE);
         return 1;
     }
     if (!s->ch[want]){
         /* a typed topic gets a typed topic: adopt the schema its advertisers carry so our
            publishes reach typed readers. It then matches only that schema. */
-        RambleSchema *sch = cap_topic_schema_parse(node, s->name);
-        RambleTopic *ch = ramble_node_create_topic(node, s->name, role, sch,
-                 &(RambleTopicOpts){ .qos = { .reliability = want ? RAMBLE_RELIABLE : RAMBLE_BEST_EFFORT,
+        RantSchema *sch = cap_topic_schema_parse(node, s->name);
+        RantTopic *ch = rant_node_create_topic(node, s->name, role, sch,
+                 &(RantTopicOpts){ .qos = { .reliability = want ? RANT_RELIABLE : RANT_BEST_EFFORT,
                                               .catch_up = 1 } });
-        if (sch) ramble_schema_free(sch, cap_schema_alloc, NULL);   /* the node keeps its own copy */
+        if (sch) rant_schema_free(sch, cap_schema_alloc, NULL);     /* the node keeps its own copy */
         if (!ch) return 0;
         /* switch it to queued delivery now: messages then arrive via cap_poll's dispatch on
            the UI thread. An observer never stalls a publisher beyond its backpressure opt in. */
-        ramble_topic_dispatch(ch, 0, 0);
+        rant_topic_dispatch(ch, 0, 0);
         /* publish the (index, handle) pair under the node lock: the service thread's
            event callback maps events back to topics through it (cap_sub_by_index) */
-        ramble_node_lock(node);
-        s->index[want] = ramble_topic_index(ch);
+        rant_node_lock(node);
+        s->index[want] = rant_topic_index(ch);
         s->ch[want] = ch;
-        ramble_node_unlock(node);
+        rant_node_unlock(node);
     } else {
-        ramble_topic_set_role(s->ch[want], role);
+        rant_topic_set_role(s->ch[want], role);
     }
-    if (s->ch[!want]) ramble_topic_set_role(s->ch[!want], RAMBLE_INACTIVE);   /* one live at a time */
+    if (s->ch[!want]) rant_topic_set_role(s->ch[!want], RANT_INACTIVE);       /* one live at a time */
     s->reliable = want;
     return 1;
 }
 
 int cap_subscribe(Capture *cap, const char *topic, int reliable){
-    RambleNode *node = cap ? (RambleNode *)cap->rt : NULL;
+    RantNode *node = cap ? (RantNode *)cap->rt : NULL;
     CapSub *s = node ? cap_sub_get(topic) : NULL;
     if (!node || !topic || !*topic) return 0;
     if (!s){ cap_logf("SUBSCRIBE %s refused (topic table full)", topic); return 0; }
@@ -1909,7 +1909,7 @@ int cap_subscribe(Capture *cap, const char *topic, int reliable){
 }
 
 int cap_unsubscribe(Capture *cap, const char *topic){
-    RambleNode *node = (cap && cap->rt) ? (RambleNode *)cap->rt : NULL;
+    RantNode *node = (cap && cap->rt) ? (RantNode *)cap->rt : NULL;
     CapSub *s = node ? cap_sub_find(topic) : NULL;
     if (!s) return 0;
     s->subscribed = 0;
@@ -1919,7 +1919,7 @@ int cap_unsubscribe(Capture *cap, const char *topic){
 }
 
 int cap_declare_publish(Capture *cap, const char *topic){
-    RambleNode *node = cap ? (RambleNode *)cap->rt : NULL;
+    RantNode *node = cap ? (RantNode *)cap->rt : NULL;
     CapSub *s = node ? cap_sub_get(topic) : NULL;
     int was, want;
     if (!node || !topic || !*topic) return 0;
@@ -1941,7 +1941,7 @@ int cap_declare_publish(Capture *cap, const char *topic){
 
 /* the live channel carrying this topic's sends. Functions never route here: a call goes
    through the caller handle and a task call is crafted on its raw req channel */
-static RambleTopic *cap_send_channel(CapSub *s){
+static RantTopic *cap_send_channel(CapSub *s){
     return s->kind == CAP_KIND_VARIABLE ? s->set_ch
          : s->kind == CAP_KIND_TASK     ? s->req_raw : s->ch[s->reliable];
 }
@@ -1950,35 +1950,35 @@ static RambleTopic *cap_send_channel(CapSub *s){
    provider (a task request always has exactly one executor). UI thread. */
 static int cap_task_call_send(CapSub *s, const void *data, size_t len){
     uint8_t hdr[CAP_REQ_PREFIX];
-    uint32_t provider = i_ramble_topic_oldest_match(s->req_raw);
+    uint32_t provider = i_rant_topic_oldest_match(s->req_raw);
     uint32_t id;
     if (!provider) return 0;                 /* routed callers park until a provider matches */
-    ramble_node_lock(cap_node);              /* the state is read by cap_task_call_state */
+    rant_node_lock(cap_node);                /* the state is read by cap_task_call_state */
     id = ++s->call_seq;
     s->call_phase = CAP_TCALL_SENT;
     s->call_id = id; s->call_provider = provider;
     s->prg_count = 0; s->prg_have = 0;
     s->task_status = 0; s->task_msg[0] = '\0';
     s->call_deadline_ms = cap_now_ms() + CAP_CALL_TIMEOUT_MS;
-    ramble_node_unlock(cap_node);
-    i_ramble_le_w32(hdr, id); hdr[4] = (uint8_t)CAP_TASK_OP_CALL;
-    if (i_ramble_topic_send_to(s->req_raw, provider, ramble_bytes(hdr, sizeof hdr),
-                             ramble_bytes(data, len)) != RAMBLE_OK){
-        ramble_node_lock(cap_node);
+    rant_node_unlock(cap_node);
+    i_rant_le_w32(hdr, id); hdr[4] = (uint8_t)CAP_TASK_OP_CALL;
+    if (i_rant_topic_send_to(s->req_raw, provider, rant_bytes(hdr, sizeof hdr),
+                             rant_bytes(data, len)) != RANT_OK){
+        rant_node_lock(cap_node);
         s->call_phase = CAP_TCALL_IDLE;
-        ramble_node_unlock(cap_node);
+        rant_node_unlock(cap_node);
         return 0;
     }
     return 1;
 }
 
-static int cap_send_now(CapSub *s, RambleTopic *ch, const void *data, size_t len, uint8_t var_op){
+static int cap_send_now(CapSub *s, RantTopic *ch, const void *data, size_t len, uint8_t var_op){
     if (s->kind == CAP_KIND_VARIABLE){
         uint8_t op = var_op;   /* 0 = a dumb write, force and unforce ride the same byte */
-        return i_ramble_topic_send_hdr(ch, ramble_bytes(&op, 1), ramble_bytes(data, len)) >= 0;
+        return i_rant_topic_send_hdr(ch, rant_bytes(&op, 1), rant_bytes(data, len)) >= 0;
     }
     if (s->kind == CAP_KIND_TASK) return cap_task_call_send(s, data, len);
-    return ramble_topic_send(ch, ramble_bytes(data, len), NULL) >= 0;
+    return rant_topic_send(ch, rant_bytes(data, len), NULL) >= 0;
 }
 
 #define CAP_PEND_EXPIRE_MS 3000ull   /* a parked send that never matches is dropped, loudly */
@@ -2005,13 +2005,13 @@ static void cap_pend_poll(void){
     int i;
     for (i = 0; i < CAP_MAX_SUBS; i++){
         CapSub *s = &cap_subs[i];
-        RambleTopic *ch;
+        RantTopic *ch;
         if (!s->used || !s->pend_used) continue;
         ch = cap_send_channel(s);
-        if (ch && (ramble_topic_match_count(ch) > 0 || ramble_topic_ready(ch))){
+        if (ch && (rant_topic_match_count(ch) > 0 || rant_topic_ready(ch))){
             if (cap_send_now(s, ch, s->pend_data, s->pend_len, s->pend_op))
                 cap_logf("%s parked send flushed (%d receiver%s)", s->name,
-                         ramble_topic_match_count(ch), ramble_topic_match_count(ch) == 1 ? "" : "s");
+                         rant_topic_match_count(ch), rant_topic_match_count(ch) == 1 ? "" : "s");
             else
                 cap_logf("%s parked send FAILED to flush", s->name);
         } else if (now < s->pend_expire_ms) continue;
@@ -2023,11 +2023,11 @@ static void cap_pend_poll(void){
 }
 
 static int cap_send_routed(CapSub *s, const void *data, size_t len, uint8_t var_op,
-                           const RambleSchema **echo_sch){
-    RambleTopic *ch;
+                           const RantSchema **echo_sch){
+    RantTopic *ch;
     *echo_sch = NULL;
     if (s->kind == CAP_KIND_FUNCTION){
-        if (!s->fn || ramble_function_call_async(s->fn, ramble_bytes(data, len), cap_fn_on_reply, s, NULL) != RAMBLE_OK)
+        if (!s->fn || rant_function_call_async(s->fn, rant_bytes(data, len), cap_fn_on_reply, s, NULL) != RANT_OK)
             return 0;   /* a call racing the provider match queues in the patterns layer */
         *echo_sch = s->req_schema;
         return 1;
@@ -2037,34 +2037,34 @@ static int cap_send_routed(CapSub *s, const void *data, size_t len, uint8_t var_
         *echo_sch = s->req_schema;
         /* no provider matched yet: park like a variable op (cap_pend_poll flushes the
            moment matching resolves, so a first call right after subscribe still lands) */
-        if (i_ramble_topic_oldest_match(s->req_raw) == 0 && !ramble_topic_ready(s->req_raw))
+        if (i_rant_topic_oldest_match(s->req_raw) == 0 && !rant_topic_ready(s->req_raw))
             return cap_send_park(s, data, len, 0);
         return cap_task_call_send(s, data, len);
     }
     ch = cap_send_channel(s);
     if (!ch) return 0;
-    *echo_sch = ramble_topic_schema(ch);
+    *echo_sch = rant_topic_schema(ch);
     /* Retention covers a reliable send racing the forming match. The un retainable sends, a
        variable op or a best effort publish, park instead (spec/explorer.md). */
     if ((s->kind == CAP_KIND_VARIABLE || !s->reliable)
-        && ramble_topic_match_count(ch) == 0 && !ramble_topic_ready(ch))
+        && rant_topic_match_count(ch) == 0 && !rant_topic_ready(ch))
         return cap_send_park(s, data, len, var_op);
     return cap_send_now(s, ch, data, len, var_op);
 }
 
 int cap_publish(Capture *cap, const char *topic, const void *data, size_t len){
-    CapSub *s; const RambleSchema *echo;
-    RambleNode *node = (RambleNode *)cap->rt;
+    CapSub *s; const RantSchema *echo;
+    RantNode *node = (RantNode *)cap->rt;
     if (!topic || (!data && len)) return 0;
     if (!cap_declare_publish(cap, topic)) return 0;   /* ensure the publisher topic is live */
     s = cap_sub_find(topic);
     if (!s) return 0;
     if (!cap_send_routed(s, data, len, 0, &echo)){ cap_logf("PUBLISH %s send failed", topic); return 0; }
-    if (echo && !ramble_schema_validate(echo, ramble_bytes(data, len))) echo = NULL;
+    if (echo && !rant_schema_validate(echo, rant_bytes(data, len))) echo = NULL;
     /* our own echo never rides the wire, so stamp it from the node's clocks here, the wall
        clock the transport would have written it with */
-    cap_ring_push(s, ramble_cstr(cap_cfg.name), data, len, 1, echo,
-                  i_ramble_node_now_us(node), i_ramble_node_wall_us(node));
+    cap_ring_push(s, rant_cstr(cap_cfg.name), data, len, 1, echo,
+                  i_rant_node_now_us(node), i_rant_node_wall_us(node));
     return 1;
 }
 
@@ -2073,15 +2073,15 @@ int cap_publish(Capture *cap, const char *topic, const void *data, size_t len){
 
 /* parse one form value into flat field i of the message being built. Empty keeps the
    default, a struct or map row has no value of its own. */
-static int cap_form_set(const RambleSchema *sch, uint16_t i, const char *v, uint8_t *buf, size_t size){
-    RambleSchemaFieldInfo fi; RambleValue val; char *end;
-    if (!ramble_schema_field_at(sch, i, &fi)) return 0;
+static int cap_form_set(const RantSchema *sch, uint16_t i, const char *v, uint8_t *buf, size_t size){
+    RantSchemaFieldInfo fi; RantValue val; char *end;
+    if (!rant_schema_field_at(sch, i, &fi)) return 0;
     while (*v == ' ' || *v == '\t') v++;
-    if (!*v || fi.kind == RAMBLE_STRUCT || fi.kind == RAMBLE_MAP)
+    if (!*v || fi.kind == RANT_STRUCT || fi.kind == RANT_MAP)
         return 1;                                         /* empty/struct/map: the default stays */
     memset(&val, 0, sizeof val);
-    switch ((RambleSchemaTypeKind)fi.kind){
-        case RAMBLE_BOOL:
+    switch ((RantSchemaTypeKind)fi.kind){
+        case RANT_BOOL:
             if      (!strcmp(v, "true"))  val.v.u = 1;
             else if (!strcmp(v, "false")) val.v.u = 0;
             else {
@@ -2090,24 +2090,24 @@ static int cap_form_set(const RambleSchema *sch, uint16_t i, const char *v, uint
                 if (*end != '\0') return 0;
             }
             break;
-        case RAMBLE_U8: case RAMBLE_U16: case RAMBLE_U32: case RAMBLE_U64:
+        case RANT_U8: case RANT_U16: case RANT_U32: case RANT_U64:
             val.v.u = strtoull(v, &end, 0);
             while (*end == ' ') end++;
             if (*end != '\0') return 0;
             break;
-        case RAMBLE_I8: case RAMBLE_I16: case RAMBLE_I32: case RAMBLE_I64:
+        case RANT_I8: case RANT_I16: case RANT_I32: case RANT_I64:
             val.v.i = strtoll(v, &end, 0);
             while (*end == ' ') end++;
             if (*end != '\0') return 0;
             break;
-        case RAMBLE_F32: case RAMBLE_F64:
+        case RANT_F32: case RANT_F64:
             val.v.f = strtod(v, &end);
             while (*end == ' ') end++;
             if (*end != '\0') return 0;
             break;
-        case RAMBLE_ENUM: {   /* an option name from the dropdown, or a raw number */
+        case RANT_ENUM: {     /* an option name from the dropdown, or a raw number */
             int64_t ev;
-            if (ramble_enum_value_of(sch, i, v, &ev)) val.v.i = ev;
+            if (rant_enum_value_of(sch, i, v, &ev)) val.v.i = ev;
             else {
                 val.v.i = strtoll(v, &end, 0);
                 while (*end == ' ') end++;
@@ -2115,17 +2115,17 @@ static int cap_form_set(const RambleSchema *sch, uint16_t i, const char *v, uint
             }
             break;
         }
-        case RAMBLE_STR: case RAMBLE_VSTR:                    /* the form text IS the content */
-            val.bytes = ramble_bytes(v, strlen(v));
+        case RANT_STR: case RANT_VSTR:                        /* the form text IS the content */
+            val.bytes = rant_bytes(v, strlen(v));
             break;
-        case RAMBLE_ARR: case RAMBLE_VARR: {                  /* comma/space-separated elements */
-            uint32_t esz = (fi.elem == RAMBLE_STR) ? 2u + fi.str_cap
-                                                 : ramble_schema_scalar_size((RambleSchemaTypeKind)fi.elem);
-            uint16_t max_n = fi.kind == RAMBLE_VARR ? CAP_FORM_MAX_ELEMS : fi.count;
+        case RANT_ARR: case RANT_VARR: {                      /* comma/space-separated elements */
+            uint32_t esz = (fi.elem == RANT_STR) ? 2u + fi.str_cap
+                                                 : rant_schema_scalar_size((RantSchemaTypeKind)fi.elem);
+            uint16_t max_n = fi.kind == RANT_VARR ? CAP_FORM_MAX_ELEMS : fi.count;
             uint8_t *w = (uint8_t *)malloc(esz ? (size_t)max_n * esz : 1);
             uint16_t n = 0; const char *p = v; int ok;
             if (!w || !esz){ free(w); return 0; }
-            if (fi.elem == RAMBLE_STR){                     /* comma-separated strings */
+            if (fi.elem == RANT_STR){                       /* comma-separated strings */
                 while (*p){
                     const char *q; size_t l;
                     while (*p == ' ' || *p == '\t') p++;
@@ -2133,56 +2133,56 @@ static int cap_form_set(const RambleSchema *sch, uint16_t i, const char *v, uint
                     l = (size_t)(q - p);
                     while (l && (p[l-1] == ' ' || p[l-1] == '\t')) l--;
                     if (n >= max_n || l > fi.str_cap){ free(w); return 0; }
-                    i_ramble_le_w16(w + (size_t)n * esz, (uint16_t)l);
+                    i_rant_le_w16(w + (size_t)n * esz, (uint16_t)l);
                     memcpy(w + (size_t)n * esz + 2, p, l);
                     memset(w + (size_t)n * esz + 2 + l, 0, (size_t)fi.str_cap - l);
                     n++;
                     p = *q ? q + 1 : q;
                 }
-                val.bytes = ramble_bytes(w, (size_t)n * esz);
-                ok = ramble_set_value(buf, size, sch, i, &val);
+                val.bytes = rant_bytes(w, (size_t)n * esz);
+                ok = rant_set_value(buf, size, sch, i, &val);
                 free(w);
                 return ok;
             }
             for (;;){
                 while (*p == ' ' || *p == ',' || *p == '\t') p++;
                 if (!*p || n >= max_n) break;
-                if (fi.elem == RAMBLE_F32 || fi.elem == RAMBLE_F64){
+                if (fi.elem == RANT_F32 || fi.elem == RANT_F64){
                     double d = strtod(p, &end);
                     if (end == p) break;
-                    if (fi.elem == RAMBLE_F32){ float x = (float)d; uint32_t b; memcpy(&b, &x, 4); i_ramble_le_w32(w + (size_t)n*esz, b); }
-                    else                    { uint64_t b; memcpy(&b, &d, 8); i_ramble_le_w64(w + (size_t)n*esz, b); }
-                } else if (fi.elem >= RAMBLE_I8 && fi.elem <= RAMBLE_I64){
+                    if (fi.elem == RANT_F32){ float x = (float)d; uint32_t b; memcpy(&b, &x, 4); i_rant_le_w32(w + (size_t)n*esz, b); }
+                    else                    { uint64_t b; memcpy(&b, &d, 8); i_rant_le_w64(w + (size_t)n*esz, b); }
+                } else if (fi.elem >= RANT_I8 && fi.elem <= RANT_I64){
                     long long d = strtoll(p, &end, 0);
                     if (end == p) break;
                     if      (esz == 1) w[n] = (uint8_t)d;
-                    else if (esz == 2) i_ramble_le_w16(w + (size_t)n*2, (uint16_t)d);
-                    else if (esz == 4) i_ramble_le_w32(w + (size_t)n*4, (uint32_t)d);
-                    else               i_ramble_le_w64(w + (size_t)n*8, (uint64_t)d);
+                    else if (esz == 2) i_rant_le_w16(w + (size_t)n*2, (uint16_t)d);
+                    else if (esz == 4) i_rant_le_w32(w + (size_t)n*4, (uint32_t)d);
+                    else               i_rant_le_w64(w + (size_t)n*8, (uint64_t)d);
                 } else {                                   /* unsigned + bool elements */
                     unsigned long long u = strtoull(p, &end, 0);
                     if (end == p) break;
                     if      (esz == 1) w[n] = (uint8_t)u;
-                    else if (esz == 2) i_ramble_le_w16(w + (size_t)n*2, (uint16_t)u);
-                    else if (esz == 4) i_ramble_le_w32(w + (size_t)n*4, (uint32_t)u);
-                    else               i_ramble_le_w64(w + (size_t)n*8, (uint64_t)u);
+                    else if (esz == 2) i_rant_le_w16(w + (size_t)n*2, (uint16_t)u);
+                    else if (esz == 4) i_rant_le_w32(w + (size_t)n*4, (uint32_t)u);
+                    else               i_rant_le_w64(w + (size_t)n*8, (uint64_t)u);
                 }
                 p = end; n++;
             }
             while (*p == ' ' || *p == ',' || *p == '\t') p++;
-            val.bytes = ramble_bytes(w, (size_t)n * esz);
-            ok = (*p == '\0') && ramble_set_value(buf, size, sch, i, &val);
+            val.bytes = rant_bytes(w, (size_t)n * esz);
+            ok = (*p == '\0') && rant_set_value(buf, size, sch, i, &val);
             free(w);
             return ok;   /* leftovers = junk or too many elements */
         }
         default: return 0;
     }
-    return ramble_set_value(buf, size, sch, i, &val);
+    return rant_set_value(buf, size, sch, i, &val);
 }
 
 static int cap_publish_form_op(Capture *cap, const char *topic, const char *const *values,
                                int n_values, uint8_t var_op){
-    CapSub *s; const RambleSchema *sch; uint8_t *buf; size_t size; uint16_t i, nf; int ok = 1;
+    CapSub *s; const RantSchema *sch; uint8_t *buf; size_t size; uint16_t i, nf; int ok = 1;
     if (!topic || !values) return 0;
     if (!cap_declare_publish(cap, topic)) return 0;
     s = cap_sub_find(topic);
@@ -2191,14 +2191,14 @@ static int cap_publish_form_op(Capture *cap, const char *topic, const char *cons
     sch = !s ? NULL
         : s->kind == CAP_KIND_FUNCTION ? s->req_schema
         : s->kind == CAP_KIND_TASK     ? s->req_schema
-        : s->kind == CAP_KIND_VARIABLE ? (s->set_ch ? ramble_topic_schema(s->set_ch) : NULL)
-        : s->ch[s->reliable]           ? ramble_topic_schema(s->ch[s->reliable]) : NULL;
+        : s->kind == CAP_KIND_VARIABLE ? (s->set_ch ? rant_topic_schema(s->set_ch) : NULL)
+        : s->ch[s->reliable]           ? rant_topic_schema(s->ch[s->reliable]) : NULL;
     if (!sch){ cap_logf("PUBLISH %s refused: topic carries no schema", topic); return 0; }
-    size = ramble_schema_msg_min(sch) + CAP_FORM_SLACK;     /* room for the variable content */
+    size = rant_schema_msg_min(sch) + CAP_FORM_SLACK;       /* room for the variable content */
     buf = (uint8_t *)malloc(size);
     if (!buf) return 0;
-    ramble_schema_message_default(sch, buf, size);
-    nf = ramble_schema_field_count(sch);
+    rant_schema_message_default(sch, buf, size);
+    nf = rant_schema_field_count(sch);
     for (i = 0; i < nf && ok; i++)
         ok = cap_form_set(sch, i, (i < (uint16_t)n_values && values[i]) ? values[i] : "", buf, size);
     if (!ok){
@@ -2206,17 +2206,17 @@ static int cap_publish_form_op(Capture *cap, const char *topic, const char *cons
         free(buf);
         return 0;
     }
-    {   uint32_t msg_len = ramble_schema_msg_len(sch, buf, size);
-        const RambleSchema *echo;
+    {   uint32_t msg_len = rant_schema_msg_len(sch, buf, size);
+        const RantSchema *echo;
         if (!msg_len || !cap_send_routed(s, buf, msg_len, var_op, &echo)){
             cap_logf("PUBLISH %s send failed", topic);
             free(buf);
             return 0;
         }
         /* decoded local echo: stamped from the node's clocks, like cap_publish's */
-        cap_ring_push(s, ramble_cstr(cap_cfg.name), buf, msg_len, 1, sch,
-                      i_ramble_node_now_us((RambleNode *)cap->rt),
-                      i_ramble_node_wall_us((RambleNode *)cap->rt));
+        cap_ring_push(s, rant_cstr(cap_cfg.name), buf, msg_len, 1, sch,
+                      i_rant_node_now_us((RantNode *)cap->rt),
+                      i_rant_node_wall_us((RantNode *)cap->rt));
         if ((var_op & CAP_SET_OP_FORCE) && s->ring){   /* the echo pins the value */
             int newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
             s->ring[newest].forced = 1;
@@ -2243,7 +2243,7 @@ int cap_variable_force_form(Capture *cap, const char *topic, const char *const *
 }
 
 int cap_variable_unforce(Capture *cap, const char *topic){
-    CapSub *s; const RambleSchema *echo;
+    CapSub *s; const RantSchema *echo;
     if (!cap_declare_publish(cap, topic)) return 0;   /* ensures the set channel exists */
     s = cap_sub_find(topic);
     if (!s || s->kind != CAP_KIND_VARIABLE || !s->set_ch){
@@ -2281,12 +2281,12 @@ int cap_topic_send_pending(const Capture *cap, const char *topic){
 static void cap_feed_item_out(CapFeedItem *o, const CapMsgRec *m);   /* defined below */
 
 int cap_task_call_state(const Capture *cap, const char *topic, CapTaskCall *out){
-    RambleNode *node = (cap && cap->rt) ? (RambleNode *)cap->rt : NULL;
+    RantNode *node = (cap && cap->rt) ? (RantNode *)cap->rt : NULL;
     CapSub *s = (node && topic) ? cap_sub_find(topic) : NULL;
     if (!out) return 0;
     memset(out, 0, sizeof *out);
     if (!s || s->kind != CAP_KIND_TASK) return 0;
-    ramble_node_lock(node);   /* phase/id settle on the service thread: bracket the read */
+    rant_node_lock(node);     /* phase/id settle on the service thread: bracket the read */
     out->phase          = s->call_phase;
     out->call_id        = s->call_id;
     out->progress_count = s->prg_count;
@@ -2296,25 +2296,25 @@ int cap_task_call_state(const Capture *cap, const char *topic, CapTaskCall *out)
         cap_feed_item_out(&out->latest, s->prg_last);
         out->has_progress = 1;
     }
-    ramble_node_unlock(node);
+    rant_node_unlock(node);
     return 1;
 }
 
 int cap_task_cancel_call(Capture *cap, const char *topic){
-    RambleNode *node = (cap && cap->rt) ? (RambleNode *)cap->rt : NULL;
+    RantNode *node = (cap && cap->rt) ? (RantNode *)cap->rt : NULL;
     CapSub *s = (node && topic) ? cap_sub_find(topic) : NULL;
     uint8_t hdr[CAP_REQ_PREFIX];
     uint32_t id, provider;
     int phase;
     if (!s || s->kind != CAP_KIND_TASK || !s->req_raw) return 0;
-    ramble_node_lock(node);
+    rant_node_lock(node);
     phase = s->call_phase; id = s->call_id; provider = s->call_provider;
-    ramble_node_unlock(node);
+    rant_node_unlock(node);
     if ((phase != CAP_TCALL_SENT && phase != CAP_TCALL_RUNNING) || !id || !provider) return 0;
     /* the raw CANCEL op, empty payload = the sender's own call, to the same provider */
-    i_ramble_le_w32(hdr, id); hdr[4] = (uint8_t)CAP_TASK_OP_CANCEL;
-    if (i_ramble_topic_send_to(s->req_raw, provider, ramble_bytes(hdr, sizeof hdr),
-                             ramble_bytes(NULL, 0)) != RAMBLE_OK){
+    i_rant_le_w32(hdr, id); hdr[4] = (uint8_t)CAP_TASK_OP_CANCEL;
+    if (i_rant_topic_send_to(s->req_raw, provider, rant_bytes(hdr, sizeof hdr),
+                             rant_bytes(NULL, 0)) != RANT_OK){
         cap_logf("CANCEL %s call %u send failed", topic, id);
         return 0;
     }
@@ -2323,12 +2323,12 @@ int cap_task_cancel_call(Capture *cap, const char *topic){
 }
 
 int cap_task_runs(const Capture *cap, const char *topic, CapTaskRun *out, int max){
-    RambleNode *node = (cap && cap->rt) ? (RambleNode *)cap->rt : NULL;
+    RantNode *node = (cap && cap->rt) ? (RantNode *)cap->rt : NULL;
     CapSub *s = (node && topic) ? cap_sub_find(topic) : NULL;
     unsigned long long now = cap_now_ms();
     int n = 0, i, j;
     if (!s || !out || max <= 0 || s->kind != CAP_KIND_TASK) return 0;
-    ramble_node_lock(node);   /* the run table + cap_peers + the zero-copy peer view */
+    rant_node_lock(node);     /* the run table + cap_peers + the zero-copy peer view */
     for (i = 0; i < CAP_TASK_RUNS && n < max; i++){
         const CapRunRec *r = &cap_runs[i];
         CapTaskRun *o;
@@ -2350,16 +2350,16 @@ int cap_task_runs(const Capture *cap, const char *topic, CapTaskRun *out, int ma
                 break;
             }
         {   /* caller_lo to a discovered peer's uuid low 32 to its name */
-            RambleIter it; RamblePeerInfo pi;
+            RantIter it; RantPeerInfo pi;
             memset(&it, 0, sizeof it);
-            while (ramble_node_peers_next(node, &it, &pi))
-                if (i_ramble_le_r32(pi.uuid) == r->caller_lo && pi.name.len){
+            while (rant_node_peers_next(node, &it, &pi))
+                if (i_rant_le_r32(pi.uuid) == r->caller_lo && pi.name.len){
                     snprintf(o->caller, sizeof o->caller, "%.*s", (int)pi.name.len, pi.name.data);
                     break;
                 }
         }
     }
-    ramble_node_unlock(node);
+    rant_node_unlock(node);
     /* newest-updated first (a handful of rows: selection sort is plenty) */
     for (i = 0; i < n; i++){
         int best = i;
@@ -2371,18 +2371,18 @@ int cap_task_runs(const Capture *cap, const char *topic, CapTaskRun *out, int ma
 
 int cap_task_cancel_run(Capture *cap, const char *topic, uint32_t provider_id,
                         uint32_t caller_lo, uint32_t call_id){
-    RambleNode *node = (cap && cap->rt) ? (RambleNode *)cap->rt : NULL;
+    RantNode *node = (cap && cap->rt) ? (RantNode *)cap->rt : NULL;
     CapSub *s = (node && topic) ? cap_sub_find(topic) : NULL;
     uint8_t hdr[CAP_REQ_PREFIX], pl[4];
     int r;
     if (!s || s->kind != CAP_KIND_TASK || !s->req_raw || !provider_id) return 0;
     /* the raw CANCEL op, exactly the taskx-selftest recipe: [u32 call_id][op 1] with the
        victim caller's lo-32 as the payload, directed at the provider working the run */
-    i_ramble_le_w32(hdr, call_id); hdr[4] = (uint8_t)CAP_TASK_OP_CANCEL;
-    i_ramble_le_w32(pl, caller_lo);
-    r = i_ramble_topic_send_to(s->req_raw, provider_id, ramble_bytes(hdr, sizeof hdr),
-                             ramble_bytes(pl, sizeof pl));
-    if (r != RAMBLE_OK){
+    i_rant_le_w32(hdr, call_id); hdr[4] = (uint8_t)CAP_TASK_OP_CANCEL;
+    i_rant_le_w32(pl, caller_lo);
+    r = i_rant_topic_send_to(s->req_raw, provider_id, rant_bytes(hdr, sizeof hdr),
+                             rant_bytes(pl, sizeof pl));
+    if (r != RANT_OK){
         cap_logf("CANCEL %s run %08x#%u send failed (%d)", topic, caller_lo, call_id, r);
         return 0;
     }
@@ -2391,7 +2391,7 @@ int cap_task_cancel_run(Capture *cap, const char *topic, uint32_t provider_id,
 }
 
 /* fill one observer endpoint from an entity yielded by the canonical reflection walk */
-static void cap_endpoint_fill(CapTopic *e, const RambleEntityInfo *ei){
+static void cap_endpoint_fill(CapTopic *e, const RantEntityInfo *ei){
     if (ei->name.data) snprintf(e->name, sizeof e->name, "%.*s", (int)ei->name.len, ei->name.data);
     else               snprintf(e->name, sizeof e->name, "0x%08x", (unsigned)ei->hash);
     /* a placeholder name resolves itself: the arriving details bump the interest epoch */
@@ -2408,8 +2408,8 @@ static void cap_endpoint_fill(CapTopic *e, const RambleEntityInfo *ei){
 
 /* copy one active peer's facts out of the node's peer view, then its entities via the
    reflection walk so pattern channels arrive folded. Each list grows to the count. */
-static void cap_peer_refresh(RambleNode *node, CapPeer *p, const RamblePeerInfo *pi){
-    RambleIter it; RambleEntityInfo ei;
+static void cap_peer_refresh(RantNode *node, CapPeer *p, const RantPeerInfo *pi){
+    RantIter it; RantEntityInfo ei;
     p->seen_frame = 1;
     p->have_meta  = (pi->epoch || pi->fragment_size) ? 1 : 0;
     p->meta_stale = pi->catching_up ? 1 : 0;
@@ -2434,7 +2434,7 @@ static void cap_peer_refresh(RambleNode *node, CapPeer *p, const RamblePeerInfo 
 
     p->n_pub = p->n_sub = 0;
     memset(&it, 0, sizeof it);
-    while (ramble_node_entities_next(node, pi->id, &it, &ei)){
+    while (rant_node_entities_next(node, pi->id, &it, &ei)){
         /* provides = the entity's source side, consumes = its sink side. An entity on
            both sides lands in both lists. */
         if (ei.provides && cap_grow(&p->pub, &p->pub_cap, p->n_pub, sizeof *p->pub))
@@ -2445,7 +2445,7 @@ static void cap_peer_refresh(RambleNode *node, CapPeer *p, const RamblePeerInfo 
 }
 
 void cap_snapshot(const Capture *cap, CapSnapshot *out){
-    RambleNode *node = (RambleNode *)cap->rt;
+    RantNode *node = (RantNode *)cap->rt;
     unsigned long long now = cap_now_ms();
     int i, k;
 
@@ -2460,7 +2460,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
 
     /* one bracket for the whole copy out, NULL safe before the capture started: it pins
        the peer view and excludes the event callback. Do not log inside. */
-    ramble_node_lock(node);
+    rant_node_lock(node);
 
     {   /* copy the observer event ring, newest first, capped to CAP_SNAP_LOG */
         int want = cap_log_count < CAP_SNAP_LOG ? cap_log_count : CAP_SNAP_LOG;
@@ -2489,7 +2489,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
            message must not make a live topic read stale */
         si->last_age_s = -1.0;
         if (s->count > 0){
-            double now_s  = (double)((int64_t)i_ramble_node_now_us(node) - (int64_t)cap_base_mono_us) / 1e6;
+            double now_s  = (double)((int64_t)i_rant_node_now_us(node) - (int64_t)cap_base_mono_us) / 1e6;
             int    newest = (s->head - 1 + CAP_FEED_MAX) % CAP_FEED_MAX;
             si->last_age_s = now_s - s->ring[newest].recv_s;
             if (si->last_age_s < 0.0) si->last_age_s = 0.0;
@@ -2513,10 +2513,10 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
     /* walk the node's peer view and refresh each active peer's record. Anything else is
        freed and leaves the UI, the grown buffers stay with the slot for reuse. */
     for (i = 0; i < CAP_MAX_PEERS; i++) cap_peers[i].seen_frame = 0;
-    {   RambleIter it; RamblePeerInfo pi;
+    {   RantIter it; RantPeerInfo pi;
         memset(&it, 0, sizeof it);
-        while (ramble_node_peers_next(node, &it, &pi))
-            if (pi.liveness == RAMBLE_PEER_ACTIVE)
+        while (rant_node_peers_next(node, &it, &pi))
+            if (pi.liveness == RANT_PEER_ACTIVE)
                 cap_peer_refresh(node, cap_peer_get(pi.id), &pi);
     }
     for (i = 0; i < CAP_MAX_PEERS; i++)
@@ -2570,7 +2570,7 @@ void cap_snapshot(const Capture *cap, CapSnapshot *out){
         n->n_sub = k;
     }
 
-    ramble_node_unlock(node);
+    rant_node_unlock(node);
 }
 
 /* one stored record as the UI's plain view */
@@ -2601,14 +2601,14 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
     int i, n = 0, start;
     /* the ring itself is UI-thread-owned (queued delivery), but error/n_drops are
        written by the service thread's event callback: bracket the read */
-    if (cap && cap->rt) ramble_node_lock((RambleNode *)cap->rt);
+    if (cap && cap->rt) rant_node_lock((RantNode *)cap->rt);
     if (subscribed) *subscribed = s ? s->subscribed : 0;
     if (error)      *error      = s ? ((s->error || s->n_drops > 0) ? 1 : 0) : 0;
     if (reliable)   *reliable   = s ? s->reliable : 0;
     if (n_msgs)     *n_msgs     = s ? (uint32_t)s->n_msgs : 0;
     if (n_drops)    *n_drops    = s ? (uint32_t)s->n_drops : 0;
     if (!s || !out || max <= 0){
-        if (cap && cap->rt) ramble_node_unlock((RambleNode *)cap->rt);
+        if (cap && cap->rt) rant_node_unlock((RantNode *)cap->rt);
         return 0;
     }
 
@@ -2617,19 +2617,19 @@ int cap_topic_feed(const Capture *cap, const char *topic, CapFeedItem *out, int 
     start = (s->head - n) % CAP_FEED_MAX; if (start < 0) start += CAP_FEED_MAX;
     for (i = 0; i < n; i++)
         cap_feed_item_out(&out[i], &s->ring[(start + i) % CAP_FEED_MAX]);
-    if (cap && cap->rt) ramble_node_unlock((RambleNode *)cap->rt);
+    if (cap && cap->rt) rant_node_unlock((RantNode *)cap->rt);
     return n;
 }
 
 /* Discard everything accumulated for topic: the ring, the counters, the error mark and the
    rate and jitter estimators. The subscription stays. uid_next is kept against a stale pin. */
 int cap_topic_clear(Capture *cap, const char *topic){
-    RambleNode *node = (cap && cap->rt) ? (RambleNode *)cap->rt : NULL;
+    RantNode *node = (cap && cap->rt) ? (RantNode *)cap->rt : NULL;
     CapSub     *s    = (node && topic) ? cap_sub_find(topic) : NULL;
     if (!s) return 0;
     /* the ring is UI-thread-owned (so is this call), but error/n_drops are written by the
        service thread's event callback: bracket the reset like cap_topic_feed brackets its read */
-    ramble_node_lock(node);
+    rant_node_lock(node);
     free(s->ring); s->ring = NULL;          /* the next message reallocates it lazily */
     s->head = s->count = 0;
     s->n_msgs = s->n_drops = 0;
@@ -2638,7 +2638,7 @@ int cap_topic_clear(Capture *cap, const char *topic){
     s->jitter_last_hr = 0.0; s->jitter_mean_ms = 0.0; s->jitter_p90_ms = 0.0; s->jitter_n = 0;
     s->mini.have = 0;    /* the VALUE column clears with the feed (the schema cache keeps) */
     free(s->form_vals); s->form_vals = NULL; s->n_form_vals = 0;   /* so does the form's seed */
-    ramble_node_unlock(node);
+    rant_node_unlock(node);
     cap_logf("CLEAR %s (feed + counters)", topic);
     return 1;
 }
@@ -2653,65 +2653,65 @@ static void *cap_schema_alloc(void *user, void *ptr, size_t size){
 }
 
 static const char *cap_kind_str(uint8_t kind){
-    switch ((RambleSchemaTypeKind)kind){
-        case RAMBLE_U8:  return "u8";  case RAMBLE_U16: return "u16";
-        case RAMBLE_U32: return "u32"; case RAMBLE_U64: return "u64";
-        case RAMBLE_I8:  return "i8";  case RAMBLE_I16: return "i16";
-        case RAMBLE_I32: return "i32"; case RAMBLE_I64: return "i64";
-        case RAMBLE_F32: return "f32"; case RAMBLE_F64: return "f64";
-        case RAMBLE_BOOL: return "bool";
-        case RAMBLE_STR: case RAMBLE_VSTR: return "string";
-        case RAMBLE_STRUCT: return "struct";
-        case RAMBLE_MAP: return "map";
+    switch ((RantSchemaTypeKind)kind){
+        case RANT_U8:    return "u8";  case RANT_U16: return "u16";
+        case RANT_U32: return "u32"; case RANT_U64: return "u64";
+        case RANT_I8:    return "i8";  case RANT_I16: return "i16";
+        case RANT_I32: return "i32"; case RANT_I64: return "i64";
+        case RANT_F32: return "f32"; case RANT_F64: return "f64";
+        case RANT_BOOL: return "bool";
+        case RANT_STR: case RANT_VSTR: return "string";
+        case RANT_STRUCT: return "struct";
+        case RANT_MAP: return "map";
         default: return "?";
     }
 }
 
 /* a field's DSL type spelling, and a named type by its name. A struct is not spelled
    here, the caller handles `name: { members }`. An enum's backing kind is in fi->elem. */
-static void cap_field_type_str(char *dst, size_t cap, const RambleSchemaFieldInfo *fi){
+static void cap_field_type_str(char *dst, size_t cap, const RantSchemaFieldInfo *fi){
     if (fi->type_name.len)                        /* the name IS the type (`at: Pose`) */
         snprintf(dst, cap, "%.*s", (int)fi->type_name.len, fi->type_name.data);
-    else if (fi->elem_name.len && fi->kind == RAMBLE_ARR)
+    else if (fi->elem_name.len && fi->kind == RANT_ARR)
         snprintf(dst, cap, "%.*s[%u]", (int)fi->elem_name.len, fi->elem_name.data, fi->count);
-    else if (fi->elem_name.len && fi->kind == RAMBLE_VARR)
+    else if (fi->elem_name.len && fi->kind == RANT_VARR)
         snprintf(dst, cap, "%.*s[]", (int)fi->elem_name.len, fi->elem_name.data);
-    else if (fi->kind == RAMBLE_ARR && fi->elem == RAMBLE_STRUCT)
+    else if (fi->kind == RANT_ARR && fi->elem == RANT_STRUCT)
         snprintf(dst, cap, "{..}[%u]", fi->count);
-    else if (fi->kind == RAMBLE_VARR && fi->elem == RAMBLE_STRUCT)
+    else if (fi->kind == RANT_VARR && fi->elem == RANT_STRUCT)
         snprintf(dst, cap, "{..}[]");
-    else if (fi->kind == RAMBLE_ENUM)
+    else if (fi->kind == RANT_ENUM)
         snprintf(dst, cap, "enum<%s>", cap_kind_str(fi->elem));
-    else if (fi->kind == RAMBLE_STR)
+    else if (fi->kind == RANT_STR)
         snprintf(dst, cap, "string<%u>", fi->str_cap);
-    else if (fi->kind == RAMBLE_ARR && fi->elem == RAMBLE_STR)
+    else if (fi->kind == RANT_ARR && fi->elem == RANT_STR)
         snprintf(dst, cap, "string<%u>[%u]", fi->str_cap, fi->count);
-    else if (fi->kind == RAMBLE_ARR)
+    else if (fi->kind == RANT_ARR)
         snprintf(dst, cap, "%s[%u]", cap_kind_str(fi->elem), fi->count);
-    else if (fi->kind == RAMBLE_VARR && fi->elem == RAMBLE_STR)
+    else if (fi->kind == RANT_VARR && fi->elem == RANT_STR)
         snprintf(dst, cap, "string<%u>[]", fi->str_cap);
-    else if (fi->kind == RAMBLE_VARR)
+    else if (fi->kind == RANT_VARR)
         snprintf(dst, cap, "%s[]", cap_kind_str(fi->elem));
     else
         snprintf(dst, cap, "%s", cap_kind_str(fi->kind));
 }
 
 /* fill out->fields from a parsed schema (top-level fields, capped to the UI's bound) */
-static void cap_schema_fields(CapSchema *out, const RambleSchema *sch){
-    RambleSchemaFieldInfo fi; uint16_t i, nf = ramble_schema_field_count(sch);
+static void cap_schema_fields(CapSchema *out, const RantSchema *sch){
+    RantSchemaFieldInfo fi; uint16_t i, nf = rant_schema_field_count(sch);
     out->inlined      = 1;
-    out->msg_size     = ramble_schema_msg_min(sch);   /* exact, or the minimum with variable fields */
+    out->msg_size     = rant_schema_msg_min(sch);     /* exact, or the minimum with variable fields */
     out->total_fields = nf;
     cap_schema_type_name(out->type_name, sizeof out->type_name, sch);
     for (i = 0; i < nf && out->n_fields < CAP_SCHEMA_FIELDS; i++){
         CapSchemaField *f = &out->fields[out->n_fields];
-        if (!ramble_schema_field_at(sch, i, &fi)) break;
+        if (!rant_schema_field_at(sch, i, &fi)) break;
         cap_field_label(f->name, sizeof f->name, &fi);
         cap_field_type_str(f->type, sizeof f->type, &fi);
-        f->kind    = fi.kind;   /* CAP_K_* == RambleSchemaTypeKind */
-        f->elem    = (uint8_t)((fi.kind == RAMBLE_ARR || fi.kind == RAMBLE_VARR
-                                || fi.kind == RAMBLE_ENUM) ? fi.elem : 0);   /* ENUM: the backing */
-        f->count   = (uint16_t)(fi.kind == RAMBLE_ARR ? fi.count : 0);
+        f->kind    = fi.kind;   /* CAP_K_* == RantSchemaTypeKind */
+        f->elem    = (uint8_t)((fi.kind == RANT_ARR || fi.kind == RANT_VARR
+                                || fi.kind == RANT_ENUM) ? fi.elem : 0);     /* ENUM: the backing */
+        f->count   = (uint16_t)(fi.kind == RANT_ARR ? fi.count : 0);
         f->str_cap = fi.str_cap;   /* set for STR and STR element arrays */
         snprintf(f->type_name, sizeof f->type_name, "%.*s",
                  (int)fi.type_name.len, fi.type_name.data ? fi.type_name.data : "");
@@ -2723,11 +2723,11 @@ static void cap_schema_fields(CapSchema *out, const RambleSchema *sch){
         f->offset = fi.offset;
         f->size   = fi.size;
         f->n_variants = 0;
-        if (fi.kind == RAMBLE_ENUM){   /* copy the option names so the UI can offer a dropdown */
-            uint16_t nv = ramble_schema_enum_count(sch, i), k;
+        if (fi.kind == RANT_ENUM){     /* copy the option names so the UI can offer a dropdown */
+            uint16_t nv = rant_schema_enum_count(sch, i), k;
             for (k = 0; k < nv && f->n_variants < CAP_ENUM_VARIANTS; k++){
-                RambleString vn;
-                if (!ramble_schema_enum_variant(sch, i, k, NULL, &vn)) break;
+                RantString vn;
+                if (!rant_schema_enum_variant(sch, i, k, NULL, &vn)) break;
                 snprintf(f->variants[f->n_variants], CAP_ENUM_NAME, "%.*s",
                          (int)vn.len, vn.data ? vn.data : "");
                 f->n_variants++;
@@ -2738,42 +2738,42 @@ static void cap_schema_fields(CapSchema *out, const RambleSchema *sch){
 }
 
 /* The mesh's view of the entity behind topic: kind from the peer lists, the rest from
-   ramble_node_mesh_find. Views into node state, bracket when they outlive the call. */
-static int cap_entity_lookup(RambleNode *node, const char *topic, RambleEntityInfo *out){
+   rant_node_mesh_find. Views into node state, bracket when they outlive the call. */
+static int cap_entity_lookup(RantNode *node, const char *topic, RantEntityInfo *out){
     uint8_t kind = cap_entity_kind(topic, NULL);
-    RambleEntityKind ek = kind == CAP_KIND_FUNCTION ? RAMBLE_ENTITY_FUNCTION
-                      : kind == CAP_KIND_VARIABLE ? RAMBLE_ENTITY_VARIABLE
-                      : kind == CAP_KIND_TASK     ? RAMBLE_ENTITY_TASK : RAMBLE_ENTITY_TOPIC;
-    return ramble_node_mesh_find(node, ek, topic, out);
+    RantEntityKind ek = kind == CAP_KIND_FUNCTION ? RANT_ENTITY_FUNCTION
+                      : kind == CAP_KIND_VARIABLE ? RANT_ENTITY_VARIABLE
+                      : kind == CAP_KIND_TASK     ? RANT_ENTITY_TASK : RANT_ENTITY_TOPIC;
+    return rant_node_mesh_find(node, ek, topic, out);
 }
 
 /* the schema of one channel of the entity behind topic as a freeable parsed copy, the
    mesh's pick, NULL when none is advertised. The one resolver behind display and adoption. */
-static RambleSchema *cap_entity_schema_copy(RambleNode *node, const char *topic, int which){
-    RambleEntityInfo ei; const RambleSchema *sch; RambleSchema *copy = NULL;
-    ramble_node_lock(node);   /* one bracket: the pick AND the wire it copies from */
+static RantSchema *cap_entity_schema_copy(RantNode *node, const char *topic, int which){
+    RantEntityInfo ei; const RantSchema *sch; RantSchema *copy = NULL;
+    rant_node_lock(node);     /* one bracket: the pick AND the wire it copies from */
     if (cap_entity_lookup(node, topic, &ei)){
         sch = which == 1 ? ei.rsp_schema : which == 2 ? ei.progress_schema : ei.schema;
-        if (sch) copy = ramble_schema_copy(sch, cap_schema_alloc, NULL);
+        if (sch) copy = rant_schema_copy(sch, cap_schema_alloc, NULL);
     }
-    ramble_node_unlock(node);
+    rant_node_unlock(node);
     return copy;
 }
 
 /* the primary schema of a topic / variable / function request / task request */
-static RambleSchema *cap_topic_schema_parse(RambleNode *node, const char *topic){
+static RantSchema *cap_topic_schema_parse(RantNode *node, const char *topic){
     return cap_entity_schema_copy(node, topic, 0);
 }
 
 /* the mesh generation the entity currently stands at (0 = not advertised) */
-static uint64_t cap_entity_generation(RambleNode *node, const char *topic){
-    RambleEntityInfo ei;
+static uint64_t cap_entity_generation(RantNode *node, const char *topic){
+    RantEntityInfo ei;
     return cap_entity_lookup(node, topic, &ei) ? ei.generation : 0;
 }
 
 /* A provider restarting with a changed schema strands an adopted topic, since a topic's
    schema is immutable. Retire and re create when the generation moved (spec/explorer.md). */
-static void cap_schema_poll(RambleNode *node){
+static void cap_schema_poll(RantNode *node){
     unsigned long long now = cap_now_ms();
     int i;
     if (!node || (!cap_schema_dirty && now < cap_schema_next_ms)) return;
@@ -2781,7 +2781,7 @@ static void cap_schema_poll(RambleNode *node){
     cap_schema_next_ms = now + 1000;
     for (i = 0; i < CAP_MAX_SUBS; i++){
         CapSub *s = &cap_subs[i];
-        RambleTopic *live;
+        RantTopic *live;
         uint64_t gen;
         if (!s->used || s->kind == CAP_KIND_FUNCTION || s->kind == CAP_KIND_TASK) continue;
         live = s->kind ? s->ch[1]
@@ -2790,13 +2790,13 @@ static void cap_schema_poll(RambleNode *node){
         gen = cap_entity_generation(node, s->name);
         if (!gen || gen == s->generation) continue;   /* nobody advertises it, or still current */
         if (!s->generation){ s->generation = gen; continue; }   /* first sight: the baseline */
-        if (s->ch[0])   ramble_topic_set_role(s->ch[0],   RAMBLE_INACTIVE);
-        if (s->ch[1])   ramble_topic_set_role(s->ch[1],   RAMBLE_INACTIVE);
-        if (s->set_ch)  ramble_topic_set_role(s->set_ch,  RAMBLE_INACTIVE);
-        ramble_node_lock(node);   /* handle swap vs cap_sub_by_index on the service thread */
+        if (s->ch[0])   rant_topic_set_role(s->ch[0],     RANT_INACTIVE);
+        if (s->ch[1])   rant_topic_set_role(s->ch[1],     RANT_INACTIVE);
+        if (s->set_ch)  rant_topic_set_role(s->set_ch,    RANT_INACTIVE);
+        rant_node_lock(node);     /* handle swap vs cap_sub_by_index on the service thread */
         s->ch[0] = s->ch[1] = s->set_ch = NULL;
         s->index[0] = s->index[1] = 0;
-        ramble_node_unlock(node);
+        rant_node_unlock(node);
         if (cap_sub_reconcile(s, node, s->reliable))
             cap_logf("%s re-adopted a changed schema (generation %08x%08x -> %08x%08x)", s->name,
                      (unsigned)(s->generation >> 32), (unsigned)s->generation,
@@ -2810,15 +2810,15 @@ static void cap_schema_poll(RambleNode *node){
 /* the schema query for one of an entity's channels: which 0 primary (topic / variable value /
    request), 1 response (functions, tasks), 2 progress (tasks) */
 static int cap_entity_schema(const Capture *cap, const char *topic, int which, CapSchema *out){
-    RambleNode *node = cap ? (RambleNode *)cap->rt : NULL;
-    RambleEntityInfo ei; const RambleSchema *best = NULL; int found;
+    RantNode *node = cap ? (RantNode *)cap->rt : NULL;
+    RantEntityInfo ei; const RantSchema *best = NULL; int found;
     uint8_t kind;
     memset(out, 0, sizeof *out);
     if (!node || !topic || !*topic) return 0;
     kind = cap_entity_kind(topic, NULL);
     if (which == 1 && kind != CAP_KIND_FUNCTION && kind != CAP_KIND_TASK) return 0;
     if (which == 2 && kind != CAP_KIND_TASK) return 0;   /* only tasks have a progress shape */
-    ramble_node_lock(node);   /* the pick AND the node-owned schema we read the fields from */
+    rant_node_lock(node);     /* the pick AND the node-owned schema we read the fields from */
     found = cap_entity_lookup(node, topic, &ei);
     if (found){
         best = which == 1 ? ei.rsp_schema : which == 2 ? ei.progress_schema : ei.schema;
@@ -2828,7 +2828,7 @@ static int cap_entity_schema(const Capture *cap, const char *topic, int which, C
         snprintf(out->from, sizeof out->from, "%.*s", (int)ei.from.len, ei.from.data ? ei.from.data : "");
         if (best) cap_schema_fields(out, best);             /* interned parsed schema: field list */
     }
-    ramble_node_unlock(node);
+    rant_node_unlock(node);
     return found && (ei.providers + ei.consumers) > 0;
 }
 
@@ -2845,8 +2845,8 @@ int cap_topic_prg_schema(const Capture *cap, const char *topic, CapSchema *out){
 }
 
 int cap_topic_schema_dsl(const Capture *cap, const char *topic, int which, char *out, size_t out_cap){
-    RambleNode *node = cap ? (RambleNode *)cap->rt : NULL;
-    RambleEntityInfo ei; const RambleSchema *sch = NULL;
+    RantNode *node = cap ? (RantNode *)cap->rt : NULL;
+    RantEntityInfo ei; const RantSchema *sch = NULL;
     uint8_t kind;
     uint32_t n = 0;
     if (out && out_cap) out[0] = '\0';
@@ -2854,11 +2854,11 @@ int cap_topic_schema_dsl(const Capture *cap, const char *topic, int which, char 
     kind = cap_entity_kind(topic, NULL);
     if (which == 1 && kind != CAP_KIND_FUNCTION && kind != CAP_KIND_TASK) return 0;
     if (which == 2 && kind != CAP_KIND_TASK) return 0;
-    ramble_node_lock(node);
+    rant_node_lock(node);
     if (cap_entity_lookup(node, topic, &ei))
         sch = which == 1 ? ei.rsp_schema : which == 2 ? ei.progress_schema : ei.schema;
-    if (sch) n = ramble_schema_print(sch, out, out_cap);    /* the library spells the DSL */
-    ramble_node_unlock(node);
+    if (sch) n = rant_schema_print(sch, out, out_cap);      /* the library spells the DSL */
+    rant_node_unlock(node);
     return (int)n;
 }
 
@@ -2866,18 +2866,18 @@ int cap_topic_schema_dsl(const Capture *cap, const char *topic, int which, char 
    against a scratch buffer, the authoritative accept test with no side effects. */
 int cap_form_validate(const Capture *cap, const char *topic, const char *const *values,
                       int n_values, unsigned char *valid){
-    RambleNode *node = cap ? (RambleNode *)cap->rt : NULL;
-    RambleSchema *sch; uint8_t *buf; size_t size; uint16_t i, nf;
+    RantNode *node = cap ? (RantNode *)cap->rt : NULL;
+    RantSchema *sch; uint8_t *buf; size_t size; uint16_t i, nf;
     int j;
     for (j = 0; j < n_values; j++) if (valid) valid[j] = 1;   /* default: don't flag */
     if (!node || !topic || !values) return 0;
     sch = cap_topic_schema_parse(node, topic);   /* a function's form fills its REQUEST schema */
     if (!sch) return 0;   /* no schema: nothing to judge against */
-    size = ramble_schema_msg_min(sch) + CAP_FORM_SLACK;
+    size = rant_schema_msg_min(sch) + CAP_FORM_SLACK;
     buf = (uint8_t *)malloc(size);
-    if (!buf){ ramble_schema_free(sch, cap_schema_alloc, NULL); return 0; }
-    ramble_schema_message_default(sch, buf, size);   /* per field parse, independent */
-    nf = ramble_schema_field_count(sch);
+    if (!buf){ rant_schema_free(sch, cap_schema_alloc, NULL); return 0; }
+    rant_schema_message_default(sch, buf, size);     /* per field parse, independent */
+    nf = rant_schema_field_count(sch);
     for (i = 0; i < nf && (int)i < n_values; i++){
         const char *v = values[i] ? values[i] : "", *p = v;
         while (*p == ' ' || *p == '\t') p++;
@@ -2885,6 +2885,6 @@ int cap_form_validate(const Capture *cap, const char *topic, const char *const *
         if (valid) valid[i] = (unsigned char)(cap_form_set(sch, i, v, buf, size) ? 1 : 0);
     }
     free(buf);
-    ramble_schema_free(sch, cap_schema_alloc, NULL);
+    rant_schema_free(sch, cap_schema_alloc, NULL);
     return 1;
 }

@@ -22,7 +22,7 @@ typedef struct {
     char sel_node_id[32];     /* the selected node's id ("" = index-only default) */
     char sel_topic_path[96];  /* the selected topic's path ("" = nothing selected) */
 
-    unsigned nodelog_mask;    /* the Nodes tab log sidebar level filter, bits (1 << RambleLogLevel),
+    unsigned nodelog_mask;    /* the Nodes tab log sidebar level filter, bits (1 << RantLogLevel),
                                  all three on by default */
 
     int        drawer_open;   /* Topics right sidebar (Inspect / Publish) */

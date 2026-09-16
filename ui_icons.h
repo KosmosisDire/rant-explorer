@@ -5,13 +5,14 @@
 
 #include "nanosvg.h"
 #include "nanosvgrast.h"
+#include "logo_png.h"      /* stb is included once, with its implementation, by discovery_explorer.c */
 
 typedef enum {
     ICON_X = 0,      /* close / dismiss */
     ICON_SEARCH,     /* filter boxes */
     ICON_BOX,        /* Nodes tab */
     ICON_RADIO,      /* Topics tab (broadcast) */
-    ICON_LOGO,       /* the Ramble logo (Logo.svg, full color) */
+    ICON_LOGO,       /* the Rant logo (Logo.png, full color) */
     ICON_SUN,        /* theme: currently light */
     ICON_MOON,       /* theme: currently dark */
     ICON_CHEVRON_DOWN,   /* tree caret: expanded */
@@ -35,35 +36,13 @@ typedef enum {
     "stroke-linecap=\"round\" stroke-linejoin=\"round\">"
 #define UI_ICON(body) (UI_ICON_HEAD body "</svg>")
 
-/* The brand logo, full color and untinted. Its D was outlined to a path since nanosvg has
-   no text engine, and the attribute quotes are single so it embeds as a C string. */
-#define UI_LOGO_SVG "<svg id=\"Layer_1\" data-name=\"Layer 1\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">\n" \
-"  <defs>\n" \
-"    <style>\n" \
-"      .cls-1 {\n" \
-"        fill: #fff;\n" \
-"        opacity: .36;\n" \
-"      }\n" \
-"      .cls-2 {\n" \
-"        fill: #00a99d;\n" \
-"      }\n" \
-"      .cls-3 {\n" \
-"        opacity: .5;\n" \
-"      }\n" \
-"    </style>\n" \
-"  </defs>\n" \
-"  <path class=\"cls-2\" d=\"M57.99,70.72l71.27,155.98,43.66,28.05h252.56c11.56-49.43,9.73-41.6,21.29-91.02L125.83,4.94,57.99,70.72Z\"/>\n" \
-"  <path class=\"cls-2\" d=\"M55.48,444.27l73.78-161.47c15.81-10.16,27.85-17.89,43.66-28.05h252.56c11.56,49.43,9.73,41.6,21.29,91.02L120.42,507.24q-32.44-31.45-64.95-62.97Z\"/>\n" \
-"  <polygon class=\"cls-3\" points=\"172.92 254.75 425.47 254.75 446.76 163.73 129.26 226.7 172.92 254.75\"/>\n" \
-"  <polygon class=\"cls-1\" points=\"172.92 254.75 425.47 254.75 446.76 345.77 129.26 282.8 172.92 254.75\"/>\n" \
-"</svg>"
 
 static const char *const UI_ICON_SVG[ICON_COUNT] = {
     /* X      */ UI_ICON("<path d=\"M18 6 6 18\"/><path d=\"m6 6 12 12\"/>"),
     /* SEARCH */ UI_ICON("<path d=\"m21 21-4.34-4.34\"/><circle cx=\"11\" cy=\"11\" r=\"8\"/>"),
     /* BOX    */ UI_ICON("<path d=\"M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z\"/><path d=\"m3.3 7 8.7 5 8.7-5\"/><path d=\"M12 22V12\"/>"),
     /* RADIO  */ UI_ICON("<path d=\"M16.247 7.761a6 6 0 0 1 0 8.478\"/><path d=\"M19.075 4.933a10 10 0 0 1 0 14.134\"/><path d=\"M4.925 19.067a10 10 0 0 1 0-14.134\"/><path d=\"M7.753 16.239a6 6 0 0 1 0-8.478\"/><circle cx=\"12\" cy=\"12\" r=\"2\"/>"),
-    /* LOGO   */ UI_LOGO_SVG,
+    /* LOGO   */ NULL,   /* Logo.png, see ui_logo_texture */
     /* SUN    */ UI_ICON("<circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2v2\"/><path d=\"M12 20v2\"/><path d=\"m4.93 4.93 1.41 1.41\"/><path d=\"m17.66 17.66 1.41 1.41\"/><path d=\"M2 12h2\"/><path d=\"M20 12h2\"/><path d=\"m6.34 17.66-1.41 1.41\"/><path d=\"m19.07 4.93-1.41 1.41\"/>"),
     /* MOON   */ UI_ICON("<path d=\"M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401\"/>"),
     /* CHEV_DN */ UI_ICON("<path d=\"m6 9 6 6 6-6\"/>"),
@@ -114,6 +93,34 @@ static SDL_Texture *ui_icon_rasterize(SDL_Renderer *ren, const char *svg, int ra
     return tex;
 }
 
+/* Logo.png shrunk to raster px on the CPU, since a single linear GPU shrink from 512 px aliases */
+static SDL_Texture *ui_logo_texture(SDL_Renderer *ren, int raster){
+    int w, h; SDL_Texture *tex = NULL; unsigned char *small;
+    unsigned char *rgba = stbi_load_from_memory(UI_LOGO_PNG, (int)sizeof UI_LOGO_PNG, &w, &h, NULL, 4);
+    if (!rgba) return NULL;
+    small = stbir_resize_uint8_srgb(rgba, w, h, 0, NULL, raster, raster, 0, STBIR_RGBA);
+    stbi_image_free(rgba);
+    if (!small) return NULL;
+    tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, raster, raster);
+    if (tex){
+        SDL_UpdateTexture(tex, NULL, small, raster * 4);
+        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_LINEAR);
+    }
+    free(small);
+    return tex;
+}
+
+/* title bar, taskbar and dock icon from Logo.png. The Windows exe file icon is rant_explorer.rc */
+static void ui_window_icon(SDL_Window *win){
+    int w, h; SDL_Surface *s;
+    unsigned char *rgba = stbi_load_from_memory(UI_LOGO_PNG, (int)sizeof UI_LOGO_PNG, &w, &h, NULL, 4);
+    if (!rgba) return;
+    s = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_RGBA32, rgba, w * 4);
+    if (s){ SDL_SetWindowIcon(win, s); SDL_DestroySurface(s); }
+    stbi_image_free(rgba);
+}
+
 /* rasterize every icon to a texture. 0 if any failed, a NULL icon just draws nothing */
 static int ui_icons_load(SDL_Renderer *ren){
     int i, ok = 1, raster;
@@ -122,7 +129,8 @@ static int ui_icons_load(SDL_Renderer *ren){
     if (raster > 512) raster = 512;    /* cap memory at extreme zoom + HiDPI */
     g_icon_raster = raster;
     for (i = 0; i < ICON_COUNT; i++){
-        g_icon_tex[i] = ui_icon_rasterize(ren, UI_ICON_SVG[i], raster);
+        g_icon_tex[i] = i == ICON_LOGO ? ui_logo_texture(ren, raster)
+                                       : ui_icon_rasterize(ren, UI_ICON_SVG[i], raster);
         if (!g_icon_tex[i]) ok = 0;
     }
     return ok;

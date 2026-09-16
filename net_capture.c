@@ -2781,22 +2781,28 @@ static void cap_schema_poll(RantNode *node){
     cap_schema_next_ms = now + 1000;
     for (i = 0; i < CAP_MAX_SUBS; i++){
         CapSub *s = &cap_subs[i];
-        RantTopic *live;
         uint64_t gen;
-        if (!s->used || s->kind == CAP_KIND_FUNCTION || s->kind == CAP_KIND_TASK) continue;
-        live = s->kind ? s->ch[1]
-             : s->ch[s->reliable] ? s->ch[s->reliable] : s->ch[!s->reliable];
-        if (!live) continue;
+        if (!s->used || !(s->ch[0] || s->ch[1] || s->set_ch || s->fn || s->prg_ch || s->req_raw))
+            continue;
         gen = cap_entity_generation(node, s->name);
         if (!gen || gen == s->generation) continue;   /* nobody advertises it, or still current */
         if (!s->generation){ s->generation = gen; continue; }   /* first sight: the baseline */
         if (s->ch[0])   rant_topic_set_role(s->ch[0],     RANT_INACTIVE);
         if (s->ch[1])   rant_topic_set_role(s->ch[1],     RANT_INACTIVE);
         if (s->set_ch)  rant_topic_set_role(s->set_ch,    RANT_INACTIVE);
+        if (s->prg_ch)  rant_topic_set_role(s->prg_ch,    RANT_INACTIVE);
+        if (s->req_raw) rant_topic_set_role(s->req_raw,   RANT_INACTIVE);
+        if (s->fn)      rant_function_retire(s->fn);   /* in flight calls end CANCELLED */
         rant_node_lock(node);     /* handle swap vs cap_sub_by_index on the service thread */
-        s->ch[0] = s->ch[1] = s->set_ch = NULL;
-        s->index[0] = s->index[1] = 0;
+        s->ch[0] = s->ch[1] = s->set_ch = s->prg_ch = s->req_raw = NULL;
+        s->fn = NULL;
+        s->index[0] = s->index[1] = s->prg_index = 0;
         rant_node_unlock(node);
+        /* the task @rsp channel is untyped, so it stays and an in flight run still ends */
+        if (s->req_schema){ rant_schema_free(s->req_schema, cap_schema_alloc, NULL); s->req_schema = NULL; }
+        if (s->rsp_schema){ rant_schema_free(s->rsp_schema, cap_schema_alloc, NULL); s->rsp_schema = NULL; }
+        /* a parked send was encoded with the old schema */
+        free(s->pend_data); s->pend_data = NULL; s->pend_len = 0; s->pend_used = 0;
         if (cap_sub_reconcile(s, node, s->reliable))
             cap_logf("%s re-adopted a changed schema (generation %08x%08x -> %08x%08x)", s->name,
                      (unsigned)(s->generation >> 32), (unsigned)s->generation,

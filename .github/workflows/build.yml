@@ -1,7 +1,7 @@
 # Build the explorer on every push and pull request, on Windows and Linux.
 #
-# Rant is a private repository, so CPM cannot clone it with the built in GITHUB_TOKEN.
-# Set a RANT_TOKEN secret: a token that can read KosmosisDire/Rant.
+# CPM clones Rant, which is public, so no credential is needed. Should it go private
+# again, a RANT_TOKEN secret that can read KosmosisDire/Rant is all the workflow needs.
 name: build
 
 on:
@@ -32,12 +32,12 @@ jobs:
             libxrandr-dev libxi-dev libxcursor-dev libxfixes-dev libxkbcommon-dev \
             libwayland-dev wayland-protocols libegl1-mesa-dev
 
-      - name: Read the private Rant repository
+      - name: Read Rant
         shell: bash
         env:
           RANT_TOKEN: ${{ secrets.RANT_TOKEN }}
         run: |
-          test -n "$RANT_TOKEN" || { echo "set the RANT_TOKEN secret: a token that can read KosmosisDire/Rant"; exit 1; }
+          test -n "$RANT_TOKEN" || { echo "no RANT_TOKEN, cloning Rant anonymously"; exit 0; }
           git config --global url."https://x-access-token:$RANT_TOKEN@github.com/".insteadOf "https://github.com/"
 
       - name: Build

@@ -40,5 +40,5 @@ zip per platform to a GitHub Release. The workflow refuses a tag that does not m
 git tag v0.0.1 && git push origin v0.0.1
 ```
 
-CI clones Rant, which is private, so the repository needs a `RANT_TOKEN` secret: a token
-that can read `KosmosisDire/Rant`.
+CI clones Rant, which is public, so no credential is needed. Should it go private again,
+set a `RANT_TOKEN` secret that can read `KosmosisDire/Rant` and the workflows pick it up.

@@ -27,7 +27,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/get_cpm.cmake")
 # to ../Rant to build against the working tree instead.
 CPMAddPackage(NAME rant
   GITHUB_REPOSITORY KosmosisDire/Rant
-  VERSION 0.0.14
+  VERSION 0.0.15
   EXCLUDE_FROM_ALL YES)
 
 # Static CRT: a copied exe must run with no VC++ redistributable. Before SDL3, so SDL3 and

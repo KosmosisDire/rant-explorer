@@ -28,3 +28,17 @@ downloads between build trees.
 ```
 powershell -ExecutionPolicy Bypass -File .\run_demo.ps1 -Build -Explorer
 ```
+
+## Releases
+
+`VERSION` holds the explorer's version, its own series, independent of the Rant release
+`CMakeLists.txt` pins. Pushing a tag `v<VERSION>` builds Windows and Linux and attaches a
+zip per platform to a GitHub Release. The workflow refuses a tag that does not match
+`VERSION`.
+
+```
+git tag v0.0.1 && git push origin v0.0.1
+```
+
+CI clones Rant, which is private, so the repository needs a `RANT_TOKEN` secret: a token
+that can read `KosmosisDire/Rant`.

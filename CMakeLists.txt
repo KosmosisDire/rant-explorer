@@ -2,7 +2,10 @@
 # nanosvg and stb are single headers downloaded at configure (spec/explorer.md in the Rant repo).
 
 cmake_minimum_required(VERSION 3.19)
-project(rant_explorer C)
+
+# The one version. The release workflow refuses a tag that does not match it.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" RANT_EXPLORER_VERSION LIMIT_COUNT 1)
+project(rant_explorer VERSION ${RANT_EXPLORER_VERSION} LANGUAGES C)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)

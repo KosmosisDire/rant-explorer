@@ -1,0 +1,85 @@
+# Cut a release when a tag v<VERSION> is pushed: the explorer and demo_scene for every
+# platform, one zip each, attached to a GitHub Release.
+#
+# Rant is a private repository, so CPM cannot clone it with the built in GITHUB_TOKEN.
+# Set a RANT_TOKEN secret: a token that can read KosmosisDire/Rant.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  # Linux builds on ubuntu-22.04 so the binaries run on glibc 2.35 and newer.
+  programs:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04,   name: linux-x64, preset: linux }
+          - { os: windows-latest, name: win-x64,   preset: windows }
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The tag matches VERSION
+        shell: bash
+        run: test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
+
+      - name: Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libx11-dev libxext-dev \
+            libxrandr-dev libxi-dev libxcursor-dev libxfixes-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libegl1-mesa-dev
+
+      - name: Read the private Rant repository
+        shell: bash
+        env:
+          RANT_TOKEN: ${{ secrets.RANT_TOKEN }}
+        run: |
+          test -n "$RANT_TOKEN" || { echo "set the RANT_TOKEN secret: a token that can read KosmosisDire/Rant"; exit 1; }
+          git config --global url."https://x-access-token:$RANT_TOKEN@github.com/".insteadOf "https://github.com/"
+
+      - name: Build
+        run: |
+          cmake --preset ${{ matrix.preset }}
+          cmake --build --preset ${{ matrix.preset }}
+
+      - name: Zip
+        shell: bash
+        run: |
+          mkdir -p out/rant-explorer
+          for p in rant_explorer demo_scene; do
+            cp "bin/$p" out/rant-explorer/ 2>/dev/null || cp "bin/$p.exe" out/rant-explorer/
+          done
+          cp README.md out/rant-explorer/
+          ls out/rant-explorer
+          cd out && cmake -E tar cf "../rant-explorer-$(cat ../VERSION)-${{ matrix.name }}.zip" --format=zip rant-explorer
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: programs-${{ matrix.name }}
+          path: rant-explorer-*.zip
+
+  release:
+    needs: [programs]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: The assets
+        run: ls -R artifacts
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/programs-*/*.zip
+          generate_release_notes: true

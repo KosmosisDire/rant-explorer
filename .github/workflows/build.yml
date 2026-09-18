@@ -1,0 +1,50 @@
+# Build the explorer on every push and pull request, on Windows and Linux.
+#
+# Rant is a private repository, so CPM cannot clone it with the built in GITHUB_TOKEN.
+# Set a RANT_TOKEN secret: a token that can read KosmosisDire/Rant.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04,   name: linux,   preset: linux }
+          - { os: windows-latest, name: windows, preset: windows }
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Ninja for the linux preset, plus the X11 and GL headers SDL3 compiles against.
+      - name: Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libx11-dev libxext-dev \
+            libxrandr-dev libxi-dev libxcursor-dev libxfixes-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libegl1-mesa-dev
+
+      - name: Read the private Rant repository
+        shell: bash
+        env:
+          RANT_TOKEN: ${{ secrets.RANT_TOKEN }}
+        run: |
+          test -n "$RANT_TOKEN" || { echo "set the RANT_TOKEN secret: a token that can read KosmosisDire/Rant"; exit 1; }
+          git config --global url."https://x-access-token:$RANT_TOKEN@github.com/".insteadOf "https://github.com/"
+
+      - name: Build
+        run: |
+          cmake --preset ${{ matrix.preset }}
+          cmake --build --preset ${{ matrix.preset }}
+
+      - name: The exes
+        shell: bash
+        run: ls -l bin

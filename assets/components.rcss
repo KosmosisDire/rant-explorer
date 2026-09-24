@@ -1,0 +1,928 @@
+/* The component library. Nothing here names a tab: every rule is a piece any tab composes.
+
+   A component styles itself and nothing else. It sets no width, no height and no flex
+   unless that is what the component IS. Sizing belongs to the shell.
+
+   `flex-direction: row` and `align-items: stretch` are the defaults, so neither is written.
+   Status is always one of ok, warn or bad, from theme.rcss. */
+
+/* -------------------------------------------------------------------- primitives */
+
+/* One Lucide glyph out of the icon font (main.cpp registers the element). It takes the
+   colour of its text, and its font-size is the icon's size. */
+icon {
+	display: inline-block;
+	flex: 0 0 auto;
+	font-family: lucide;
+	font-size: 14dp;
+	line-height: 1;
+}
+
+/* The glyph for a topic's kind, coloured per family so a list scans at a glance. */
+icon.kind          { color: var(--dim); }
+icon.kind.function { color: var(--accent); }
+icon.kind.variable { color: var(--amber); }
+icon.kind.task     { color: var(--green); }
+
+.dot {
+	display: inline-block;
+	flex: 0 0 auto;   /* a row flex item shrinks by default, and this must not */
+	width: 8dp;
+	height: 8dp;
+	border-radius: 4dp;
+	background-color: var(--gray);
+}
+
+.dot.ok   { background-color: var(--green); }
+.dot.warn { background-color: var(--amber); }
+.dot.bad  { background-color: var(--red); }
+
+/* A word carrying status: ALIVE, joining, reliable. */
+.badge {
+	font-size: 10dp;
+	font-weight: 600;
+	color: var(--dim);
+}
+
+/* The raised grey box a short value sits in: a tag, a value in its tree, an editor, a chip,
+   a bool's lamp or a matrix cell. */
+.tag, .value-row .val, .pill-edit, viz .chip, viz .cells .cell, viz .matrix-row span {
+	background-color: var(--panel3);
+	border-radius: 3dp;
+}
+
+/* An inline type tag: the grey box saying what kind of thing a name is. */
+.tag {
+	font-size: 10dp;
+	color: var(--faint);
+	padding: 1dp 5dp;
+}
+
+/* A filter toggle: lit while its filter is on. */
+.pill {
+	font-size: 10dp;
+	font-weight: 600;
+	color: var(--faint);
+	border: 1dp var(--border);
+	border-radius: 11dp;
+	padding: 3dp 9dp;
+	transition: background-color 0.12s, color 0.12s;
+}
+
+.pill:hover    { color: var(--text); }
+.pill.on       { background-color: var(--panel2); color: var(--dim); border-color: var(--dim); }
+.pill.on.ok    { color: var(--green); border-color: var(--green); }
+.pill.on.warn  { color: var(--amber); border-color: var(--amber); }
+.pill.on.bad   { color: var(--red);   border-color: var(--red); }
+
+/* The small caps heading: over a block of content, over a table's columns, over a part of a
+   function's value and over a group of menu lines. */
+.section, th, .value-row.part .name, .menu-item.header {
+	font-size: 10dp;
+	font-weight: 600;
+	letter-spacing: 1dp;
+	color: var(--faint);
+	text-transform: uppercase;
+}
+
+.section { margin: 20dp 0dp 7dp 0dp; }
+
+/* Nothing to show yet. */
+.placeholder {
+	padding: 18dp;
+	font-size: 12dp;
+	color: var(--faint);
+}
+
+/* A text filter: the search glyph, the field and a clear glyph while there is text. */
+.filter {
+	display: flex;
+	align-items: center;
+	gap: 7dp;
+	height: 30dp;
+	padding: 0dp 9dp;
+	color: var(--faint);
+	background-color: var(--panel2);
+	border: 1dp var(--border);
+	border-radius: var(--radius);
+}
+
+.filter input {
+	flex: 1;
+	font-size: 11dp;
+	color: var(--text);
+	cursor: text;
+}
+
+.filter input:placeholder-shown { color: var(--faint); }
+.filter .clear:hover            { color: var(--text); }
+
+/* The cell under the pointer lifts a little over its row's hover, since a right click
+   copies that one cell, and stays lit as held while the menu for it is open. */
+td, th, .kv, [cell], viz [cell-path] { transition: background-color 0.1s; }
+td:hover, th:hover, .kv:hover, [cell]:hover, viz [cell-path]:hover,
+td.held, th.held, .kv.held, [cell].held, viz [cell-path].held { background-color: var(--cell-hover); }
+
+/* ---------------------------------------------------------------- selectable list */
+
+.list-group {
+	padding: 12dp var(--pad) 4dp var(--pad);
+	font-size: 10dp;
+	font-weight: 600;
+	letter-spacing: 1dp;
+	color: var(--faint);
+}
+
+.list-row {
+	display: flex;
+	align-items: center;
+	gap: 9dp;
+	height: 36dp;
+	margin: 0dp 6dp;
+	padding: 0dp var(--gap);
+	border-radius: var(--radius);
+}
+
+.list-label {
+	font-size: 13dp;
+	color: var(--text);
+}
+
+.list-row.selected .list-label {
+	font-weight: 600;
+}
+
+/* The trailing value on a row. An auto margin pushes it right, so no spacer element. */
+.list-trail {
+	margin-left: auto;
+	font-size: 11dp;
+	color: var(--dim);
+}
+
+/* ------------------------------------------------------------------------- edge */
+
+/* An edge between two boxes. It takes no room, so it sits exactly on the boundary, and its
+   grip reaches 3dp past it both ways. The line is the grip's background between two
+   transparent borders, so it stays centred as it thickens under the pointer. Only a grip
+   with a drag handler resizes and reacts, else the edge is a plain line. */
+.edge {
+	display: block;   /* an inline span would ignore the zero width and take its grip's */
+	flex: 0 0 auto;
+	width: 0dp;
+	position: relative;
+	z-index: 10;
+}
+.edge .grip {
+	display: block;
+	position: absolute;
+	top: 0dp;
+	bottom: 0dp;
+	left: -3dp;
+	width: 7dp;
+	border-left: 3dp transparent;
+	border-right: 3dp transparent;
+	background-color: var(--border);
+	transition: background-color 0.1s;
+}
+.edge.end { display: none; }
+.edge .grip[data-event-dragstart] { cursor: col-resize; drag: drag; }
+.edge .grip[data-event-dragstart]:hover,
+.edge .grip[data-event-dragstart]:active {
+	border-left-width: 2dp;
+	border-right-width: 2dp;
+	background-color: var(--accent);
+}
+
+/* ------------------------------------------------------------------- tree table */
+
+/* A table whose first wide column may hold a tree. Cells touch and fill their row, so a
+   cell's hover and click cover its whole box. Column widths live in shell.rcss. */
+.tt-head,
+.tt-row {
+	display: flex;
+	height: var(--row);
+	overflow: hidden;   /* columns wider than a narrowed sidebar clip at its edge */
+}
+
+.tt-row.odd { background-color: var(--stripe); }
+
+/* A row of a list or a tree table, after the stripe so every state covers it. Selection
+   is a fill, never a border: a border on one row shifts its contents. Pressed comes last
+   so it wins over hover and selected, and release fades back through the transition. */
+.list-row, .tt-row                   { transition: background-color 0.1s; }
+.list-row:hover, .tt-row:hover       { background-color: var(--panel2); }
+.list-row.selected, .tt-row.selected { background-color: var(--accent-bg); }
+.list-row:active, .tt-row:active     { background-color: var(--panel3); }
+
+/* The header leaves the room of the body's scrollbar while it shows (main.cpp), so every
+   column lines up. An edge after a header cell resizes its column, and a right click
+   picks which columns show, all but those marked keep. */
+.tt-body { overflow-y: auto; }
+.tt-head {
+	flex: 0 0 auto;
+	height: var(--head);
+	border-bottom: 1dp var(--border);
+}
+.tt-head.gutter { padding-right: var(--scrollbar); }
+
+.tt-cell {
+	display: block;
+	flex: 0 0 auto;
+	height: 100%;
+	padding: 0dp 6dp;
+	line-height: var(--row);
+	white-space: nowrap;
+	overflow: hidden;
+}
+.tt-row .tt-cell         { font-size: 11dp; color: var(--dim); }
+.tt-cell.num             { text-align: right; }
+.tt-head .tt-cell        { line-height: var(--head); text-align: center; }
+.tt-head .tt-cell.section { margin: 0dp; }
+
+/* A column that shares the width by its weight (shell.rcss), so a table keeps its
+   proportions at any width. As the tree it holds the indent, caret, icon and name. */
+.tt-cell.share { flex: 1 1 0dp; min-width: 0; }
+.tt-tree {
+	display: flex;
+	align-items: center;
+	gap: 6dp;
+	padding-left: 0dp;
+}
+.tt-tree .indent { flex: 0 0 auto; }
+
+/* The caret zone is always there, so names line up whether or not the row is a branch. */
+.tt-tree .caret {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 24dp;
+	height: 100%;
+	color: var(--dim);
+}
+.tt-tree .caret icon { font-size: 12dp; }
+.tt-tree icon.kind   { flex: 0 0 auto; }
+
+.tt-tree .name {
+	display: block;
+	flex: 1;
+	min-width: 0;
+	font-size: 14dp;
+	color: var(--text);
+	overflow: hidden;
+}
+.tt-row.namespace .name { color: var(--dim); }
+
+/* The narrow column of a topic's subscription dot or a field's visual toggle. */
+.tt-cell.sub, .tt-cell.toggle {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 24dp;
+	padding: 0dp;
+}
+
+/* Hollow while not subscribed, dim while quiet, lit while messages arrive. A preview's ring
+   is dashed by decorators.cpp in its text colour, since RCSS borders are solid only. */
+.sub-dot {
+	width: 12dp;
+	height: 12dp;
+	border: 1dp var(--faint);
+	border-radius: 10dp;
+	color: var(--green);
+	cursor: pointer;
+}
+.sub-dot:hover           { border-color: var(--text); }
+.sub-dot.on              { border-color: var(--green); background-color: var(--green-bg); }
+.sub-dot.on.active       { border-color: var(--green-hi); background-color: var(--green); color: var(--green-hi); }
+/* Three classes, so a preview's lack of border beats the active one's. Its dashes lie
+   inside the edge, over a fill that reaches it. */
+.sub-dot.on.preview       { border-width: 0dp; decorator: dashed-ring(8 1dp); }
+.sub-dot.on.preview:hover { color: var(--text); }
+
+/* ------------------------------------------------------------------- value tree */
+
+/* A value tree is a tree table: the field, its type, the value as a pill or its editor
+   after the edit mark, and the toggle that puts the field's visual in the detail. */
+.value-row .type { font-size: 10dp; color: var(--faint); }
+
+.tt-cell.val-cell {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 4dp;
+	font-size: 14dp;
+	line-height: 1.2;
+}
+
+/* The value clips, never wraps. */
+.value-row .val {
+	flex: 0 1 auto;
+	min-width: 0;
+	padding: 1dp 6dp;
+	white-space: nowrap;
+	overflow: hidden;
+	color: var(--text);
+}
+
+.value-row.branch .name { color: var(--dim); }
+.value-row.gap .name    { color: var(--faint); }
+
+/* A number editor's field cell scrubs it when dragged. The name shrinks to its text so
+   the dotted underline ends with it. */
+.value-row .scrub       { drag: drag; cursor: col-resize; }
+.value-row .scrub .name { flex: 0 1 auto; decorator: dotted-underline(1dp 2dp); }
+
+/* A function's or task's part: a heading row with its state where a value would be. */
+.value-row.part           { border-top: 1dp var(--border); }
+.value-row.part .val      { font-size: 11dp; color: var(--faint); background-color: transparent; }
+.value-row.part .val.ok   { color: var(--green); }
+.value-row.part .val.bad  { color: var(--red); }
+.value-row.part .val.busy { color: var(--amber); }
+.value-row.blank .val     { color: var(--faint); }
+.value-row.branch .val,
+.value-row.gap .val     { display: none; }
+
+/* The watched type names the value sidebar, in place of its section word. */
+.head-type {
+	margin-right: auto;
+	font-size: 12dp;
+	font-weight: 600;
+	color: var(--text);
+}
+
+/* The toggle for a field's visual: an outline, filled while the visual shows. */
+.viz-toggle {
+	flex: 0 0 auto;
+	width: 12dp;
+	height: 12dp;
+	border: 1dp var(--border2);
+	border-radius: 6dp;
+	transition: background-color 0.1s, border-color 0.1s;
+}
+
+.value-row:hover .viz-toggle,
+.viz-toggle:hover  { border-color: var(--dim); }
+.viz-toggle.on     { background-color: var(--accent); border-color: var(--accent); }
+
+/* ------------------------------------------------------------------------ editors */
+
+/* An editor takes a value pill's place and looks like it, with an outline that says it
+   can be written. RmlUi sizes a text input by its size attribute in widths of "m", which
+   the mono face makes exact, so the editor is as wide as its text. */
+.pill-edit {
+	flex: 0 1 auto;
+	min-width: 0;
+	padding: 0dp 5dp;
+	color: var(--text);
+	border: 1dp var(--border2);
+	cursor: text;
+}
+
+.pill-edit:hover      { border-color: var(--dim); }
+.pill-edit:focus      { border-color: var(--accent); }
+.pill-edit.bad        { border-color: var(--red); }
+.pill-edit.writing,
+.bool-edit.writing    { border-color: var(--amber); }
+
+/* An enum's dropdown: as wide as its longest option, so picking never changes its width. */
+select.pill-edit { display: inline-block; cursor: pointer; }
+select.pill-edit selectvalue { display: block; padding-right: 14dp; white-space: nowrap; overflow: hidden; }
+select.pill-edit selectarrow {
+	width: 14dp;
+	height: 100%;
+	font-family: lucide;
+	font-size: 11dp;
+	color: var(--dim);
+	decorator: text("");   /* the Lucide chevron-down glyph */
+}
+select.pill-edit selectbox {
+	margin-top: 3dp;
+	padding: 3dp 0dp;
+	background-color: var(--panel2);
+	border: 1dp var(--border2);
+	border-radius: 4dp;
+}
+select.pill-edit selectbox option       { padding: 3dp 8dp; color: var(--dim); }
+select.pill-edit selectbox option:checked { color: var(--text); }
+
+/* A bool is its word and a switch, flipped by a click anywhere on it. */
+.bool-edit {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 6dp;
+	padding: 0dp 3dp 0dp 6dp;
+	color: var(--text);
+	border: 1dp transparent;
+	border-radius: 3dp;
+	cursor: pointer;
+}
+
+.bool-edit:hover { background-color: var(--panel3); }
+
+.switch {
+	flex: 0 0 auto;
+	width: 24dp;
+	height: 13dp;
+	padding: 2dp;
+	border-radius: 7dp;
+	background-color: var(--border2);
+	transition: background-color 0.12s;
+}
+
+.switch .knob {
+	display: block;
+	width: 9dp;
+	height: 9dp;
+	margin-left: 0dp;
+	border-radius: 5dp;
+	background-color: var(--dim);
+	transition: margin-left 0.12s;
+}
+
+.switch.on       { background-color: var(--accent); }
+.switch.on .knob { margin-left: 11dp; background-color: var(--on-fill); }
+
+/* The mark before an edited value: an amber dot, and over the row an undo that puts the
+   field back to the mesh's value. It holds its room whether shown or not. */
+.edit-mark {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 16dp;
+	height: 16dp;
+	border-radius: 3dp;
+	color: var(--amber);
+	visibility: hidden;
+	cursor: pointer;
+}
+
+.edit-mark.edited      { visibility: visible; }
+.edit-mark .mark-dot   { width: 5dp; height: 5dp; border-radius: 3dp; background-color: var(--amber); }
+.edit-mark icon        { display: none; font-size: 12dp; }
+.edit-mark:hover       { background-color: var(--panel3); }
+.value-row:hover .edit-mark .mark-dot { display: none; }
+.value-row:hover .edit-mark icon      { display: block; }
+
+/* What a sidebar head says about its edits: how many, sent or writing. */
+.head-note     { font-size: 11dp; white-space: nowrap; color: var(--faint); }
+
+/* Why a write or a call failed, in full: it wraps, breaking a long path if it must. */
+.error-text {
+	padding: 7dp var(--pad);
+	font-size: 11dp;
+	color: var(--red);
+	background-color: var(--red-bg);
+	border-top: 1dp var(--border);
+	word-break: break-word;
+}
+
+/* A small button lights its glyph on a raised fill under the pointer. */
+.icon-button:hover, .viz-close:hover, .viz-pin:hover, select.pill-edit selectbox option:hover {
+	color: var(--text);
+	background-color: var(--panel3);
+}
+
+/* A head's actions. A button is always there while it applies and only dims when it has
+   nothing to do, so the ones beside it never move. */
+.icon-button, .button {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	height: 24dp;
+	border-radius: 4dp;
+	cursor: pointer;
+}
+
+.icon-button {
+	padding: 0dp 7dp;
+	color: var(--dim);
+}
+
+.icon-button.on { color: var(--accent); }
+
+.button {
+	min-width: 70dp;   /* Send with its repeat glyph, so Send and Stop swap in one width */
+	padding: 0dp 10dp;
+	font-size: 12dp;
+	font-weight: 600;
+	border: 1dp var(--border2);
+	background-color: var(--panel3);
+}
+
+.button icon          { font-size: 12dp; margin-right: 5dp; }
+.button:hover         { border-color: var(--dim); }
+.button.primary       { color: var(--on-fill); background-color: var(--accent); border-color: var(--accent); }
+.button.off,
+.icon-button.off      { opacity: 0.35; pointer-events: none; }
+
+/* The repeat flag reads as armed at a glance: accent icon, rate, tint and outline. It
+   cannot flip while repeating, its rate still can. */
+.icon-button.flag           { gap: 4dp; font-size: 11dp; border: 1dp transparent; }
+.icon-button.flag.on        { color: var(--accent); background-color: var(--accent-bg); border-color: var(--accent); }
+.icon-button.flag.locked icon { opacity: 0.35; }
+.rate {
+	padding: 0dp 2dp;
+	text-align: right;
+	border-radius: 2dp;
+	cursor: text;
+}
+.rate:focus { background-color: var(--panel3); }
+
+/* ------------------------------------------------------------------------ visuals */
+
+/* One card per shown field. The name and the close button sit over the drawing. */
+.viz-card, viz .multi-cell {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	background-color: var(--viz-bg);
+	border: 1dp var(--border);
+}
+.viz-card { border-radius: 6dp; }
+
+.viz-name {
+	position: absolute;
+	top: 5dp;
+	left: 8dp;
+	font-size: 11dp;
+	color: var(--text);
+}
+
+/* The pin keeps a card when another topic is selected. Faint until pinned. */
+.viz-close, .viz-pin {
+	position: absolute;
+	top: 1dp;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 20dp;
+	height: 20dp;
+	border-radius: 3dp;
+	color: var(--faint);
+}
+.viz-close  { right: 3dp; }
+.viz-pin    { right: 24dp; font-size: 12dp; }
+.viz-pin.on { color: var(--accent); }
+
+/* The buttons show while the pointer is on the card. A pin stays, since it says the card
+   outlives the selection. The value drawn at the top right keeps clear of both. */
+.viz-pin, .viz-close          { opacity: 0; transition: opacity 0.1s; }
+.viz-card:hover .viz-pin,
+.viz-card:hover .viz-close,
+.viz-pin.on                   { opacity: 1; }
+
+/* A card pinned from another topic names that topic before its field. */
+.viz-topic { color: var(--faint); margin-right: 6dp; }
+
+/* A task's progress rides the head's bottom border, so it takes no room. */
+.sidebar.right > .pane-head { position: relative; }
+.head-bar {
+	position: absolute;
+	left: 0dp;
+	right: 0dp;
+	bottom: -1dp;
+	height: 2dp;
+}
+.head-bar div { height: 100%; background-color: var(--green); }
+
+/* The visual itself: a drawing in its content box, or elements for the text visuals, which
+   keep clear of the name at the top. */
+viz {
+	display: block;
+	font-family: ui-mono;
+	font-size: 10dp;
+	color: var(--dim);
+
+	/* What a drawing paints with, read by viz.cpp. */
+	viz-text:   var(--text);
+	viz-dim:    var(--dim);
+	viz-faint:  var(--faint);
+	viz-accent: var(--accent);
+	viz-green:  var(--green);
+	viz-amber:  var(--amber);
+	viz-red:    var(--red);
+	viz-blue:   var(--blue);
+	viz-purple: var(--purple);
+	viz-gray:   var(--gray);
+	viz-panel:  var(--panel3);
+	viz-border: var(--border2);
+	viz-grid:   var(--viz-grid);
+	viz-trail:  var(--viz-trail);
+	viz-ground: var(--viz-ground);
+}
+
+viz.html {
+	display: flex;
+	flex-direction: column;
+	padding: 24dp 8dp 8dp 8dp;
+	overflow-y: auto;
+}
+
+viz .big       { font-size: 22dp; color: var(--text); }
+viz .big.text  { font-size: 15dp; white-space: pre-wrap; }
+viz .hex       { font-size: 11dp; line-height: 1.5; white-space: pre; }
+
+viz .chips { display: flex; flex-wrap: wrap; gap: 4dp; }
+viz .chip {
+	font-size: 11dp;
+	color: var(--text);
+	padding: 2dp 6dp;
+}
+
+/* A bool array: a lamp and the index per element. */
+viz .cells { display: flex; flex-wrap: wrap; gap: 4dp; }
+viz .cells .cell {
+	display: flex;
+	align-items: center;
+	gap: 6dp;
+	padding: 3dp 8dp 3dp 6dp;
+	font-size: 11dp;
+}
+viz .cells .lamp    { width: 10dp; height: 10dp; border-radius: 5dp; background-color: var(--border2); }
+viz .cells .lamp.on { background-color: var(--green); }
+viz .cells .idx  { font-size: 10dp; color: var(--faint); }
+
+/* A matrix: rows of equal cells, since RCSS has no grid. */
+viz .matrix { display: flex; flex-direction: column; gap: 3dp; }
+viz .matrix-row { display: flex; gap: 3dp; }
+viz .matrix-row span {
+	flex: 1;
+	padding: 6dp 4dp;
+	text-align: center;
+	font-size: 12dp;
+	color: var(--text);
+}
+
+/* A struct array: a table that scrolls inside its card. */
+viz .scroll-table {
+	max-height: 300dp;
+	overflow-y: auto;
+	border: 1dp var(--border);
+	border-radius: 3dp;
+}
+/* A nested array's cell is a long line, so a cell wraps inside its column. */
+viz .scroll-table td { color: var(--text); white-space: normal; word-break: break-word; overflow: hidden; }
+
+/* A grid of small copies, each the element's own visual with its own bounds. */
+viz .multi {
+	flex: 1 0 auto;
+	display: flex;
+	flex-wrap: wrap;
+	align-content: stretch;
+	gap: 6dp;
+}
+viz .multi-cell {
+	flex: 1 1 300dp;
+	min-width: 0;
+	min-height: 170dp;
+	border-radius: 4dp;
+}
+viz .multi-cell > viz { flex: 1 1 0; min-height: 0; }
+viz .multi-cell > .idx {
+	position: absolute;
+	top: 6dp;
+	left: 8dp;
+	font-size: 10dp;
+	color: var(--dim);
+}
+
+/* A plain struct's fields, one row each. Not the kv panel component, whose cells grow. */
+viz .pairs { display: flex; flex-direction: column; }
+viz .pair {
+	display: flex;
+	gap: var(--gap);
+	padding: 5dp 0dp;
+	font-size: 11dp;
+}
+viz .pair + .pair  { border-top: 1dp var(--border); }
+viz .pair-key      { color: var(--dim); }
+viz .pair-value    { margin-left: auto; min-width: 0; color: var(--text); text-align: right; word-break: break-word; }
+
+/* What an empty area says it is for. */
+.hint {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 12dp;
+	color: var(--faint);
+}
+
+/* ------------------------------------------------------------------- key / value */
+
+/* A surface holding kv-rows. */
+.panel {
+	background-color: var(--panel2);
+	border: 1dp var(--border);
+	border-radius: 6dp;
+	filter: drop-shadow(var(--shadow-color) 0dp 0dp 5dp);
+}
+
+/* One line of a panel: one or two cells, divided by the border between them. */
+.kv-row {
+	display: flex;
+	border-bottom: 1dp var(--border);
+}
+
+.kv-row:last-child {
+	border-bottom-width: 0dp;
+}
+
+.kv {
+	flex: 1;
+	display: flex;
+	align-items: center;
+	gap: var(--gap);
+	padding: 8dp var(--pad);
+}
+
+.kv + .kv {
+	border-left: 1dp var(--border);
+}
+
+.k {
+	font-size: 11dp;
+	color: var(--dim);
+}
+
+.v {
+	margin-left: auto;
+	font-size: 11dp;
+	color: var(--text);
+	text-align: right;
+}
+
+/* ------------------------------------------------------------------------ table */
+
+/* Titled columns over rows, inside a panel. RmlUi never measures cell content: a column
+   is a fixed width, or a percentage of 100 or more taken as a weight over the rest. So
+   the heading of every column weighs one and a wide one two, and nothing wraps. */
+table {
+	width: 100%;
+}
+
+th {
+	width: 100%;
+	padding: 6dp 8dp;
+	text-align: left;
+	white-space: nowrap;
+	border-bottom: 1dp var(--border);
+}
+
+th.wide { width: 200%; }
+
+td {
+	padding: 8dp 8dp;
+	font-size: 11dp;
+	color: var(--text);
+	white-space: nowrap;
+	border-bottom: 1dp var(--border);
+}
+
+tr:last-child td {
+	border-bottom-width: 0dp;
+}
+
+th.num, td.num { text-align: right; }
+
+/* ------------------------------------------------------------------- scrollbars */
+
+/* RmlUi builds a pane's scrollbar as a block child of the pane and takes its width from
+   RCSS. An unstyled one is as wide as the pane, and that width is subtracted from every
+   child of the pane, which is why an overflowing pane used to collapse to nothing. */
+scrollbarvertical {
+	width: var(--scrollbar);
+}
+
+scrollbarvertical slidertrack {
+	background-color: transparent;
+}
+
+scrollbarvertical sliderbar {
+	margin: 2dp;
+	border-radius: 3dp;
+	background-color: var(--border2);
+}
+
+scrollbarvertical sliderbar:hover,
+scrollbarvertical sliderbar:active {
+	background-color: var(--faint);
+}
+
+/* No arrow buttons, so the arrows take no room. */
+scrollbarvertical sliderarrowdec,
+scrollbarvertical sliderarrowinc {
+	height: 0dp;
+}
+
+/* ------------------------------------------------------------------------ cards */
+
+/* Bordered cells, read rather than picked, two to a row. The basis leaves room for two
+   and the cap stops an odd last cell taking the whole row. */
+.cards {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 5dp;
+}
+
+.card {
+	flex: 1 1 40%;
+	max-width: 50%;
+	min-width: 0;   /* so a long name clips instead of widening the cell */
+	display: flex;
+	align-items: center;
+	gap: 9dp;
+	min-height: 28dp;
+	padding: 4dp var(--pad) 4dp 10dp;
+	background-color: var(--panel2);
+	border: 1dp var(--border);
+	border-radius: var(--radius);
+}
+
+.card .name {
+	font-size: 11dp;
+	color: var(--text);
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+/* ------------------------------------------------------------------------- feed */
+
+/* A stream of stamped lines: the node log now, a message feed later. */
+.feed-row {
+	display: flex;
+	gap: var(--gap);
+	padding: 5dp var(--pad);
+}
+
+.feed-row .dot { margin-top: 5dp; }
+
+.feed-body {
+	display: flex;
+	flex-direction: column;
+	gap: 2dp;
+}
+
+.feed-time { font-size: 10dp; color: var(--faint); }
+.feed-text { font-size: 11dp; color: var(--text); }
+
+/* --------------------------------------------------------------- detail heading */
+
+.detail-head {
+	display: flex;
+	align-items: center;
+	gap: 10dp;
+	margin-bottom: 14dp;
+}
+
+/* --------------------------------------------------------------------------- menu */
+
+/* A popup list of actions or checkboxes. A heading groups the lines under it. */
+.menu {
+	padding: 4dp;
+	background-color: var(--panel2);
+	border: 1dp var(--border2);
+	border-radius: 6dp;
+	filter: drop-shadow(var(--shadow-color) 0dp 0dp 10dp);
+}
+
+.menu-item {
+	display: flex;
+	align-items: center;
+	gap: 8dp;
+	height: 26dp;
+	padding: 0dp 8dp;
+	font-size: 12dp;
+	color: var(--text);
+	border-radius: 4dp;
+}
+
+.menu-item:hover        { background-color: var(--panel3); }
+.menu-item.header:hover { background-color: transparent; }
+
+/* A checkbox: the glyph is always there and shows only when checked, so nothing moves. */
+.menu-box {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 13dp;
+	height: 13dp;
+	border: 1dp var(--faint);
+	border-radius: 3dp;
+	color: transparent;
+}
+.menu-box icon    { font-size: 10dp; }
+.menu-box.on      { color: var(--text); background-color: var(--accent); border-color: var(--accent); }
+.menu-hint {
+	margin-left: auto;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	font-size: 10dp;
+	color: var(--faint);
+}
+.menu-label { flex: 0 0 auto; white-space: nowrap; }

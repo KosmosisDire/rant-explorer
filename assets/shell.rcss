@@ -1,0 +1,270 @@
+/* The application frame and the slots a tab fills. This is the only file that sizes
+   anything.
+
+   The whole layout is flex with definite bases, no percentages except where the parent's
+   size is already definite. Two documented RCSS rules say why (rcss/flexboxes.md):
+     - `flex: 1` is `1 1 0`. `flex: 1 1 auto` is a shrink-to-fit basis, which leaves a pane
+       as wide as its own text.
+     - stretched items are not reformatted, so a child sized in percent against a merely
+       stretched parent measures the pre-stretch box. */
+
+body {
+	display: flex;
+	flex-direction: column;
+}
+
+/* ------------------------------------------------------------------- the frame */
+
+#topbar {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 10dp;
+	height: 42dp;
+	padding-left: 10dp;
+	background-color: var(--panel);
+	border-bottom: 1dp var(--border);
+	filter: drop-shadow(var(--shadow-color) 0dp 0dp 10dp);
+	z-index: 1000;
+}
+
+#logo {
+	width: 26dp;
+	height: 26dp;
+	filter: drop-shadow(var(--shadow-color) 0dp 0dp 10dp);
+}
+
+/* The auto margin pushes everything after the tabs to the right edge. */
+#tabs {
+	display: flex;
+	height: 100%;
+	margin-right: auto;
+}
+
+/* The active tab is told by colour and an accent underline, never by weight or a fill.
+   The underline is always there, transparent while off, so nothing moves. */
+.tab {
+	display: flex;
+	align-items: center;
+	gap: 7dp;
+	height: 100%;
+	padding: 0dp 13dp;
+	font-size: 13dp;
+	font-weight: 600;
+	color: var(--dim);
+	border-bottom: 2dp transparent;
+	transition: color 0.12s;
+}
+
+/* One line between neighbours and none at the ends. */
+.tab:not(:last-child) {
+	border-right: 1dp var(--border);
+}
+
+.tab:hover  { color: var(--text); }
+.tab.on     { color: var(--text); border-bottom-color: var(--accent); }
+.tab icon   { font-size: 15dp; }
+.tab .count { font-size: 10dp; font-weight: normal; color: var(--faint); }
+
+#theme-toggle {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 30dp;
+	height: 30dp;
+	border-radius: var(--radius);
+	font-size: 16dp;
+	color: var(--dim);
+}
+
+#theme-toggle:hover { color: var(--text); background-color: var(--panel3); }
+
+/* The window's own buttons, the topbar being its title bar. They run the full height to
+   the right edge, where a flung pointer lands on close. */
+#window-buttons {
+	display: flex;
+	height: 100%;
+	border-left: 1dp var(--border);
+}
+
+.window-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 46dp;
+	height: 100%;
+	font-size: 15dp;
+	color: var(--dim);
+	transition: color background-color 0.1s;
+}
+
+.window-button:hover       { color: var(--text); background-color: var(--panel3); }
+.window-button.close:hover { color: var(--on-fill); background-color: var(--red); }
+
+.window-button.close icon { font-size: 17dp;}
+.window-button.maximize icon { font-size: 13dp;}
+
+#statusbar {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: var(--gap);
+	height: 26dp;
+	padding: 0dp 14dp;
+	font-size: 11dp;
+	color: var(--dim);
+	background-color: var(--panel);
+	border-top: 1dp var(--border);
+	z-index: 1000;
+}
+
+/* What hot reload or a copy just did, or what RmlUi complained about while parsing. */
+#note { color: var(--accent); }
+
+/* ------------------------------------------------------------------- tab slots */
+
+/* The height the two bars leave. A zero basis keeps this off the content, which would
+   otherwise grow the column and push the status bar off screen. */
+#content {
+	flex: 1;
+	/* In column mode RmlUi gives a flex item an automatic minimum size equal to its
+	   content, so a long enough tab refuses to shrink, overflows the column and shoves the
+	   status bar off. This opts out, handing the overflow to the pane that scrolls. */
+	min-height: 0;
+	display: flex;
+}
+
+/* One tab: a row of sidebars, splitters and the detail pane. A tab may leave any out. */
+.tab-content {
+	flex: 1;
+	height: 100%;
+	display: flex;
+}
+
+/* A sidebar is a column: an optional head, the body that scrolls, an optional foot. */
+.sidebar {
+	flex: 0 0 auto;
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+	background-color: var(--panel);
+	filter: drop-shadow(var(--shadow-color) 0dp 0dp 15dp);
+	padding-top: var(--pad);
+}
+
+.sidebar.left  { width: var(--sidebar-left); }
+.sidebar.right { width: var(--sidebar-right); }
+
+/* The edge between a sidebar and the detail pane, over both so its grip reaches past it. */
+.splitter { z-index: 500; }
+
+/* The pane is only the slot. Its .pane-body child is what scrolls and carries the padding. */
+.detail {
+	flex: 1;
+	height: 100%;
+	padding-top: var(--pad);
+}
+
+.pane-head {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 6dp;
+	height: 40dp;
+	padding: 0dp 10dp 0dp var(--pad);
+	border-bottom: 1dp var(--border);
+}
+
+.pane-head .section {
+	margin: 0dp;
+	margin-right: auto;
+}
+
+.pane-head .filter {
+	flex: 1;
+}
+
+.pane-foot {
+	flex: 0 0 auto;
+	padding: var(--pad);
+	border-top: 1dp var(--border);
+}
+
+.pane-foot .section {
+	margin: 0dp;
+}
+
+/* The scrolling body of a pane. Each one scrolls itself, so nothing else in the tree
+   needs an overflow rule. */
+.pane-body {
+	width: 100%;
+	overflow-y: auto;
+}
+
+.sidebar > .pane-body {
+	flex: 1;
+	min-height: 0;
+}
+
+/* The columns of the topic tree and the value tree, shared by each header and its rows.
+   Each takes its weight's share of the width, and a class on body hides any of them. */
+.tt-cell.c-topic        { flex-grow: var(--c-topic); }
+.tt-cell.c-topic-value  { flex-grow: var(--c-topic-value); }
+.tt-cell.c-topic-rate   { flex-grow: var(--c-topic-rate); }
+.tt-cell.c-topic-jitter { flex-grow: var(--c-topic-jitter); }
+.tt-cell.c-field        { flex-grow: var(--c-field); }
+.tt-cell.c-type         { flex-grow: var(--c-type); }
+.tt-cell.c-value        { flex-grow: var(--c-value); }
+
+body.hide-topic-value .c-topic-value,
+body.hide-topic-rate .c-topic-rate,
+body.hide-topic-jitter .c-topic-jitter,
+body.hide-type .c-type,
+body.hide-value .c-value { display: none; }
+
+.detail > .pane-body {
+	height: 100%;
+	padding: 18dp 18dp 28dp 18dp;
+}
+
+/* The topic feed: the head, then the cards taking the rest of the pane. */
+.detail > .pane-body.feed {
+	display: flex;
+	flex-direction: column;
+}
+
+.feed .detail-head { flex: 0 0 auto; }
+
+/* The cards are tiled by tile_cards in main.cpp, which writes each one's box inline, so
+   the area only has to be the rest of the pane. The visual takes the card's height from a
+   zero basis, so its own size never feeds back. */
+.viz-area {
+	position: relative;
+	flex: 1 1 0;
+	min-height: 0;
+}
+
+.viz-card { position: absolute; }
+
+.viz-card viz { flex: 1 1 0; min-height: 0; }
+
+/* ------------------------------------------------------------------------ menu */
+
+/* The open menu sits on a layer over the whole window, which a press outside it closes.
+   main.cpp places the menu at the pointer and keeps it in the window by these sizes. */
+#menu-layer {
+	position: absolute;
+	left: 0dp;
+	top: 0dp;
+	right: 0dp;
+	bottom: 0dp;
+	z-index: 2000;
+}
+
+#menu-layer .menu {
+	position: absolute;
+	width: 200dp;
+}
+
+/* A sidebar's error line sits between its head and its body and takes what its text needs. */
+.sidebar > .error-text { flex: 0 0 auto; }

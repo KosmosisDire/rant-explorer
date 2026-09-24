@@ -1,0 +1,28 @@
+diff --git a/Source/Core/ElementAnimation.cpp b/Source/Core/ElementAnimation.cpp
+index 1da53683..49369f6b 100644
+--- a/Source/Core/ElementAnimation.cpp
++++ b/Source/Core/ElementAnimation.cpp
+@@ -50,9 +50,23 @@ static Colourb ColourFromLinearSpace(Colourf c)
+ 
+ static Colourb InterpolateColour(Colourb c0, Colourb c1, float alpha)
+ {
++	// Mix in premultiplied form, as CSS does. Otherwise a fade between a translucent and an
++	// opaque colour passes through the translucent colour's channels at full strength.
+ 	Colourf c0f = ColourToLinearSpace(c0);
+ 	Colourf c1f = ColourToLinearSpace(c1);
++	c0f.red *= c0f.alpha;
++	c0f.green *= c0f.alpha;
++	c0f.blue *= c0f.alpha;
++	c1f.red *= c1f.alpha;
++	c1f.green *= c1f.alpha;
++	c1f.blue *= c1f.alpha;
+ 	Colourf c = Mix(c0f, c1f, alpha);
++	if (c.alpha > 0.f)
++	{
++		c.red /= c.alpha;
++		c.green /= c.alpha;
++		c.blue /= c.alpha;
++	}
+ 	return ColourFromLinearSpace(c);
+ }
+ 

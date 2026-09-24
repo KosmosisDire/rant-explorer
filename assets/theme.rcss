@@ -1,0 +1,155 @@
+/* Design tokens and element defaults. Nothing here draws a component: that is
+   components.rcss. The palette mirrors the mockup's CSS variables, greyscale plus one
+   accent. Swap the whole theme with the class on body.
+   RCSS takes the alpha of rgba() as 0 to 255, not 0 to 1. */
+
+*
+{
+	box-sizing: border-box;
+}
+
+/* RmlUi ships no default stylesheet, so every element is inline until told otherwise. */
+div, p {
+	display: block;
+}
+
+input {
+	display: inline-block;
+}
+
+table  { display: table; }
+tr     { display: table-row; }
+td, th { display: table-cell; }
+
+body {
+	--bg:      rgba(20, 20, 20, 255);
+	--panel:   rgba(27, 27, 27, 255);
+	--panel2:  rgba(33, 33, 33, 255);
+	--panel3:  rgba(40, 40, 40, 255);
+	--border:  rgba(42, 42, 42, 255);
+	--border2: rgba(56, 56, 56, 255);
+
+	--text:  rgba(237, 237, 237, 255);
+	--dim:   rgba(154, 154, 154, 255);
+	--faint: rgba(100, 100, 100, 255);
+
+	--accent:    rgba(220, 56, 83, 255);
+	--accent-bg: rgba(220, 56, 83, 38);
+	--on-fill:   rgba(255, 255, 255, 255);   /* text and marks on an accent or red fill, both palettes */
+
+	--green: rgba(55, 136, 95, 255);
+	--green-hi: rgba(92, 166, 125, 255);
+	--amber: rgba(207, 154, 58, 255);
+	--red:   rgba(210, 87, 75, 255);
+	--gray:  rgba(116, 116, 124, 255);
+
+	--green-bg: rgba(55, 136, 95, 36);
+	--red-bg:   rgba(210, 87, 75, 41);
+
+	--shadow-color: rgba(10, 0, 0, 100);
+
+	/* Every other row of a tree, barely there. */
+	--stripe: rgba(0,0,0,20);
+	--cell-hover: rgba(255, 255, 255, 10);
+
+	/* A visual's card, a shade under the pane so the drawing has contrast. The grid is
+	   translucent so a line across a filled run tints it instead of cutting through it. */
+	--viz-bg:     rgba(15, 15, 15, 255);
+	--viz-grid:   rgba(255, 255, 255, 18);
+	--viz-trail:  rgba(122, 53, 65, 255);
+	--viz-ground: rgba(74, 74, 74, 255);
+	--blue:       rgba(74, 143, 214, 255);
+	--purple:     rgba(154, 111, 214, 255);
+
+	/* The one rhythm every component measures against. */
+	--gap:    8dp;
+	--pad:    12dp;
+	--radius: 5dp;
+	--row:    28dp;   /* a tree table row, measured at runtime by the windowing */
+	--head:   24dp;   /* a tree table header */
+	--scrollbar: 8dp;
+
+	/* The shell slots, so a tab never hard codes a width. A splitter drag overrides them
+	   inline on body. */
+	--sidebar-left:  470dp;
+	--sidebar-right: 340dp;
+
+	/* The tree table columns' weights, each column's share of its table's width, overridden
+	   the same way when a header edge is dragged. */
+	--c-topic:        208;
+	--c-topic-value:  110;
+	--c-topic-rate:   58;
+	--c-topic-jitter: 62;
+	--c-field:        120;
+	--c-type:         84;
+	--c-value:        104;
+}
+
+body.light {
+	--bg:      rgba(244, 244, 244, 255);
+	--panel:   rgba(255, 255, 255, 255);
+	--panel2:  rgba(244, 244, 244, 255);
+	--panel3:  rgba(236, 236, 236, 255);
+	--border:  rgba(225, 220, 220, 255);
+	--border2: rgba(240, 235, 235, 240);
+
+	--text:  rgba(25, 25, 25, 255);
+	--dim:   rgba(94, 94, 94, 255);
+	--faint: rgba(154, 154, 154, 255);
+
+	--accent:    rgba(145, 12, 90, 255);
+	--accent-bg: rgba(145, 12, 90, 26);
+
+	--green: rgba(49, 123, 85, 255);
+	--green-hi: rgba(82, 153, 114, 255);
+	--amber: rgba(169, 121, 31, 255);
+	--red:   rgba(207, 59, 45, 255);
+	--gray:  rgba(154, 154, 154, 255);
+
+	--green-bg: rgba(49, 123, 85, 28);
+	--red-bg:   rgba(207, 59, 45, 26);
+
+	--shadow-color: rgba(5, 0, 0, 25);
+
+	--stripe: rgba(0, 0, 0, 6);
+	--cell-hover: rgba(0, 0, 0, 10);
+
+	--viz-bg:     rgba(250, 250, 250, 255);
+	--viz-grid:   rgba(0, 0, 0, 20);
+	--viz-trail:  rgba(214, 160, 190, 255);
+	--viz-ground: rgba(186, 186, 186, 255);
+	--blue:       rgba(37, 110, 190, 255);
+	--purple:     rgba(120, 78, 190, 255);
+}
+
+/* The type scale, in the mockup's CSS px. main.cpp registers the OS fonts under these
+   two family names, so one stylesheet serves every platform. */
+body {
+	font-family: ui-sans;
+	font-size: 13dp;
+	color: var(--text);
+	background-color: var(--bg);
+	width: 100%;
+	height: 100%;
+	/* The panes scroll, never the document: without this the tall detail pane pushes the
+	   top bar off the screen. */
+	overflow: hidden;
+}
+
+.small   { font-size: 11dp; }
+.value   { font-size: 14dp; }
+.title   { font-size: 15dp; }
+.hero    { font-size: 19dp; font-weight: bold; }
+
+.mono { font-family: ui-mono; }
+
+.dim   { color: var(--dim); }
+.faint { color: var(--faint); }
+
+/* The four status words. Every component that carries status reads the same four, so a
+   green dot and a green badge are green for the same reason. A component that needs a
+   background too redefines them against its own surface. */
+.ok   { color: var(--green); }
+.warn { color: var(--amber); }
+.bad  { color: var(--red); }
+.idle { color: var(--gray); }

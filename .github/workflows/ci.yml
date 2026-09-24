@@ -1,0 +1,79 @@
+# Builds the explorer on Windows, Linux and macOS for every push to main and every pull
+# request. A pushed tag v<VERSION> also attaches one zip per platform to a GitHub Release.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  # Linux builds on ubuntu-22.04 so the binary runs on glibc 2.35 and newer.
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, name: win-x64,   preset: windows }
+          - { os: ubuntu-22.04,   name: linux-x64, preset: linux }
+          - { os: macos-latest,   name: osx-arm64, preset: macos }
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
+
+      # Ninja, plus the X11, Wayland and GL headers SDL3 compiles against.
+      - name: Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev libegl1-mesa-dev \
+            libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev libxfixes-dev \
+            libxkbcommon-dev libxss-dev libxtst-dev libwayland-dev wayland-protocols
+
+      - name: macOS build deps
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Build
+        run: |
+          cmake --preset ${{ matrix.preset }}
+          cmake --build --preset ${{ matrix.preset }}
+
+      - name: Zip
+        shell: bash
+        run: |
+          mkdir -p out/rant-explorer
+          cp bin/rant_explorer out/rant-explorer/ 2>/dev/null || cp bin/rant_explorer.exe out/rant-explorer/
+          cp -r bin/assets README.md out/rant-explorer/
+          ls -R out/rant-explorer
+          cd out && cmake -E tar cf "../rant-explorer-$(cat ../VERSION)-${{ matrix.name }}.zip" --format=zip rant-explorer
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rant-explorer-${{ matrix.name }}
+          path: rant-explorer-*.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/rant-explorer-*/*.zip
+          generate_release_notes: true

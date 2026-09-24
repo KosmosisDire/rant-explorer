@@ -1,0 +1,14 @@
+diff --git a/Source/Core/DataViewDefault.cpp b/Source/Core/DataViewDefault.cpp
+index e54fb41a..529879c2 100644
+--- a/Source/Core/DataViewDefault.cpp
++++ b/Source/Core/DataViewDefault.cpp
+@@ -424,7 +424,8 @@ String DataViewText::BuildText() const
+ 	return result;
+ }
+ 
+-DataViewFor::DataViewFor(Element* element) : DataView(element, 0) {}
++// Ahead of the other views on its element, which may read the alias of an element it removes.
++DataViewFor::DataViewFor(Element* element) : DataView(element, -1) {}
+ 
+ bool DataViewFor::Initialize(DataModel& model, Element* element, const String& in_expression, const String& /*modifier*/)
+ {

@@ -3,10 +3,8 @@
 #ifndef ICONS_HPP
 #define ICONS_HPP
 
-#include <string>
-
-/* Load assets/lucide.ttf as the "lucide" family and the codepoint table beside it, then
-   register the element. False when either file failed, the element still exists. */
-bool icons_init(const std::string& assets_dir);
+/* Load the asset lucide.ttf as the "lucide" family and its codepoint table, then register
+   the element. False when either file failed, the element still exists. */
+bool icons_init();
 
 #endif /* ICONS_HPP */

@@ -1,6 +1,7 @@
 /* The explorer shell: an SDL3 window with an OpenGL 3 context, RmlUi laying out the
    documents in assets/, and one Rant node watching the mesh beside it. */
 
+#include "assets.hpp"
 #include "capture.hpp"
 #include "clipboard.hpp"
 #include "decorators.hpp"
@@ -33,7 +34,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <filesystem>
 #include <functional>
 #include <map>
 #include <set>
@@ -49,31 +49,6 @@ float read_zoom()
     if (!env) return 1.0f;
     float z = (float)std::atof(env);
     return (z >= 0.5f && z <= 4.0f) ? z : 1.0f;
-}
-
-/* Where the RML, RCSS and images live, in the order they are tried:
-
-     RANT_UI_ASSETS        an explicit override
-     the source tree       the assets/ this exe was built from, when it is still there, so
-                           editing one reloads in the running window with nothing to set up
-     beside the exe        what CMake copied, which is what a shipped build has
-
-   The source directory wins over the copy on purpose: the copy is a build artifact and is
-   stale the moment a stylesheet is edited. */
-std::string assets_dir()
-{
-    if (const char* env = std::getenv("RANT_UI_ASSETS")) return std::string(env) + "/";
-
-#ifdef RANT_UI_SOURCE_ASSETS
-    {
-        std::error_code ec;
-        if (std::filesystem::is_directory(RANT_UI_SOURCE_ASSETS, ec))
-            return std::string(RANT_UI_SOURCE_ASSETS) + "/";
-    }
-#endif
-
-    if (const char* base = SDL_GetBasePath()) return std::string(base) + "assets/";
-    return "assets/";
 }
 
 /* The stylesheet names two families. Registering the OS files under our own names keeps
@@ -115,7 +90,8 @@ class ExplorerRenderInterface : public RenderInterface_GL3 {
 public:
     Rml::TextureHandle LoadTexture(Rml::Vector2i& dimensions, const Rml::String& source) override
     {
-        Image image = image_load(source);
+        std::string file;
+        Image image = asset_read(source, file) ? image_decode(file) : Image();
         if (!image.valid()) return RenderInterface_GL3::LoadTexture(dimensions, source);
         image_premultiply(image);   /* RmlUi composites with premultiplied alpha */
         dimensions = Rml::Vector2i(image.width, image.height);
@@ -733,13 +709,14 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    const std::string assets = assets_dir();
-    std::fprintf(stderr, "assets: %s", assets.c_str());
+    assets_init();
+    std::fprintf(stderr, "assets: %s", assets_dir().empty() ? "embedded" : assets_dir().c_str());
     std::fputc(10, stderr);
 
     /* The taskbar and title bar icon. The exe's own file icon is Logo.ico, through the
        resource script. Straight alpha here: SDL blends the surface itself. */
-    Image icon = image_load(assets + "Logo.png");
+    std::string logo;
+    Image icon = asset_read("Logo.png", logo) ? image_decode(logo) : Image();
     if (icon.valid()) {
         SDL_Surface* surface = SDL_CreateSurfaceFrom(icon.width, icon.height,
                                                      SDL_PIXELFORMAT_RGBA32,
@@ -773,11 +750,12 @@ int main(int argc, char** argv)
 
     Rml::SetSystemInterface(&system_interface);
     Rml::SetRenderInterface(&render_interface);
+    Rml::SetFileInterface(&assets_file_interface());
     Rml::Initialise();
 
     if (!load_fonts())
         std::fprintf(stderr, "warning: a system font failed to load, text may be missing\n");
-    if (!icons_init(assets))
+    if (!icons_init())
         std::fprintf(stderr, "warning: the icon font failed to load, icons will be missing\n");
     decorators_init();
 
@@ -1728,7 +1706,7 @@ int main(int argc, char** argv)
         document->AddEventListener(Rml::EventId::Dblclick, &triple_click);
     };
 
-    const Rml::String document_path = Rml::String(assets) + "shell.rml";
+    const Rml::String document_path = "shell.rml";
     Rml::ElementDocument* document = context->LoadDocument(document_path);
     if (!document) {
         std::fprintf(stderr, "could not load %s\n", document_path.c_str());
@@ -1752,7 +1730,7 @@ int main(int argc, char** argv)
     int         value_first = -1, value_last = -1;
 
     /* Hot reload: an edited RML or RCSS is picked up without a rebuild, and F5 forces it. */
-    AssetWatcher watcher(assets);
+    AssetWatcher watcher(assets_dir());
     bool         reload_now = false;
 
     bool running = true;

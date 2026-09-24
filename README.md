@@ -11,9 +11,9 @@ Clay and SDL3.
 ```
 
 `F12` toggles the RmlUi debugger and `F5` reloads the assets. `RANT_UI_ZOOM` scales the
-whole UI. An exe built here reads the RML and RCSS from this tree's `assets/`, so an edit
-shows in the running window. A copied exe reads the `assets/` beside it, and
-`RANT_UI_ASSETS` points at any other directory.
+whole UI. The exe carries its `assets/` embedded, so a copy runs on its own. An exe built
+here reads the RML and RCSS from this tree's `assets/` instead, so an edit shows in the
+running window. `RANT_UI_ASSETS` points at any other directory.
 
 ## Build
 
@@ -31,18 +31,16 @@ cmake --preset windows
 cmake --build --preset windows
 ```
 
-Use `linux` on Linux and `macos` on macOS. Executables land in `bin/`, with `assets/`
-copied beside them. CPM fetches the Rant release pinned in `CMakeLists.txt` plus FreeType,
-SDL3, RmlUi and the video decoders (openh264, dav1d, libde265), all built static from
-source. libde265 is LGPL 3. The `-local` presets build against the `../rant` working tree
-instead. Set `CPM_SOURCE_CACHE` to share the downloads between build trees.
+Use `linux` on Linux and `macos` on macOS. The executable lands in `bin/`. CPM fetches the
+Rant release pinned in `CMakeLists.txt` plus FreeType, SDL3, RmlUi and the video decoders
+(openh264, dav1d, libde265), all built static from source. libde265 is LGPL 3. The
+`-local` presets build against the `../rant` working tree instead. Set `CPM_SOURCE_CACHE`
+to share the downloads between build trees.
 
 ## Release
 
 `.github/workflows/ci.yml` builds Windows, Linux and macOS on every push. To release, bump
-`VERSION` and push the tag `v<VERSION>`: the workflow attaches one zip per platform, the
-exe with its `assets/`. The macOS build is unsigned, so clear the quarantine flag with
-`xattr -dr com.apple.quarantine rant-explorer` before the first run.
+`VERSION` and push the tag `v<VERSION>`: the workflow attaches the exe of each platform.
 
 ## Status
 

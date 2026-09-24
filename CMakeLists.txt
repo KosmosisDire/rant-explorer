@@ -95,8 +95,8 @@ foreach(_stb stb_image.h stb_image_write.h)
 endforeach()
 
 # Lucide as an icon font: one glyph per icon, drawn by the same font engine as the text.
-# The font and its name to codepoint table land in assets/ beside Logo.png, so both copies
-# of that directory carry them. The zip name holds the version, so a bump refetches.
+# The font and its name to codepoint table land in assets/ beside Logo.png, so the exe
+# embeds them with the rest. The zip name holds the version, so a bump refetches.
 set(LUCIDE_VERSION 1.47.0)
 set(LUCIDE_ZIP "${DEPS}/lucide-font-${LUCIDE_VERSION}.zip")
 set(ASSETS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
@@ -124,8 +124,21 @@ endif()
 # which owns its own window and loop.
 set(RMLUI_BACKENDS "${RmlUi_SOURCE_DIR}/Backends")
 
+# Every file in assets/ as a byte array, so a release is the exe alone. Regenerated when an
+# asset changes, a new asset needs a reconfigure.
+file(GLOB ASSET_FILES CONFIGURE_DEPENDS "${ASSETS}/*")
+set(ASSETS_EMBEDDED "${CMAKE_BINARY_DIR}/assets_embedded.cpp")
+string(REPLACE ";" "$<SEMICOLON>" _asset_list "${ASSET_FILES}")
+add_custom_command(OUTPUT "${ASSETS_EMBEDDED}"
+  COMMAND "${CMAKE_COMMAND}" "-DOUTPUT=${ASSETS_EMBEDDED}" "-DFILES=${_asset_list}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed.cmake"
+  DEPENDS ${ASSET_FILES} "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed.cmake"
+  COMMENT "embedding assets/"
+  VERBATIM)
+
 add_executable(rant_explorer
   src/main.cpp
+  src/assets.cpp
   src/capture.cpp
   src/clipboard.cpp
   src/decorators.cpp
@@ -140,6 +153,7 @@ add_executable(rant_explorer
   src/values.cpp
   src/video.cpp
   src/viz.cpp
+  "${ASSETS_EMBEDDED}"
   "${rant_SOURCE_DIR}/dist/rant.cpp"              # the one RANT_IMPLEMENTATION anchor
   "${RMLUI_BACKENDS}/RmlUi_Platform_SDL.cpp"
   "${RMLUI_BACKENDS}/RmlUi_Renderer_GL3.cpp")
@@ -147,8 +161,8 @@ add_executable(rant_explorer
 target_include_directories(rant_explorer PRIVATE "${RMLUI_BACKENDS}" "${DEPS}/include" src)
 
 # The assets this tree was built from. A build here reads them directly so an edited RCSS
-# reloads in the running window. A copied exe elsewhere will not find the path and falls
-# back to the assets/ beside it.
+# reloads in the running window. A copied exe elsewhere will not find the path and uses
+# the embedded copy.
 target_compile_definitions(rant_explorer PRIVATE
   RANT_UI_SOURCE_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets")
 
@@ -167,9 +181,3 @@ else()
   target_link_libraries(rant_explorer PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
-# The RML and RCSS live beside the exe, where the running explorer looks for them.
-# RANT_UI_ASSETS overrides the directory.
-add_custom_command(TARGET rant_explorer POST_BUILD
-  COMMAND "${CMAKE_COMMAND}" -E copy_directory
-          "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:rant_explorer>/assets"
-  COMMENT "copying assets/ beside the exe")

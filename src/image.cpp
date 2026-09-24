@@ -13,11 +13,12 @@
 #include <cmath>
 #include <cstring>
 
-Image image_load(const std::string& path)
+Image image_decode(const std::string& file)
 {
     Image image;
     int   channels = 0;
-    stbi_uc* pixels = stbi_load(path.c_str(), &image.width, &image.height, &channels, 4);
+    stbi_uc* pixels = stbi_load_from_memory((const stbi_uc*)file.data(), (int)file.size(),
+                                            &image.width, &image.height, &channels, 4);
     if (!pixels) {
         image.width = image.height = 0;
         return image;

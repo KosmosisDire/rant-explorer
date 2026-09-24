@@ -18,8 +18,8 @@ struct Image {
     bool valid() const { return width > 0 && height > 0; }
 };
 
-/* Decode a PNG (or anything else stb reads) to straight alpha RGBA. Invalid on failure. */
-Image image_load(const std::string& path);
+/* Decode a PNG or JPEG file's bytes to straight alpha RGBA. Invalid on failure. */
+Image image_decode(const std::string& file);
 
 /* RmlUi wants premultiplied alpha for generated textures, SDL wants straight. */
 void image_premultiply(Image& image);

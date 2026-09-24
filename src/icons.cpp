@@ -1,13 +1,14 @@
 #include "icons.hpp"
 
+#include "assets.hpp"
+
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/ElementInstancer.h>
 #include <RmlUi/Core/Factory.h>
 
 #include <cstdlib>
-#include <fstream>
 #include <map>
-#include <sstream>
+#include <string>
 
 namespace {
 
@@ -15,13 +16,10 @@ std::map<std::string, unsigned> codepoints;   /* icon name to its private use co
 
 /* The file is one flat object of "name": number pairs, so a scan for each quoted key and
    the digits after it reads it without a JSON library. */
-bool load_codepoints(const std::string& path)
+bool load_codepoints()
 {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    std::stringstream buffer;
-    buffer << in.rdbuf();
-    const std::string text = buffer.str();
+    std::string text;
+    if (!asset_read("lucide-codepoints.json", text)) return false;
 
     size_t pos = 0;
     while ((pos = text.find('"', pos)) != std::string::npos) {
@@ -60,11 +58,11 @@ Rml::ElementInstancerGeneric<IconElement> instancer;
 
 } /* namespace */
 
-bool icons_init(const std::string& assets_dir)
+bool icons_init()
 {
-    bool ok = Rml::LoadFontFace(assets_dir + "lucide.ttf", "lucide",
+    bool ok = Rml::LoadFontFace("lucide.ttf", "lucide",
                                 Rml::Style::FontStyle::Normal, Rml::Style::FontWeight::Normal);
-    ok = load_codepoints(assets_dir + "lucide-codepoints.json") && ok;
+    ok = load_codepoints() && ok;
     Rml::Factory::RegisterElementInstancer("icon", &instancer);
     return ok;
 }

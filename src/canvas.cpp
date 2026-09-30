@@ -164,10 +164,13 @@ float Canvas::text_width(const std::string& s, float size_dp) const
     return (float)Rml::GetFontEngineInterface()->GetStringWidth(face, s, Rml::TextShapingContext{ no_language() });
 }
 
-void Canvas::picture(float x, float y, float w, float h, Rml::Texture texture, Rml::Vector2i texels)
+void Canvas::picture(float x, float y, float w, float h, Rml::Texture texture, Rml::Vector2i texels,
+                     Rml::Vector2f from, Rml::Vector2f to)
 {
     const Rml::Vector2f inset(0.5f / std::max(1, texels.x), 0.5f / std::max(1, texels.y));
-    pictures_.push_back(Picture{ { x, y }, { w, h }, texture, inset });
+    from = Rml::Vector2f(std::max(from.x, inset.x), std::max(from.y, inset.y));
+    to   = Rml::Vector2f(std::min(to.x, 1 - inset.x), std::min(to.y, 1 - inset.y));
+    pictures_.push_back(Picture{ { x, y }, { w, h }, texture, from, to });
 }
 
 void Canvas::render()
@@ -183,7 +186,7 @@ void Canvas::render()
     for (const Picture& p : pictures_) {
         Rml::Mesh quad;
         Rml::MeshUtilities::GenerateQuad(quad, p.at, p.size, Rml::ColourbPremultiplied(255, 255, 255, 255),
-                                         p.inset, Rml::Vector2f(1, 1) - p.inset);
+                                         p.from, p.to);
         rm->MakeGeometry(std::move(quad)).Render(origin_, p.texture);
     }
     if (!mesh_.indices.empty()) {

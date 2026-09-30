@@ -645,8 +645,10 @@ viz, mesh-graph {
 	viz-ground: var(--viz-ground);
 }
 
-/* A 3D scene orbits when dragged. */
-viz.orbit { drag: drag; cursor: move; }
+/* A 3D scene orbits when dragged, and a zoomed picture pans. */
+viz.orbit       { drag: drag; cursor: move; }
+viz.pans        { drag: drag; }
+viz.pans.zoomed { cursor: move; }
 
 viz.html {
 	display: flex;

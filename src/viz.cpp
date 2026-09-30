@@ -48,6 +48,9 @@ constexpr float TOP = 22, BOT = 16;
 /* How much history a plot shows and a trail keeps, and how far ahead a twist's path looks. */
 constexpr double PLOT_SECONDS = 10, TRAIL_SECONDS = 30, TWIST_AHEAD = 2;
 
+/* A picture zooms in until one of its texels is this many dp. */
+constexpr float ZOOM_TEXEL = 32;
+
 /* An array up to this long is labelled per element. */
 constexpr size_t LABELLED = 16;
 
@@ -487,6 +490,12 @@ void curl(Canvas& c, const Scene& s, const V3& axis, double rho, double sweep, R
 
 /* ------------------------------------------------------------------ the element */
 
+/* A picture pans and zooms. */
+bool is_picture(Visual v)
+{
+    return v == Visual::Image || v == Visual::Video;
+}
+
 bool is_scene(Visual v)
 {
     switch (v) {
@@ -533,11 +542,11 @@ public:
         for (const Rml::EventId id : GESTURES) RemoveEventListener(id, this);
     }
 
-    /* A scene's gestures, gathered here and taken by its camera on the next draw. The wheel
-       over a scene zooms it and never scrolls the pane. */
+    /* A scene's or a picture's gestures, gathered here and taken on the next draw. The
+       wheel over either zooms it and never scrolls the pane. */
     void ProcessEvent(Rml::Event& event) override
     {
-        if (!is_scene(visual_)) return;
+        if (!is_scene(visual_) && !is_picture(visual_)) return;
         const Rml::Vector2f at(event.GetParameter<float>("mouse_x", 0.f), event.GetParameter<float>("mouse_y", 0.f));
         switch (event.GetId()) {
         case Rml::EventId::Dragstart:
@@ -549,6 +558,7 @@ public:
             break;
         case Rml::EventId::Mousescroll:
             wheel_ += event.GetParameter<float>("wheel_delta_y", 0.f);
+            wheel_at_ = at;
             event.StopPropagation();
             break;
         case Rml::EventId::Dblclick:
@@ -657,6 +667,8 @@ private:
 
         SetClass("html", is_html(visual));
         SetClass("orbit", is_scene(visual));
+        SetClass("pans", is_picture(visual));
+        view_frame_ = Rml::Vector2f(0, 0);   /* the next picture starts fitted */
         if (!is_html(visual)) SetInnerRML("");
         if (visual == Visual::None) html("none", "<span class=\"faint\">waiting for a value</span>");
     }
@@ -1395,18 +1407,40 @@ private:
     }
 
     /* The picture fitted inside the card above bottom, keeping its shape, or why there is
-       none in its middle. */
+       none in its middle. The wheel zooms about the pointer until a texel is ZOOM_TEXEL dp,
+       a drag pans while zoomed, and a double click or a new frame size fits it again. */
     void fit(Canvas& c, float bottom, const std::string& why)
     {
         const float x0 = c.dp(8), y0 = c.dp(24), w = c.w() - c.dp(16), h = bottom - y0;
+        SetClass("zoomed", texture_ && zoom_ > 1);
         if (!texture_ || w < 1 || h < 1) {
             c.text(why, c.w() / 2, c.h() / 2, Canvas::Center, ink.faint, 11);
             return;
         }
-        const float k  = std::min(w / frame_size_.x, h / frame_size_.y);
-        const float pw = frame_size_.x * k, ph = frame_size_.y * k;
-        c.picture(std::round(x0 + (w - pw) / 2), std::round(y0 + (h - ph) / 2), std::round(pw), std::round(ph),
-                  texture_, frame_size_);
+        const Rml::Vector2f frame((float)frame_size_.x, (float)frame_size_.y);
+        const Rml::Vector2f middle(x0 + w / 2, y0 + h / 2);
+        const float k = std::min(w / frame.x, h / frame.y);
+        if (reset_ || frame != view_frame_) {
+            zoom_       = 1;
+            centre_     = frame * 0.5f;
+            view_frame_ = frame;
+        }
+        if (wheel_ != 0) {
+            const Rml::Vector2f p     = wheel_at_ - c.origin() - middle;
+            const Rml::Vector2f under = centre_ + p / (k * zoom_);
+            const float most = std::max(1.f, c.dp(ZOOM_TEXEL) / k);
+            zoom_   = std::max(1.f, std::min(most, zoom_ * std::pow(1.15f, -wheel_)));
+            centre_ = under - p / (k * zoom_);
+        }
+        centre_ -= turn_ / (k * zoom_);
+        const float s = k * zoom_;
+        const Rml::Vector2f seen(std::min(frame.x, w / s), std::min(frame.y, h / s));
+        centre_ = Rml::Vector2f(std::max(seen.x / 2, std::min(frame.x - seen.x / 2, centre_.x)),
+                                std::max(seen.y / 2, std::min(frame.y - seen.y / 2, centre_.y)));
+        const Rml::Vector2f size = seen * s;
+        c.picture(std::round(middle.x - size.x / 2), std::round(middle.y - size.y / 2), std::round(size.x),
+                  std::round(size.y), texture_, frame_size_, (centre_ - seen * 0.5f) / frame,
+                  (centre_ + seen * 0.5f) / frame);
     }
 
 public:
@@ -1483,9 +1517,14 @@ private:
 
     double        dt_ = 0, last_frame_ = 0;
     /* A scene's gestures since the last draw, in window pixels and wheel steps. */
-    Rml::Vector2f last_, turn_{ 0, 0 };
+    Rml::Vector2f last_, turn_{ 0, 0 }, wheel_at_{ 0, 0 };
     float         wheel_ = 0;
     bool          reset_ = false;
+
+    /* a picture's view: its zoom over the fit, the texel at the middle, and the frame size
+       they were for */
+    float         zoom_ = 1;
+    Rml::Vector2f centre_{ 0, 0 }, view_frame_{ 0, 0 };
 
     /* a plot's or a bar chart's range: the extremes seen and the eased bounds drawn */
     bool   seen_ = false, eased_ = false;

@@ -69,9 +69,11 @@ public:
     /* How wide text would draw, in pixels. */
     float text_width(const std::string& s, float size_dp = 10) const;
 
-    /* A texture stretched over a rectangle, drawn under the shapes and the text. Samples
-       stay half a texel inside the edge, so smoothing never wraps the far edge in. */
-    void picture(float x, float y, float w, float h, Rml::Texture texture, Rml::Vector2i texels);
+    /* A texture, or the window of it from and to span as fractions, stretched over a
+       rectangle under the shapes and the text. Samples stay half a texel inside the edge,
+       so smoothing never wraps the far edge in. */
+    void picture(float x, float y, float w, float h, Rml::Texture texture, Rml::Vector2i texels,
+                 Rml::Vector2f from = { 0, 0 }, Rml::Vector2f to = { 1, 1 });
 
     void render();
 
@@ -79,7 +81,7 @@ private:
     struct Picture {
         Rml::Vector2f at, size;
         Rml::Texture  texture;
-        Rml::Vector2f inset;
+        Rml::Vector2f from, to;   /* the texture coordinates of the corners */
     };
     struct Label {
         std::string  s;

@@ -54,6 +54,12 @@ bool is_branch(const ValueNode& node)
     return node.kind == ValueNode::Struct || node.kind == ValueNode::Array;
 }
 
+bool is_variable_array(const ValueNode& node)
+{
+    return node.kind == ValueNode::Array && node.type.size() > 2 &&
+           node.type.compare(node.type.size() - 2, 2, "[]") == 0;
+}
+
 } /* namespace */
 
 Visual visual_for(const ValueNode& node)
@@ -99,7 +105,7 @@ bool is_open(const ValueNode& node, const ValueView& view)
 {
     const auto choice = view.open.find(node.path);
     if (choice != view.open.end()) return choice->second;
-    return !(node.kind == ValueNode::Array && node.count > Capture::ARRAY_WHOLE);
+    return !node.folded && !(node.kind == ValueNode::Array && node.count > Capture::ARRAY_WHOLE);
 }
 
 std::vector<ValueRow> build_value_rows(const std::vector<ValueNode>& nodes, const ValueView& view,
@@ -113,8 +119,33 @@ std::vector<ValueRow> build_value_rows(const std::vector<ValueNode>& nodes, cons
     const bool bare_branch = !nodes.empty() && nodes[0].path.empty() && is_branch(nodes[0]);
     const int  lift = bare_branch ? 1 : 0;   /* a bare array's elements are the top level */
     int closed_at = INT_MAX;   /* the depth of the closed branch whose children are skipped */
+    /* The open variable arrays of a draft whose add row is still to come, innermost last. */
+    std::vector<int> adds;
+    std::vector<bool> variable;   /* by depth: the last node there is a variable array */
+    auto note = [&](int i) {
+        const ValueNode& node = nodes[i];
+        if ((int)variable.size() <= node.depth) variable.resize(node.depth + 1);
+        variable[node.depth] = view.composing && is_variable_array(node);
+        if (variable[node.depth] && ((i == 0 && bare_branch) || is_open(node, view))) adds.push_back(i);
+    };
+    auto add_rows = [&](int depth) {
+        while (!adds.empty() && nodes[adds.back()].depth >= depth) {
+            const ValueNode& array = nodes[adds.back()];
+            ValueRow row;
+            row.node   = -1;
+            row.add    = true;
+            row.name   = "add";
+            row.path   = array.path;
+            row.indent = tree_indent(array.depth + 1 - lift);
+            row.odd    = rows.size() % 2 == 1;
+            rows.push_back(std::move(row));
+            adds.pop_back();
+        }
+    };
+    if (bare_branch) note(0);
     for (size_t i = bare_branch ? 1 : 0; i < nodes.size(); i++) {
         const ValueNode& node = nodes[i];
+        add_rows(node.depth);
         if (node.depth > closed_at) continue;
         closed_at = INT_MAX;
 
@@ -144,8 +175,7 @@ std::vector<ValueRow> build_value_rows(const std::vector<ValueNode>& nodes, cons
         row.on     = !row.gap && view.shown.count(node.path) > 0;
         if (row.gap)
             row.name = "... " + format_number(node.count) + " more";   /* in the one column never hidden */
-        else if (node.kind == ValueNode::Array && node.type.size() > 2 &&
-                 node.type.compare(node.type.size() - 2, 2, "[]") == 0)
+        else if (is_variable_array(node))
             row.type = node.type + " " + format_number(node.count);   /* a variable array's length */
         else
             row.type = node.type;
@@ -159,9 +189,13 @@ std::vector<ValueRow> build_value_rows(const std::vector<ValueNode>& nodes, cons
             row.width = std::to_string(0.56 * longest + 2.2) + "em";
         }
         if (row.branch && !row.open) closed_at = node.depth;
+        row.remove = node.depth > 0 && node.depth - 1 < (int)variable.size() && variable[node.depth - 1] &&
+                     !node.name.empty() && node.name[0] == '[';
         row.odd = rows.size() % 2 == 1;
         rows.push_back(std::move(row));
+        note((int)i);
     }
+    add_rows(0);
     return rows;
 }
 

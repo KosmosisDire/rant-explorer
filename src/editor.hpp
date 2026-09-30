@@ -45,6 +45,10 @@ public:
     void toggle_repeat();
     /* A topic's draft: frozen from the newest message, or the schema's default before one. */
     void compose(bool on);
+    /* A draft's variable array grows by one element at its end, or loses the element at
+       path. Edits and folds past a removed element move up with it. */
+    void add_element(const std::string& array);
+    void remove_element(const std::string& path);
     /* A draft and its repeat belong to the watch, so leaving the topic ends them. */
     void end_draft();
     void call();
@@ -70,6 +74,7 @@ private:
     void push();
     void send_draft();
     void set_edits();
+    bool resize(uint16_t field, int remove);
     static bool take(bool& flag)
     {
         const bool was = flag;

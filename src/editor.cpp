@@ -151,6 +151,90 @@ void Editor::compose(bool on)
     rows_dirty_ = true;
 }
 
+namespace {
+
+/* Where a key under element k of array goes when k is removed: -1 gone with it, 0 kept as
+   it is, 1 moved to to, one element up. j is the element the key was under. */
+int shift(const std::string& key, const std::string& array, int k, std::string& to, int& j)
+{
+    to = key;
+    const std::string head = array + "[";
+    const size_t close = key.find(']', head.size());
+    if (key.compare(0, head.size(), head) != 0 || close == std::string::npos) return 0;
+    j = std::atoi(key.c_str() + head.size());
+    if (j == k) return -1;
+    if (j < k) return 0;
+    to = head + std::to_string(j - 1) + key.substr(close);
+    return 1;
+}
+
+} /* namespace */
+
+void Editor::add_element(const std::string& array)
+{
+    const ValueNode* n = node(array);
+    if (n && view().composing) resize(n->field, -1);
+}
+
+void Editor::remove_element(const std::string& path)
+{
+    const ValueNode* n = node(path);
+    const size_t open = path.rfind('[');
+    if (!n || !view().composing || open == std::string::npos) return;
+    const std::string array = path.substr(0, open);
+    const ValueNode* a = node(array);
+    if (!a) return;
+    const int    k     = std::atoi(path.c_str() + open + 1);
+    const size_t level = a->elems.size();   /* where a struct array's index sits in a member's elems */
+    if (!resize(n->field, k)) return;
+
+    ValueView& v = view();
+    std::map<std::string, FieldEdit> edits;
+    for (auto& entry : v.edits) {
+        std::string to;
+        int j = 0;
+        const int moved = shift(entry.first, array, k, to, j);
+        if (moved < 0) continue;
+        FieldEdit edit = entry.second;
+        if (moved > 0) {
+            edit.value.path = to;
+            if (to == array + "[" + std::to_string(j - 1) + "]") {
+                edit.value.name = "[" + std::to_string(j - 1) + "]";
+                if (edit.value.element >= 0) edit.value.element = j - 1;
+            }
+            if (edit.value.elems.size() > level) edit.value.elems[level] = (uint32_t)(j - 1);
+        }
+        edits[to] = edit;
+    }
+    v.edits.swap(edits);
+    std::map<std::string, bool> folds;
+    for (const auto& entry : v.open) {
+        std::string to;
+        int j = 0;
+        if (shift(entry.first, array, k, to, j) >= 0) folds[to] = entry.second;
+    }
+    v.open.swap(folds);
+}
+
+bool Editor::resize(uint16_t field, int remove)
+{
+    ValueView& v = view();
+    Capture::Draft draft;
+    draft.message = v.frozen_message;
+    draft.schema  = v.frozen_schema;
+    std::string error;
+    cells_dirty_ = true;
+    if (!capture_.resize(draft, field, remove, error)) {
+        error_ = error;
+        return false;
+    }
+    error_.clear();
+    v.frozen_message = std::move(draft.message);
+    v.frozen         = std::move(draft.nodes);
+    rows_dirty_      = true;
+    return true;
+}
+
 void Editor::end_draft()
 {
     ValueView& v = view();

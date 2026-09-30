@@ -326,7 +326,9 @@ td.held, th.held, .kv.held, [cell].held, viz [cell-path].held { background-color
 }
 
 .value-row.branch .name { color: var(--dim); }
+.value-row.gap          { cursor: pointer; }
 .value-row.gap .name    { color: var(--faint); }
+.value-row.gap:hover .name { color: var(--text); }
 
 /* A number editor's field cell scrubs it when dragged. The name shrinks to its text so
    the dotted underline ends with it. */
@@ -341,7 +343,31 @@ td.held, th.held, .kv.held, [cell].held, viz [cell-path].held { background-color
 .value-row.part .val.busy { color: var(--amber); }
 .value-row.blank .val     { color: var(--faint); }
 .value-row.branch .val,
-.value-row.gap .val     { display: none; }
+.value-row.gap .val,
+.value-row.add .val     { display: none; }
+
+/* A draft's variable array: an add row after its elements, and a remove on each element
+   that shows over the row and holds its room otherwise. */
+.value-row.add .tt-tree        { cursor: pointer; }
+.value-row.add .name,
+.value-row.add .caret          { color: var(--faint); }
+.value-row.add:hover .name,
+.value-row.add:hover .caret    { color: var(--text); }
+.row-remove {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 16dp;
+	height: 16dp;
+	border-radius: 3dp;
+	color: var(--dim);
+	visibility: hidden;
+	cursor: pointer;
+}
+.row-remove icon              { font-size: 12dp; }
+.value-row:hover .row-remove  { visibility: visible; }
+.row-remove:hover             { color: var(--text); background-color: var(--panel3); }
 
 /* The watched type names the value sidebar, in place of its section word. */
 .head-type {
@@ -614,6 +640,9 @@ viz {
 	viz-trail:  var(--viz-trail);
 	viz-ground: var(--viz-ground);
 }
+
+/* A 3D scene orbits when dragged. */
+viz.orbit { drag: drag; cursor: move; }
 
 viz.html {
 	display: flex;

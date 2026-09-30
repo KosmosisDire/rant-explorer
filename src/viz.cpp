@@ -69,8 +69,8 @@ Rml::Colourb palette(long long i)
 /* The strips kept free for text at the top and bottom of a drawing, in dp. */
 constexpr float TOP = 22, BOT = 16;
 
-/* How much history a plot shows and a trail keeps. */
-constexpr double PLOT_SECONDS = 10, TRAIL_SECONDS = 30;
+/* How much history a plot shows and a trail keeps, and how far ahead a twist's path looks. */
+constexpr double PLOT_SECONDS = 10, TRAIL_SECONDS = 30, TWIST_AHEAD = 2;
 
 /* An array up to this long is labelled per element. */
 constexpr size_t LABELLED = 16;
@@ -184,6 +184,27 @@ Quat quat(const Nodes& nodes, int index)
                  number(nodes, index, "w") };
 }
 
+V3 operator+(const V3& a, const V3& b) { return V3{ a.x + b.x, a.y + b.y, a.z + b.z }; }
+V3 operator-(const V3& a, const V3& b) { return V3{ a.x - b.x, a.y - b.y, a.z - b.z }; }
+V3 operator*(const V3& a, double k) { return V3{ a.x * k, a.y * k, a.z * k }; }
+V3 cross(const V3& a, const V3& b) { return V3{ a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }
+double length(const V3& a) { return std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z); }
+
+Quat operator*(const Quat& a, const Quat& b)
+{
+    return Quat{ a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                 a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z };
+}
+
+/* The rotation an angular velocity w makes in t seconds. */
+Quat turned(const V3& w, double t)
+{
+    const double angle = length(w) * t;
+    if (angle < 1e-12) return Quat{};
+    const double k = std::sin(angle / 2) / length(w);
+    return Quat{ w.x * k, w.y * k, w.z * k, std::cos(angle / 2) };
+}
+
 V3 rotate(const Quat& q, const V3& v)
 {
     const double n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
@@ -212,14 +233,16 @@ struct Area {
     float x = 0, y = 0, w = 0, h = 0;
 };
 
-/* A drawing in an element's content box, in its pixels. Shapes collect into one mesh and
-   text into labels, then render draws pictures, the shapes over them and the text last. */
+/* A drawing in an element's content box: pictures, then shapes in one mesh, then text.
+   The mesh is the element's, so its memory is kept from frame to frame. */
 class Canvas {
 public:
     enum Align { Left, Center, Right };
 
-    explicit Canvas(Rml::Element& element) : element_(element)
+    Canvas(Rml::Element& element, Rml::Mesh& mesh) : element_(element), mesh_(mesh)
     {
+        mesh_.vertices.clear();
+        mesh_.indices.clear();
         const Rml::Context* context = element.GetContext();
         ratio_  = context ? context->GetDensityIndependentPixelRatio() : 1.f;
         origin_ = element.GetAbsoluteOffset(Rml::BoxArea::Content);
@@ -281,19 +304,23 @@ public:
 
     void triangle(Rml::Vector2f a, Rml::Vector2f b, Rml::Vector2f c, Rml::Colourb colour)
     {
+        const Rml::ColourbPremultiplied pm = colour.ToPremultiplied();
         const int base = (int)mesh_.vertices.size();
-        for (const Rml::Vector2f& p : { a, b, c }) mesh_.vertices.push_back(vertex(p, colour));
+        for (const Rml::Vector2f& p : { a, b, c }) mesh_.vertices.push_back(vertex(p, pm));
         mesh_.indices.insert(mesh_.indices.end(), { base, base + 1, base + 2 });
     }
 
+    /* A disc with as many sides as its size in pixels needs, 6 for a trail dot, 16 at most. */
     void dot(float x, float y, Rml::Colourb colour, float radius_dp = 3)
     {
         const float r = dp(radius_dp);
-        const int base = (int)mesh_.vertices.size(), sides = 16;
-        mesh_.vertices.push_back(vertex({ x, y }, colour));
+        const int sides = std::max(6, std::min(16, (int)std::lround(r * 3)));
+        const float turn = 6.2831853f / sides;
+        const Rml::ColourbPremultiplied pm = colour.ToPremultiplied();
+        const int base = (int)mesh_.vertices.size();
+        mesh_.vertices.push_back(vertex({ x, y }, pm));
         for (int i = 0; i < sides; i++) {
-            const float a = 6.2831853f * i / sides;
-            mesh_.vertices.push_back(vertex({ x + r * std::cos(a), y + r * std::sin(a) }, colour));
+            mesh_.vertices.push_back(vertex({ x + r * std::cos(turn * i), y + r * std::sin(turn * i) }, pm));
             mesh_.indices.insert(mesh_.indices.end(), { base, base + 1 + i, base + 1 + (i + 1) % sides });
         }
     }
@@ -330,23 +357,44 @@ public:
                                              p.inset, Rml::Vector2f(1, 1) - p.inset);
             rm->MakeGeometry(std::move(quad)).Render(origin_, p.texture);
         }
-        if (!mesh_.indices.empty()) rm->MakeGeometry(std::move(mesh_)).Render(origin_);
+        if (!mesh_.indices.empty()) {
+            Rml::Geometry shapes = rm->MakeGeometry(std::move(mesh_));
+            shapes.Render(origin_);
+            mesh_ = shapes.Release(Rml::Geometry::ReleaseMode::ClearMesh);
+        }
 
+        /* Every label's glyphs join one mesh per font texture, so the text is a draw or two. */
         Rml::FontEngineInterface* fonts = Rml::GetFontEngineInterface();
         static const Rml::String language;
         const Rml::TextShapingContext shaping{ language };
+        std::vector<std::pair<int, Rml::FontFaceHandle>> faces;
+        Rml::TexturedMeshList batches, meshes;
         for (const Label& label : labels_) {
-            const Rml::FontFaceHandle face = fonts->GetFontFaceHandle(
-                "ui-mono", Rml::Style::FontStyle::Normal, Rml::Style::FontWeight::Normal, label.size);
+            auto found = std::find_if(faces.begin(), faces.end(), [&](const auto& f) { return f.first == label.size; });
+            if (found == faces.end()) {
+                faces.emplace_back(label.size, fonts->GetFontFaceHandle("ui-mono", Rml::Style::FontStyle::Normal,
+                                                                        Rml::Style::FontWeight::Normal, label.size));
+                found = faces.end() - 1;
+            }
+            const Rml::FontFaceHandle face = found->second;
             if (!face) continue;
             const float width = (float)fonts->GetStringWidth(face, label.s, shaping);
             const float x = label.align == Right ? label.x - width : label.align == Center ? label.x - width / 2 : label.x;
-            Rml::TexturedMeshList meshes;
+            meshes.clear();
             fonts->GenerateString(*rm, face, 0, label.s, { std::round(x), std::round(label.y) },
                                   label.colour.ToPremultiplied(), 1.f, shaping, meshes);
-            for (Rml::TexturedMesh& mesh : meshes)
-                rm->MakeGeometry(std::move(mesh.mesh)).Render(origin_, mesh.texture);
+            for (Rml::TexturedMesh& mesh : meshes) {
+                auto batch = std::find_if(batches.begin(), batches.end(), [&](const Rml::TexturedMesh& b) { return b.texture == mesh.texture; });
+                if (batch == batches.end()) {
+                    batches.push_back(std::move(mesh));
+                    continue;
+                }
+                const int base = (int)batch->mesh.vertices.size();
+                batch->mesh.vertices.insert(batch->mesh.vertices.end(), mesh.mesh.vertices.begin(), mesh.mesh.vertices.end());
+                for (const int i : mesh.mesh.indices) batch->mesh.indices.push_back(base + i);
+            }
         }
+        for (Rml::TexturedMesh& batch : batches) rm->MakeGeometry(std::move(batch.mesh)).Render(origin_, batch.texture);
         rm->SetState(saved);
     }
 
@@ -364,24 +412,106 @@ private:
         int          size;
     };
 
-    static Rml::Vertex vertex(Rml::Vector2f p, Rml::Colourb colour)
+    static Rml::Vertex vertex(Rml::Vector2f p, Rml::ColourbPremultiplied colour)
     {
-        return Rml::Vertex{ p, colour.ToPremultiplied(), Rml::Vector2f(0, 0) };
+        return Rml::Vertex{ p, colour, Rml::Vector2f(0, 0) };
     }
 
     void quad(Rml::Vector2f a, Rml::Vector2f b, Rml::Vector2f c, Rml::Vector2f d, Rml::Colourb colour)
     {
+        const Rml::ColourbPremultiplied pm = colour.ToPremultiplied();
         const int base = (int)mesh_.vertices.size();
-        for (const Rml::Vector2f& p : { a, b, c, d }) mesh_.vertices.push_back(vertex(p, colour));
+        for (const Rml::Vector2f& p : { a, b, c, d }) mesh_.vertices.push_back(vertex(p, pm));
         mesh_.indices.insert(mesh_.indices.end(), { base, base + 1, base + 2, base, base + 2, base + 3 });
     }
 
     Rml::Element&        element_;
     float                ratio_ = 1;
     Rml::Vector2f        origin_, size_;
-    Rml::Mesh            mesh_;
+    Rml::Mesh&           mesh_;
     std::vector<Label>   labels_;
     std::vector<Picture> pictures_;
+};
+
+/* Dots of one colour and size, one per cell of half their radius: a trail costs the area it
+   covers, not the messages it holds, and looks the same. */
+class Dots {
+public:
+    Dots(Canvas& c, Rml::Colourb colour, float radius_dp)
+        : c_(c), colour_(colour), radius_(radius_dp), cell_(std::max(1.f, c.dp(radius_dp) / 2)),
+          cols_((int)std::ceil(c.w() / cell_) + 1), rows_((int)std::ceil(c.h() / cell_) + 1),
+          taken_((size_t)cols_ * rows_, 0)
+    {
+    }
+
+    void add(Rml::Vector2f p)
+    {
+        if (!(p.x >= 0 && p.y >= 0)) return;   /* off the drawing, or NaN */
+        const int col = (int)(p.x / cell_), row = (int)(p.y / cell_);
+        if (col >= cols_ || row >= rows_) return;
+        uint8_t& cell = taken_[(size_t)row * cols_ + col];
+        if (cell) return;
+        cell = 1;
+        c_.dot(p, colour_, radius_);
+    }
+
+private:
+    Canvas&              c_;
+    Rml::Colourb         colour_;
+    float                radius_, cell_;
+    int                  cols_, rows_;
+    std::vector<uint8_t> taken_;
+};
+
+/* A time series cut to what a pixel column can show: its first, lowest, highest and last
+   points in order. Drawn, it covers the same pixels as every point would. */
+class Columns {
+public:
+    void add(Rml::Vector2f p)
+    {
+        const float col = std::floor(p.x);
+        if (n_ && col == col_) {
+            if (p.y < lo_.p.y) lo_ = { p, n_ };
+            if (p.y > hi_.p.y) hi_ = { p, n_ };
+            last_ = { p, n_ };
+            n_++;
+            return;
+        }
+        flush();
+        col_ = col;
+        first_ = lo_ = hi_ = last_ = { p, 0 };
+        n_ = 1;
+    }
+
+    const std::vector<Rml::Vector2f>& points()
+    {
+        flush();
+        return out_;
+    }
+
+private:
+    struct At {
+        Rml::Vector2f p;
+        int           i = 0;
+    };
+
+    void flush()
+    {
+        if (!n_) return;
+        At keep[4] = { first_, lo_.i < hi_.i ? lo_ : hi_, lo_.i < hi_.i ? hi_ : lo_, last_ };
+        int drawn = -1;
+        for (const At& a : keep)
+            if (a.i > drawn) {
+                out_.push_back(a.p);
+                drawn = a.i;
+            }
+        n_ = 0;
+    }
+
+    std::vector<Rml::Vector2f> out_;
+    float                      col_ = 0;
+    int                        n_ = 0;
+    At                         first_, lo_, hi_, last_;
 };
 
 /* A bound moves toward its target a little each frame, so a new extreme never rescales a
@@ -478,11 +608,11 @@ struct Reach {
 
 /* ------------------------------------------------------------------ the 3D scene */
 
-/* The camera: a yaw and an elevation in degrees. At rest it is isometric. */
+/* The camera: a yaw and an elevation in degrees, and a zoom. At rest it is isometric and
+   the reach meets the edge. Dragging orbits it, the wheel zooms, a double click resets. */
 struct Camera {
-    double a = 45, e = 35;
+    double a = 45, e = 35, zoom = 1;
 };
-constexpr double REST_A = 45, REST_E = 35;
 
 /* A view of a cube around the origin reaching r, z up, scaled so the reach meets the
    area's edge with the origin centred between the text strips. Depth is toward the
@@ -507,7 +637,7 @@ Scene scene(Canvas& c, const Area& a, double r, const Camera& cam)
     s.ca = std::cos(cam.a * rad); s.sa = std::sin(cam.a * rad);
     s.ce = std::cos(cam.e * rad); s.se = std::sin(cam.e * rad);
     s.r  = r;
-    s.k  = std::min(a.w - c.dp(16), a.h - c.dp(TOP + BOT + 4)) / (2 * r);
+    s.k  = std::min(a.w - c.dp(16), a.h - c.dp(TOP + BOT + 4)) / (2 * r) * cam.zoom;
     s.cx = a.x + a.w / 2;
     s.cy = a.y + c.dp(TOP) + (a.h - c.dp(TOP + BOT)) / 2;
     /* the floor grid at a round step, running off the sides where it will */
@@ -536,9 +666,11 @@ void axes(Canvas& c, const Scene& s)
    the part on one side of the depth split. Nothing else is projected. */
 void shadow(Canvas& c, const Scene& s, const V3& v, const std::vector<V3>* trail, bool front)
 {
-    if (trail)
+    if (trail) {
+        Dots dots(c, ink.trail, 1.5f);
         for (const V3& p : *trail)
-            if (s.front(p) == front) c.dot(s(p), ink.trail, 1.5f);
+            if (s.front(p) == front) dots.add(s(p));
+    }
     if (s.front(v) != front) return;
     c.dot(s(v.x, v.y, 0), ink.ground, 2);
     c.dashed(s(v.x, v.y, 0), s(v), ink.ground);
@@ -565,7 +697,35 @@ void triad(Canvas& c, const Scene& s, const V3& at, const Quat& q, double len)
     }
 }
 
+/* A turn about an axis through the origin: an arc of radius rho sweeping sweep radians the
+   way the turn goes by the right hand rule, with a head at its end. */
+void curl(Canvas& c, const Scene& s, const V3& axis, double rho, double sweep, Rml::Colourb colour)
+{
+    const V3 up = std::fabs(axis.z) < 0.9 ? V3{ 0, 0, 1 } : V3{ 1, 0, 0 };
+    const V3 side = cross(up, axis), a = side * (1 / length(side)), b = cross(axis, a);
+    const int steps = 32;
+    Rml::Vector2f last = s(a * rho);
+    for (int i = 1; i <= steps; i++) {
+        const double t = sweep * i / steps;
+        const Rml::Vector2f at = s((a * std::cos(t) + b * std::sin(t)) * rho);
+        if (i < steps) c.line(last, at, colour, 2);
+        else c.arrow(last, at, colour, 2);
+        last = at;
+    }
+}
+
 /* ------------------------------------------------------------------ the element */
+
+bool is_scene(Visual v)
+{
+    switch (v) {
+    case Visual::Vec3: case Visual::Quat: case Visual::Transform: case Visual::Twist:
+    case Visual::Vec3s: case Visual::Transforms:
+        return true;
+    default:
+        return false;
+    }
+}
 
 bool is_html(Visual v)
 {
@@ -594,25 +754,38 @@ class VizElement : public Rml::Element, public Rml::EventListener {
 public:
     explicit VizElement(const Rml::String& tag) : Rml::Element(tag)
     {
-        AddEventListener(Rml::EventId::Mousemove, this);
-        AddEventListener(Rml::EventId::Mouseout, this);
+        for (const Rml::EventId id : GESTURES) AddEventListener(id, this);
     }
 
     ~VizElement() override
     {
-        RemoveEventListener(Rml::EventId::Mousemove, this);
-        RemoveEventListener(Rml::EventId::Mouseout, this);
+        for (const Rml::EventId id : GESTURES) RemoveEventListener(id, this);
     }
 
-    /* The pointer over the element, in the window's pixels, for a scene's camera. */
+    /* A scene's gestures, gathered here and taken by its camera on the next draw. The wheel
+       over a scene zooms it and never scrolls the pane. */
     void ProcessEvent(Rml::Event& event) override
     {
-        if (event.GetId() == Rml::EventId::Mouseout) {
-            pointer_ = false;
-            return;
+        if (!is_scene(visual_)) return;
+        const Rml::Vector2f at(event.GetParameter<float>("mouse_x", 0.f), event.GetParameter<float>("mouse_y", 0.f));
+        switch (event.GetId()) {
+        case Rml::EventId::Dragstart:
+            last_ = at;
+            break;
+        case Rml::EventId::Drag:
+            turn_ += at - last_;
+            last_ = at;
+            break;
+        case Rml::EventId::Mousescroll:
+            wheel_ += event.GetParameter<float>("wheel_delta_y", 0.f);
+            event.StopPropagation();
+            break;
+        case Rml::EventId::Dblclick:
+            reset_ = true;
+            break;
+        default:
+            break;
         }
-        pointer_ = true;
-        pointer_at_ = Rml::Vector2f(event.GetParameter<float>("mouse_x", 0.f), event.GetParameter<float>("mouse_y", 0.f));
     }
 
 protected:
@@ -649,10 +822,9 @@ protected:
         dt_ = last_frame_ > 0 ? std::min(now - last_frame_, 0.5) : 1.0;
         last_frame_ = now;
 
-        Canvas c(*this);
+        Canvas c(*this, shapes_);
         if (c.w() < 1 || c.h() < 1) return;
         read_ink(*this);
-        mouse_ = pointer_ && IsPseudoClassSet("hover") ? pointer_at_ - c.origin() : Rml::Vector2f(-1, -1);
 
         const ValueNode& node = found_ < 0 ? root_ : nodes[found_];
         switch (visual_) {
@@ -662,7 +834,7 @@ protected:
         case Visual::Video:      video(c); break;
         case Visual::Bars:       bars(c, nodes, node); break;
         case Visual::Vec2:       vec2(c, nodes); break;
-        case Visual::Vec3:       vec3(c, c.all(), nodes, found_, path_, 0, true); break;
+        case Visual::Vec3:       vec3(c, nodes); break;
         case Visual::Quat:       quaternion(c, nodes); break;
         case Visual::Transform:  transform(c, nodes); break;
         case Visual::Twist:      twist(c, nodes); break;
@@ -679,9 +851,15 @@ protected:
         default: break;
         }
         c.render();
+        turn_  = Rml::Vector2f(0, 0);
+        wheel_ = 0;
+        reset_ = false;
     }
 
 private:
+    static constexpr Rml::EventId GESTURES[] = { Rml::EventId::Dragstart, Rml::EventId::Drag,
+                                                 Rml::EventId::Mousescroll, Rml::EventId::Dblclick };
+
     /* ---------------------------------------------------------------- building */
 
     void build(const std::string& path, Visual visual)
@@ -696,7 +874,7 @@ private:
         lamp_states_.clear();
         seen_ = eased_ = false;
         reach_[0] = reach_[1] = Reach();
-        cams_[0] = cams_[1] = Camera();
+        cam_ = Camera();
         frame_ = FrameBounds();
         rect_ = RectBounds();
         scale_[0] = scale_[1] = scale_[2] = Reach();
@@ -707,6 +885,7 @@ private:
         last_frame_ = 0;
 
         SetClass("html", is_html(visual));
+        SetClass("orbit", is_scene(visual));
         if (!is_html(visual)) SetInnerRML("");
         if (visual == Visual::None) html("none", "<span class=\"faint\">waiting for a value</span>");
     }
@@ -881,23 +1060,16 @@ private:
         return out;
     }
 
-    /* The camera of one scene: it follows the pointer while it is over the area, relative
-       to the centre, and eases back to rest when it leaves. The top edge is a plan view,
-       the bottom is level and the sides are ninety degrees round, each reached a fifth of
-       the way in. */
-    Camera& camera(int i, const Area& a)
+    /* The camera, moved by the gestures since the last draw and left where they put it.
+       Half a degree per dp dragged, down looks from higher, up to straight down or up. */
+    Camera& camera()
     {
-        double ta = REST_A, te = REST_E;
-        if (inside(mouse_, a.x, a.y, a.x + a.w, a.y + a.h)) {
-            const double m = 0.2;
-            auto sq = [m](double x) { return std::max(-1.0, std::min(1.0, x / (1 - m))); };
-            const double dx = sq((mouse_.x - a.x) / a.w * 2 - 1), dy = sq((mouse_.y - a.y) / a.h * 2 - 1);
-            ta = REST_A + dx * 90;
-            te = std::max(0.0, std::min(90.0, REST_E - dy * (dy < 0 ? 90 - REST_E : REST_E)));
-        }
-        cams_[i].a = ease(cams_[i].a, ta, dt_);
-        cams_[i].e = ease(cams_[i].e, te, dt_);
-        return cams_[i];
+        const float ratio = GetContext() ? GetContext()->GetDensityIndependentPixelRatio() : 1.f;
+        cam_.a -= turn_.x / ratio * 0.5;
+        cam_.e  = std::max(-90.0, std::min(90.0, cam_.e + turn_.y / ratio * 0.5));
+        if (wheel_ != 0) cam_.zoom = std::max(0.25, std::min(8.0, cam_.zoom * std::pow(1.15, -wheel_)));
+        if (reset_) cam_ = Camera();
+        return cam_;
     }
 
     /* ---------------------------------------------------------------- over time */
@@ -928,9 +1100,11 @@ private:
         value_grid(c, x0, x1, lo_, hi_, Y, node.is_float);
         /* The line, cut to the plot so the tail slides off the left edge and a new extreme
            the range has not eased out to yet stays inside. */
-        for (size_t i = 1; i < points.size(); i++) {
-            float ax = X(points[i - 1].t), ay = Y(points[i - 1].v);
-            float bx = X(points[i].t), by = Y(points[i].v);
+        Columns columns;
+        for (const Capture::TracePoint& p : points) columns.add({ X(p.t), Y(p.v) });
+        const std::vector<Rml::Vector2f>& line = columns.points();
+        for (size_t i = 1; i < line.size(); i++) {
+            float ax = line[i - 1].x, ay = line[i - 1].y, bx = line[i].x, by = line[i].y;
             if (clip(ax, ay, bx, by, x0, top, x1, bottom)) c.line(ax, ay, bx, by, ink.accent, 1.5f);
         }
         if (!points.empty()) {
@@ -947,8 +1121,8 @@ private:
         hi_ = ease(hi_, hi, dt_);
     }
 
-    /* A bool or an enum over the last ten seconds: a band coloured per value, equal runs
-       merged and drawn on whole pixels so neighbours meet without a seam. */
+    /* A bool or an enum over ten seconds: a band per run of equal values on whole pixels.
+       A pixel shows the first run to reach it, so a fast toggle costs the width. */
     void state(Canvas& c, const ValueNode& node)
     {
         const auto& points = trace(path_);
@@ -962,12 +1136,16 @@ private:
             return palette((long long)v);
         };
         const float top = c.dp(TOP) + c.dp(4), bottom = c.h() - c.dp(BOT);
+        float drawn = -1;
         for (size_t i = 0; i < points.size();) {
             size_t j = i;
             while (j + 1 < points.size() && points[j + 1].v == points[i].v) j++;
-            const float a = std::floor(X(points[i].t));
+            const float a = std::max(drawn, std::floor(X(points[i].t)));
             const float b = std::ceil(X(j + 1 < points.size() ? points[j + 1].t : now));
-            c.rect(a, top, std::max(1.f, b - a), bottom - top, colour(points[i].v));
+            if (b > a) {
+                c.rect(a, top, b - a, bottom - top, colour(points[i].v));
+                drawn = b;
+            }
             i = j + 1;
         }
         time_grid(c, X, now, c.dp(TOP) + c.dp(2), bottom);
@@ -994,12 +1172,21 @@ private:
         value_grid(c, x0, x1, lo, hi, Y, is_float);
         const float gap = n <= LABELLED ? 0.3f : 0, width = n ? (x1 - x0) / n : 0;
         const float base = Y(std::max(lo_seen_, std::min(0.0, hi_seen_)));
-        for (size_t i = 0; i < n; i++) {
+        /* Bars sharing a pixel column draw as one, spanning their extremes and the base. */
+        for (size_t i = 0; i < n;) {
             /* whole pixel edges, so dense neighbours meet without a seam */
             const float x = std::floor(x0 + i * width + width * gap / 2);
-            const float right = std::floor(x0 + i * width + width * (1 - gap / 2)), y = Y(nodes[items[i]].number);
-            c.rect(x, std::min(y, base), std::max(1.f, right - x), std::max(1.f, std::fabs(y - base)), ink.accent);
-            if (n <= LABELLED) c.text(std::to_string(i), x + width * (1 - gap) / 2, c.h() - c.dp(5), Canvas::Center, ink.faint);
+            float right = std::floor(x0 + i * width + width * (1 - gap / 2));
+            float y_top = std::min(base, Y(nodes[items[i]].number)), y_bot = std::max(base, Y(nodes[items[i]].number));
+            const size_t first = i;
+            for (i++; i < n && std::floor(x0 + i * width + width * gap / 2) == x; i++) {
+                const float y = Y(nodes[items[i]].number);
+                y_top = std::min(y_top, y);
+                y_bot = std::max(y_bot, y);
+                right = std::floor(x0 + i * width + width * (1 - gap / 2));
+            }
+            c.rect(x, y_top, std::max(1.f, right - x), std::max(1.f, y_bot - y_top), ink.accent);
+            if (n <= LABELLED) c.text(std::to_string(first), x + width * (1 - gap) / 2, c.h() - c.dp(5), Canvas::Center, ink.faint);
         }
         (void)node;
         foot(c, c.all(), {}, format_number((double)n) + " values");
@@ -1034,7 +1221,8 @@ private:
         const V3 v = vec(nodes, found_);
         const double r = reach_[0].grow({ v.x, v.y }, dt_);
         const Plane p = plane(c, c.all(), r);
-        for (const V3& t : trail(child_path(path_, "x"), child_path(path_, "y"))) c.dot(p(t.x, t.y), ink.trail, 1.5f);
+        Dots dots(c, ink.trail, 1.5f);
+        for (const V3& t : trail(child_path(path_, "x"), child_path(path_, "y"))) dots.add(p(t.x, t.y));
         c.arrow(p(0, 0), p(v.x, v.y), ink.accent, 2.5f);
         foot(c, c.all(), "x " + f3(v.x) + "  y " + f3(v.y));
     }
@@ -1056,22 +1244,22 @@ private:
 
     /* ---------------------------------------------------------------- scenes */
 
-    /* An arrow from the origin in a scene, its foot, drop line and trail. Twist draws two. */
-    void vec3(Canvas& c, const Area& a, const Nodes& nodes, int index, const std::string& path, int slot, bool readout)
+    /* An arrow from the origin in a scene, its foot, drop line and trail. */
+    void vec3(Canvas& c, const Nodes& nodes)
     {
-        const V3 v = vec(nodes, index);
-        const double r = reach_[slot].grow({ v.x, v.y, v.z }, dt_);
-        const Scene s = scene(c, a, r, camera(slot, a));
-        const std::vector<V3> t = trail(child_path(path, "x"), child_path(path, "y"), child_path(path, "z"));
+        const V3 v = vec(nodes, found_);
+        const double r = reach_[0].grow({ v.x, v.y, v.z }, dt_);
+        const Scene s = scene(c, c.all(), r, camera());
+        const std::vector<V3> t = trail(child_path(path_, "x"), child_path(path_, "y"), child_path(path_, "z"));
         layered(c, s, v, &t, [&] { c.arrow(s(0, 0, 0), s(v), ink.accent, 2.5f); });
         /* a narrow scene has no room for the components */
-        if (readout && a.w >= c.dp(260)) foot(c, a, "x " + f3(v.x) + "  y " + f3(v.y) + "  z " + f3(v.z));
+        if (c.w() >= c.dp(260)) foot(c, c.all(), "x " + f3(v.x) + "  y " + f3(v.y) + "  z " + f3(v.z));
     }
 
     void quaternion(Canvas& c, const Nodes& nodes)
     {
         const Quat q = quat(nodes, found_);
-        const Scene s = scene(c, c.all(), 1, camera(0, c.all()));
+        const Scene s = scene(c, c.all(), 1, camera());
         axes(c, s);
         triad(c, s, V3{}, q, 0.9);
         foot(c, c.all(), euler(q));
@@ -1083,7 +1271,7 @@ private:
         const V3 t = ti >= 0 ? vec(nodes, ti) : V3{};
         const Quat q = ri >= 0 ? quat(nodes, ri) : Quat{};
         const double r = reach_[0].grow({ t.x, t.y, t.z }, dt_);
-        const Scene s = scene(c, c.all(), r, camera(0, c.all()));
+        const Scene s = scene(c, c.all(), r, camera());
         const std::string base = child_path(path_, "translation");
         const std::vector<V3> tr = trail(base + ".x", base + ".y", base + ".z");
         layered(c, s, t, &tr, [&] {
@@ -1093,15 +1281,51 @@ private:
         foot(c, c.all(), "x " + f3(t.x) + "  y " + f3(t.y) + "  z " + f3(t.z) + "  " + euler(q));
     }
 
+    /* A twist in the moving body's frame: velocity arrow, turn curl, the path while it
+       holds, and the turn axis. The path stops short of a second full turn. */
     void twist(Canvas& c, const Nodes& nodes)
     {
-        const float half = (c.w() - c.dp(2)) / 2;
-        const Area left{ 0, 0, half, c.h() }, right{ half + c.dp(2), 0, half, c.h() };
         const int li = kid(nodes, found_, "linear"), ai = kid(nodes, found_, "angular");
-        if (li >= 0) vec3(c, left, nodes, li, child_path(path_, "linear"), 0, false);
-        if (ai >= 0) vec3(c, right, nodes, ai, child_path(path_, "angular"), 1, false);
-        corner(c, left, "linear", ink.dim, 11);
-        corner(c, right, "angular", ink.dim, 11);
+        const V3 v = li >= 0 ? vec(nodes, li) : V3{}, w = ai >= 0 ? vec(nodes, ai) : V3{};
+        const double spin = length(w);
+        const bool turning = spin > 1e-9;
+        const double ahead = turning ? std::min(TWIST_AHEAD, 6.28318530717959 / spin) : TWIST_AHEAD;
+        /* a screw, stepped with each step's travel turned by its middle */
+        std::vector<V3> path{ V3{} };
+        Quat q;
+        const int steps = 64;
+        const double dt = ahead / steps;
+        for (int i = 0; i < steps; i++) {
+            path.push_back(path.back() + rotate(q * turned(w, dt / 2), v * dt));
+            q = q * turned(w, dt);
+        }
+        /* The view holds the path, and the turn centre while it is near enough to read as a
+           turn: a far one would shrink the scene for good, since the reach only grows. */
+        const V3 centre = turning ? cross(w, v) * (1 / (spin * spin)) : V3{};
+        double extent = length(v);
+        for (const V3& p : path) extent = std::max(extent, length(p));
+        auto hold = [this](const V3& p) { reach_[0].seen = std::max({ reach_[0].seen, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z) }); };
+        for (const V3& p : path) hold(p);
+        if (turning && length(centre) <= 2 * extent) hold(centre);
+        const double r = reach_[0].grow({ v.x, v.y, v.z }, dt_);
+        const Scene s = scene(c, c.all(), r, camera());
+
+        if (turning) {
+            const V3 axis = w * (1 / spin);
+            /* a turn centre this far out is a straight run, and its line would leave the view */
+            if (length(centre) < 20 * r) {
+                c.dashed(s(centre - axis * r), s(centre + axis * r), ink.dim);
+                c.dot(s(centre), ink.dim, 3);
+            }
+        }
+        /* its own colour, since a forward run lies along the x axis */
+        for (size_t i = 1; i < path.size(); i++) c.line(s(path[i - 1]), s(path[i]), ink.purple, 1.5f);
+        c.dot(s(path.back()), ink.purple, 2.5f);
+        /* the curl sweeps most of a turn at the fastest turn seen */
+        const double fastest = reach_[1].grow({ spin }, dt_, 1.0);
+        if (turning) curl(c, s, w * (1 / spin), 0.15 * r, 5 * spin / fastest, ink.amber);
+        layered(c, s, v, nullptr, [&] { c.arrow(s(0, 0, 0), s(v), ink.accent, 2.5f); });
+        foot(c, c.all(), "v " + f3(length(v)) + " m/s  \xCF\x89 " + f3(spin) + " rad/s", "next " + print("%.1f", ahead) + " s");
     }
 
     void vec3s(Canvas& c, const Nodes& nodes)
@@ -1110,7 +1334,7 @@ private:
         std::vector<V3> v;
         for (const int i : items) v.push_back(vec(nodes, i));
         for (const V3& e : v) reach_[0].seen = std::max({ reach_[0].seen, std::fabs(e.x), std::fabs(e.y), std::fabs(e.z) });
-        const Scene s = scene(c, c.all(), reach_[0].grow({}, dt_), camera(0, c.all()));
+        const Scene s = scene(c, c.all(), reach_[0].grow({}, dt_), camera());
         std::vector<size_t> order(v.size());
         for (size_t i = 0; i < order.size(); i++) order[i] = i;
         std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return s.depth(v[a]) < s.depth(v[b]); });
@@ -1139,7 +1363,7 @@ private:
         }
         for (const V3& e : t) reach_[0].seen = std::max({ reach_[0].seen, std::fabs(e.x), std::fabs(e.y), std::fabs(e.z) });
         const double r = reach_[0].grow({}, dt_);
-        const Scene s = scene(c, c.all(), r, camera(0, c.all()));
+        const Scene s = scene(c, c.all(), r, camera());
         std::vector<size_t> order(t.size());
         for (size_t i = 0; i < order.size(); i++) order[i] = i;
         std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return s.depth(t[a]) < s.depth(t[b]); });
@@ -1205,8 +1429,12 @@ private:
         std::vector<V3> points = trail(child_path(path_, "lat"), child_path(path_, "lon"));
         if (points.empty()) points.push_back(now);
         map(c, points, [&](auto P, float left, float top, float right, float bottom) {
+            /* a point within half a pixel of the last one drawn adds nothing to the path */
+            Rml::Vector2f from = points.empty() ? Rml::Vector2f() : P(points[0].x, points[0].y);
             for (size_t i = 1; i < points.size(); i++) {
-                Rml::Vector2f a = P(points[i - 1].x, points[i - 1].y), b = P(points[i].x, points[i].y);
+                Rml::Vector2f a = from, b = P(points[i].x, points[i].y);
+                if (i + 1 < points.size() && std::fabs(b.x - a.x) < 0.5f && std::fabs(b.y - a.y) < 0.5f) continue;
+                from = b;
                 if (clip(a.x, a.y, b.x, b.y, left, top, right, bottom)) c.line(a, b, ink.accent, 1.5f);
             }
             const Rml::Vector2f at = P(now.x, now.y);
@@ -1428,10 +1656,9 @@ public:
             return Tile{ 3, 0.5 };
         case Visual::Color:
             return Tile{ 1.5, 0.5 };
-        case Visual::Vec3: case Visual::Quat: case Visual::Transform: case Visual::Vec3s: case Visual::Transforms:
+        case Visual::Vec3: case Visual::Quat: case Visual::Transform: case Visual::Twist:
+        case Visual::Vec3s: case Visual::Transforms:
             return Tile{ 1, 1.5 };
-        case Visual::Twist:
-            return Tile{ 2, 1.5 };   /* two scenes side by side */
         case Visual::Vec2: case Visual::Vec2s: case Visual::Rect: case Visual::Rects:
             return Tile{ 1.3, 1 };
         case Visual::Geo: case Visual::Geos:
@@ -1484,16 +1711,17 @@ private:
     std::vector<int>           lamp_states_;
 
     double        dt_ = 0, last_frame_ = 0;
-    Rml::Vector2f mouse_{ -1, -1 };               /* the pointer in content pixels, off while away */
-    bool          pointer_ = false;
-    Rml::Vector2f pointer_at_;
+    /* A scene's gestures since the last draw, in window pixels and wheel steps. */
+    Rml::Vector2f last_, turn_{ 0, 0 };
+    float         wheel_ = 0;
+    bool          reset_ = false;
 
     /* a plot's or a bar chart's range: the extremes seen and the eased bounds drawn */
     bool   seen_ = false, eased_ = false;
     double lo_seen_ = 0, hi_seen_ = 0, lo_ = 0, hi_ = 0;
 
-    Reach  reach_[2];                             /* a scene's reach, two for a twist */
-    Camera cams_[2];
+    Reach  reach_[2];                             /* a scene's reach, and a twist's fastest turn */
+    Camera cam_;
     Reach  scale_[3];                             /* the joints' column scales */
 
     struct FrameBounds {
@@ -1516,6 +1744,8 @@ private:
     std::unique_ptr<VideoDecoder> decoder_;
     std::string          decoder_topic_;
     uint64_t             decoded_seq_ = 0;
+
+    Rml::Mesh            shapes_;   /* the canvas mesh, kept so its memory is reused */
 };
 
 Rml::ElementInstancerGeneric<VizElement> instancer;
@@ -1543,10 +1773,6 @@ VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>&
         case Visual::Vec2:      add(path, { "x", "y" }); break;
         case Visual::Vec3:      add(path, { "x", "y", "z" }); break;
         case Visual::Transform: add(child_path(path, "translation"), { "x", "y", "z" }); break;
-        case Visual::Twist:
-            add(child_path(path, "linear"), { "x", "y", "z" });
-            add(child_path(path, "angular"), { "x", "y", "z" });
-            break;
         case Visual::Geo:       add(path, { "lat", "lon" }); break;
         case Visual::Video:     out.streams.push_back(path); break;
         default: break;

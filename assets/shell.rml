@@ -209,16 +209,20 @@
 						<div data-for="r, i : value_rows">
 							<div class="tt-row value-row" row="" data-class-branch="r.branch" data-class-gap="r.gap"
 								data-class-odd="r.odd" data-class-part="r.part" data-class-blank="r.blank"
-								data-attr-subtree="r.branch ? r.path : ''"
-								data-event-click="fold_value(r.path, r.branch)">
+								data-class-add="r.add" data-attr-subtree="r.branch ? r.path : ''"
+								data-event-click="fold_value(r.path, r.branch || r.gap)">
 								<span class="tt-cell share c-field tt-tree" cell="" data-class-scrub="r.scrub"
-									data-event-dragstart="scrub_value(r.path)" data-event-drag="scrub_value(r.path)">
+									data-event-dragstart="scrub_value(r.path)" data-event-drag="scrub_value(r.path)"
+									data-event-click="add_element(r.path, r.add)">
 									<span class="indent" data-style-width="r.indent"></span>
 									<span class="caret">
 										<icon data-if="r.branch"
 											data-attr-name="r.open ? 'chevron-down' : 'chevron-right'" />
+										<icon data-if="r.add" name="plus" />
 									</span>
 									<span class="name mono">{{r.name}}</span>
+									<span class="row-remove" data-if="r.remove"
+										data-event-click="remove_element(r.path)"><icon name="x" /></span>
 								</span>
 								<span class="tt-cell share c-type type" cell="">{{r.type}}</span>
 								<span class="tt-cell share c-value val-cell" cell="" data-attr-cell-path="r.path">
@@ -251,7 +255,7 @@
 									</select>
 								</span>
 								<span class="tt-cell toggle">
-									<span class="viz-toggle" data-if="!r.gap &amp;&amp; !r.part" data-class-on="r.on"
+									<span class="viz-toggle" data-if="!r.gap &amp;&amp; !r.part &amp;&amp; !r.add" data-class-on="r.on"
 										data-event-click="toggle_value(r.path)"></span>
 								</span>
 							</div>

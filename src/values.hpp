@@ -24,6 +24,8 @@ struct ValueRow {
     bool        part = false;    /* the heading of a function's or task's part */
     bool        blank = false;   /* in a part with nothing in it yet, so the value is a dash */
     bool        scrub = false;   /* a number editor: dragging the name steps it */
+    bool        add = false;     /* after a composed variable array's elements: adds one */
+    bool        remove = false;  /* an element of a composed variable array, which can go */
     bool        odd = false;   /* every other row is striped */
 };
 
@@ -84,14 +86,13 @@ Visual visual_at(const Capture::WatchView& watch, const std::vector<Capture::Val
 /* The first time a topic shows: its root's visual is on when the root type has one. */
 void seed_view(ValueView& view, const Capture::WatchView& watch);
 
-/* The rows in tree order, skipping the children of closed branches. A struct root has no
-   row of its own and neither has a bare array, whose elements are the top level. A bare
-   scalar is one row named Value, and so is a part's bare root. While editable, every leaf
-   that can be written takes its editor, in a function or task only the input part's. */
+/* The rows in tree order, skipping closed branches. A bare root lifts its children, and
+   a writable leaf gets its editor, a draft's variable array its remove marks and add row. */
 std::vector<ValueRow> build_value_rows(const std::vector<Capture::ValueNode>& nodes,
                                        const ValueView& view, bool editable);
 
-/* A branch starts open unless it is a long array. The user's choice wins after that. */
+/* A branch starts open unless it is a long array or an element with siblings. The user's
+   choice wins after that. */
 bool is_open(const Capture::ValueNode& node, const ValueView& view);
 
 /* What the value column shows for one node, empty for a branch. */

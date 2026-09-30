@@ -156,6 +156,7 @@ public:
         std::vector<uint32_t> elems;
         int32_t               element = -1;
         uint16_t              cap = 0;   /* a fixed string's capacity in bytes, 0 for unbounded */
+        bool                  folded = false;   /* an element with siblings, which starts closed */
         std::vector<std::string> options;   /* an enum's option names, in schema order */
         std::vector<int64_t>     option_values;
         bool        input = false;   /* a field of a request or a goal, which the user fills in */
@@ -244,6 +245,10 @@ public:
     /* A subscribed or watched name's view, null for any other. */
     const WatchView* view(const std::string& name) const;
 
+    /* Shows a hundred more elements of the watched value's long array at path, where its
+       gap was. It holds for every later message while the name stays subscribed. */
+    void reveal(const std::string& path);
+
     /* The newest value with every array element, not only the tree's window. Decoded on
        the first call after a message and kept until the next, for cards that draw a whole
        array. Empty for a name that is not subscribed. */
@@ -281,6 +286,10 @@ public:
        their addressing. Empty with the reason in error when a value does not fit its field. */
     std::vector<uint8_t> encode(const std::vector<uint8_t>& base, uint64_t schema,
                                 const std::vector<ValueNode>& edits, std::string& error) const;
+
+    /* The draft's variable array at field with a copy of its last element added, or zeros,
+       or the element at remove taken out. False with the reason in error. */
+    bool resize(Draft& draft, uint16_t field, int remove, std::string& error) const;
 
     /* Writes the watched variable. Empty on success, else why it was refused. */
     std::string set(const std::vector<uint8_t>& value);

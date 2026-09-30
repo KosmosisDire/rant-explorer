@@ -988,6 +988,8 @@ int main(int argc, char** argv)
             row.RegisterMember("part",    &ValueRow::part);
             row.RegisterMember("blank",   &ValueRow::blank);
             row.RegisterMember("scrub",   &ValueRow::scrub);
+            row.RegisterMember("add",     &ValueRow::add);
+            row.RegisterMember("remove",  &ValueRow::remove);
         }
         ctor.RegisterArray<Rml::Vector<ValueRow>>();
 
@@ -1372,13 +1374,17 @@ int main(int argc, char** argv)
                 }
                 close_menu();
             });
-        /* The value tree: a branch row folds, the round toggle shows the field's visual. */
+        /* The value tree: a branch row folds, a gap row shows more of its array, the round
+           toggle shows the field's visual. */
         ctor.BindEventCallback("fold_value",
-            [&editor, &value_dirty](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
+            [&editor, &capture, &value_dirty](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
                 if (args.size() < 2 || !args[1].Get<bool>()) return;
                 const Rml::String path = args[0].Get<Rml::String>();
                 ValueView& view = editor.view();
-                if (const Capture::ValueNode* node = editor.node(path)) view.open[path] = !is_open(*node, view);
+                const Capture::ValueNode* node = editor.node(path);
+                if (!node) return;
+                if (node->kind == Capture::ValueNode::Gap) capture.reveal(path.substr(0, path.size() - 5));
+                else view.open[path] = !is_open(*node, view);
                 value_dirty = true;
             });
         /* A visual the user turns on starts pinned, so it stays when another topic is picked.
@@ -1489,6 +1495,17 @@ int main(int argc, char** argv)
                     event.GetTargetElement()->Blur();
                     editor.reset(path);
                 }
+            });
+        /* A draft's variable array: the add row appends an element, an element's x removes it. */
+        ctor.BindEventCallback("add_element",
+            [&editor](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
+                if (args.size() >= 2 && args[1].Get<bool>()) editor.add_element(args[0].Get<Rml::String>());
+            });
+        ctor.BindEventCallback("remove_element",
+            [&editor](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList& args) {
+                if (args.empty()) return;
+                event.StopPropagation();   /* the row under the x must not also fold */
+                editor.remove_element(args[0].Get<Rml::String>());
             });
         ctor.BindEventCallback("compose",
             [&editor](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {

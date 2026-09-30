@@ -126,6 +126,9 @@ constexpr size_t BLOB_HEAD = 64;
 /* An array longer than this shows its first and last few elements and a gap between. */
 constexpr uint32_t ARRAY_HEAD = 5, ARRAY_TAIL = 3;
 
+/* How many more elements each click on a gap shows. */
+constexpr uint32_t REVEAL_STEP = 100;
+
 using Field     = rant::Schema::Field;
 using FieldType = rant::FieldType;
 using ValueNode = Capture::ValueNode;
@@ -296,6 +299,7 @@ struct Decoder {
     std::vector<ValueNode>&         out;
     std::string&                    shape;
     bool                            whole = false;   /* every element, no gap */
+    const std::map<std::string, uint32_t>* revealed = nullptr;   /* extra head elements by array path */
 
     /* The field after i's subtree: the table is depth first. */
     size_t end_of(size_t i) const
@@ -312,15 +316,23 @@ struct Decoder {
         return parent + "." + std::string(name);
     }
 
+    /* How many elements lead a long array before its gap: a few, plus what was revealed. */
+    uint32_t head_of(const std::string& path) const
+    {
+        if (!revealed) return ARRAY_HEAD;
+        const auto it = revealed->find(path);
+        return ARRAY_HEAD + (it == revealed->end() ? 0 : it->second);
+    }
+
     /* The element indices a long array shows, with -1 where the gap goes. */
-    std::vector<int64_t> visible(uint32_t count) const
+    std::vector<int64_t> visible(uint32_t count, uint32_t head) const
     {
         std::vector<int64_t> out;
-        if (whole || count <= Capture::ARRAY_WHOLE) {
+        if (whole || count <= Capture::ARRAY_WHOLE || head + ARRAY_TAIL >= count) {
             for (uint32_t k = 0; k < count; k++) out.push_back(k);
             return out;
         }
-        for (uint32_t k = 0; k < ARRAY_HEAD; k++) out.push_back(k);
+        for (uint32_t k = 0; k < head; k++) out.push_back(k);
         out.push_back(-1);
         for (uint32_t k = count - ARRAY_TAIL; k < count; k++) out.push_back(k);
         return out;
@@ -425,7 +437,8 @@ struct Decoder {
                    : f.elem == FieldType::String ? ValueNode::Text
                    : f.elem == FieldType::Bool   ? ValueNode::Bool : ValueNode::Number;
         n.elem_std = std_name(f.elem_name);
-        shape  += std::to_string(count) + ",";
+        const uint32_t head = head_of(n.path);
+        shape  += std::to_string(count) + "+" + std::to_string(head) + ",";
         const std::string elem_type = !f.elem_name.empty() ? std::string(f.elem_name)
                                     : f.elem == FieldType::String ? "string<" + std::to_string(f.str_cap) + ">"
                                     : scalar_word(f.elem);
@@ -434,18 +447,19 @@ struct Decoder {
         const int depth = n.depth;
         out.push_back(n);
 
-        for (const int64_t k : visible(count)) {
+        for (const int64_t k : visible(count, head)) {
             ValueNode e;
             e.depth = depth + 1;
             if (k < 0) {
                 e.kind  = ValueNode::Gap;
                 e.path  = path + "[...]";
-                e.count = count - ARRAY_HEAD - ARRAY_TAIL;
+                e.count = count - head - ARRAY_TAIL;
                 out.push_back(e);
                 continue;
             }
             e.name     = "[" + std::to_string(k) + "]";
             e.path     = path + e.name;
+            e.folded   = count > 1;
             e.type     = elem_type;
             e.std_name = elem_std;
             e.field    = (uint16_t)i;
@@ -637,6 +651,7 @@ struct Capture::Impl {
         std::map<std::string, Stream> streams;   /* by the VideoFrame's path */
         std::vector<ValueNode> whole;
         uint64_t               whole_seq = ~0ull;
+        std::map<std::string, uint32_t> revealed;   /* elements shown past each long array's head */
 
         /* The rate window, and the spacing estimate behind the jitter. */
         double                 rate_since = 0;
@@ -690,7 +705,8 @@ struct Capture::Impl {
     /* One message into the nodes the tree shows, with the root's type, each path under
        prefix. A whole decode keeps every array element and leaves the message where it is. */
     void decode(const std::vector<uint8_t>& data, uint64_t hash, Capture::WatchView& into,
-                bool whole = false, const std::string& prefix = {}) const
+                bool whole = false, const std::string& prefix = {},
+                const std::map<std::string, uint32_t>* revealed = nullptr) const
     {
         into.nodes.clear();
         if (!whole) into.message = data;
@@ -712,7 +728,7 @@ struct Capture::Impl {
         }
         const rant::Schema& schema = found->second;
         Decoder decoder{ schema.raw(), schema.fields(), rant::detail::rant_bytes(data.data(), data.size()),
-                         into.nodes, into.shape, whole };
+                         into.nodes, into.shape, whole, revealed };
         for (size_t i = 0; i < decoder.fields.size(); i = decoder.end_of(i)) decoder.field(i, {}, prefix, 0);
         const bool bare  = !decoder.fields.empty() && decoder.fields[0].name.empty();
         into.root_struct = !bare;
@@ -1058,7 +1074,7 @@ struct Capture::Impl {
                 add_packets(s, scratch.nodes, scratch.message);
             }
         }
-        decode(last.data, last.schema_hash, v);
+        decode(last.data, last.schema_hash, v, false, {}, &s.revealed);
         s.last_hash = last.schema_hash;
         v.schema    = last.schema_hash;
         v.draftable = !variable;
@@ -1450,6 +1466,16 @@ std::string Capture::set(const std::vector<uint8_t>& value)
     }
 }
 
+void Capture::reveal(const std::string& path)
+{
+    Impl::Sub* s = Impl::watched(impl_.get());
+    if (!s || !s->last_hash) return;
+    s->revealed[path] += REVEAL_STEP;
+    const std::vector<uint8_t> message = s->view.message;
+    impl_->decode(message, s->last_hash, s->view, false, {}, &s->revealed);
+}
+
+/* A draft lists every element, so a fixed array shows whole and any element can be edited. */
 bool Capture::draft(Draft& out) const
 {
     Impl::Sub* s = Impl::watched(impl_.get());
@@ -1457,17 +1483,62 @@ bool Capture::draft(Draft& out) const
     if (s->last_hash && !s->view.nodes.empty()) {
         out.message = s->view.message;
         out.schema  = s->last_hash;
-        out.nodes   = s->view.nodes;
-        return true;
+    } else {
+        const rant::Entity* e = impl_->entity(impl_->watch_name);
+        if (!e || !e->schema) return false;
+        impl_->know(e->schema);
+        out.schema  = e->schema.hash();
+        out.message = Impl::default_message(e->schema);
     }
-    const rant::Entity* e = impl_->entity(impl_->watch_name);
-    if (!e || !e->schema) return false;
-    impl_->know(e->schema);
-    out.schema  = e->schema.hash();
-    out.message = Impl::default_message(e->schema);
     WatchView scratch;
-    impl_->decode(out.message, out.schema, scratch);
-    out.nodes = scratch.nodes;
+    impl_->decode(out.message, out.schema, scratch, true);
+    out.nodes = std::move(scratch.nodes);
+    return true;
+}
+
+bool Capture::resize(Draft& draft, uint16_t field, int remove, std::string& error) const
+{
+    error.clear();
+    if (!impl_) {
+        error = "the node failed to start";
+        return false;
+    }
+    const auto found = impl_->schemas.find(draft.schema);
+    Field f;
+    if (found == impl_->schemas.end() || !found->second.field_at(field, f) ||
+        f.kind != FieldType::VArray || !f.elem_size) {
+        error = "only a variable array can change its length";
+        return false;
+    }
+    const rant::detail::RantSchema* raw = found->second.raw();
+    rant::detail::RantValue now;
+    if (!rant::detail::rant_get_value_at(rant::detail::rant_bytes(draft.message.data(), draft.message.size()), raw,
+                                         field, nullptr, 0, &now)) {
+        error = "the array could not be read";
+        return false;
+    }
+    std::vector<uint8_t> elements;
+    if (now.bytes.data) elements.assign(now.bytes.data, now.bytes.data + now.bytes.len);
+    const size_t size = f.elem_size, count = elements.size() / size;
+    if (remove < 0) {
+        if (count) elements.insert(elements.end(), elements.end() - size, elements.end());
+        else elements.resize(size, 0);
+    } else if ((size_t)remove < count) {
+        elements.erase(elements.begin() + remove * size, elements.begin() + (remove + 1) * size);
+    }
+    std::vector<uint8_t> buf(draft.message);
+    buf.resize(buf.size() + size + 16);
+    rant::detail::RantValue v{};
+    v.bytes = rant::detail::rant_bytes(elements.data(), elements.size());
+    if (!rant::detail::rant_set_value_at(buf.data(), buf.size(), raw, field, nullptr, 0, &v)) {
+        error = "the array does not fit the message";
+        return false;
+    }
+    buf.resize(rant::detail::rant_schema_msg_len(raw, buf.data(), buf.size()));
+    draft.message = std::move(buf);
+    WatchView scratch;
+    impl_->decode(draft.message, draft.schema, scratch, true);
+    draft.nodes = std::move(scratch.nodes);
     return true;
 }
 

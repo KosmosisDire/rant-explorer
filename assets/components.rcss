@@ -236,6 +236,8 @@ td.held, th.held, .kv.held, [cell].held, viz [cell-path].held { background-color
 }
 .tt-row .tt-cell         { font-size: 11dp; color: var(--dim); }
 .tt-cell.num             { text-align: right; }
+/* A rate the nodes reported rather than one measured here: a slower, rougher figure. */
+.tt-row .tt-cell.meta    { color: var(--faint); }
 .tt-head .tt-cell        { line-height: var(--head); text-align: center; }
 .tt-head .tt-cell.section { margin: 0dp; }
 
@@ -376,6 +378,7 @@ td.held, th.held, .kv.held, [cell].held, viz [cell-path].held { background-color
 	font-weight: 600;
 	color: var(--text);
 }
+.head-type.pair { display: flex; align-items: center; gap: 6dp; }
 
 /* The toggle for a field's visual: an outline, filled while the visual shows. */
 .viz-toggle {
@@ -543,7 +546,8 @@ select.pill-edit selectbox option:checked { color: var(--text); }
 .button:hover         { border-color: var(--dim); }
 .button.primary       { color: var(--on-fill); background-color: var(--accent); border-color: var(--accent); }
 .button.off,
-.icon-button.off      { opacity: 0.35; pointer-events: none; }
+.icon-button.off,
+.pill.off             { opacity: 0.35; pointer-events: none; }
 
 /* The repeat flag reads as armed at a glance: accent icon, rate, tint and outline. It
    cannot flip while repeating, its rate still can. */
@@ -616,14 +620,14 @@ select.pill-edit selectbox option:checked { color: var(--text); }
 .head-bar div { height: 100%; background-color: var(--green); }
 
 /* The visual itself: a drawing in its content box, or elements for the text visuals, which
-   keep clear of the name at the top. */
-viz {
+   keep clear of the name at the top. The mesh graph draws with the same colours. */
+viz, mesh-graph {
 	display: block;
 	font-family: ui-mono;
 	font-size: 10dp;
 	color: var(--dim);
 
-	/* What a drawing paints with, read by viz.cpp. */
+	/* What a drawing paints with, read by canvas.cpp. */
 	viz-text:   var(--text);
 	viz-dim:    var(--dim);
 	viz-faint:  var(--faint);
@@ -955,3 +959,54 @@ scrollbarvertical sliderarrowinc {
 	color: var(--faint);
 }
 .menu-label { flex: 0 0 auto; white-space: nowrap; }
+
+/* ------------------------------------------------------------------------ mesh */
+
+/* The graph pans, and moves a node, by dragging. */
+mesh-graph { drag: drag; }
+
+/* A name between nodes in a sidebar: its kind, the name over the nodes at its other end,
+   its rate, and on hover the mark that says a click opens it in the Topics tab. */
+.link-row {
+	display: flex;
+	align-items: center;
+	gap: 8dp;
+	padding: 5dp 8dp;
+	border-radius: var(--radius);
+	cursor: pointer;
+	transition: background-color 0.1s;
+}
+.link-row:hover  { background-color: var(--panel2); }
+.link-row:active { background-color: var(--panel3); }
+
+.link-text {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.link-name {
+	font-size: 12dp;
+	color: var(--text);
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+.link-peers {
+	display: flex;
+	align-items: center;
+	gap: 4dp;
+	font-size: 10dp;
+	color: var(--faint);
+	white-space: nowrap;
+	overflow: hidden;
+}
+.link-peers icon { font-size: 10dp; }
+
+.link-rate      { flex: 0 0 auto; font-size: 11dp; color: var(--dim); }
+.link-rate.idle { color: var(--faint); }
+.link-rate.lost { color: var(--red); }
+
+.link-open                  { color: var(--faint); font-size: 12dp; visibility: hidden; }
+.link-row:hover .link-open  { visibility: visible; }

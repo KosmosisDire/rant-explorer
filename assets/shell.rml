@@ -18,6 +18,9 @@
 				<div class="tab" data-class-on="tab == 'nodes'" data-event-click="set_tab('nodes')">
 					<icon name="box" /><span>Nodes</span><span class="count mono">{{peer_count}}</span>
 				</div>
+				<div class="tab" data-class-on="tab == 'mesh'" data-event-click="set_tab('mesh')">
+					<icon name="waypoints" /><span>Mesh</span>
+				</div>
 			</div>
 			<div id="theme-toggle" data-event-click="toggle_theme">
 				<icon data-attr-name="light ? 'moon' : 'sun'" />
@@ -43,7 +46,7 @@
 							<input type="text" class="mono" placeholder="Filter topics..." data-value="topic_filter" />
 							<icon name="x" class="clear" data-if="topic_filter != ''" data-event-click="clear_filter" />
 						</div>
-						<span class="icon-button" data-class-on="topic_cats != 0" data-event-click="open_filter_menu">
+						<span class="icon-button" data-class-on="topic_cats != 0" data-event-click="open_filter_menu('filter')">
 							<icon name="funnel" />
 						</span>
 					</div>
@@ -90,7 +93,8 @@
 									<span class="name mono">{{r.name}}{{r.branch ? '/' : ''}}</span>
 								</span>
 								<span class="tt-cell share c-topic-value mono" cell="">{{tree_cells[i].value}}</span>
-								<span class="tt-cell share c-topic-rate num mono" cell="">{{tree_cells[i].rate}}</span>
+								<span class="tt-cell share c-topic-rate num mono" cell=""
+									data-class-meta="tree_cells[i].meta">{{tree_cells[i].rate}}</span>
 								<span class="tt-cell share c-topic-jitter num mono"
 									cell="">{{tree_cells[i].jitter}}</span>
 							</div>
@@ -504,6 +508,102 @@
 							<div class="feed-body">
 								<span class="feed-time mono" cell="">{{l.time}}</span>
 								<span class="feed-text mono" cell="">{{l.text}}</span>
+							</div>
+						</div>
+					</div>
+				</div>
+
+			</div>
+
+			<!-- ============================================================= Mesh tab -->
+			<div id="mesh" class="tab-content" data-if="tab == 'mesh'">
+
+				<div class="detail graph">
+					<div class="pane-head">
+						<div class="filter">
+							<icon name="search" />
+							<input type="text" class="mono" placeholder="Filter nodes and names..." data-value="mesh_filter" />
+							<icon name="x" class="clear" data-if="mesh_filter != ''" data-event-click="clear_mesh_filter" />
+						</div>
+						<span class="icon-button" data-class-on="mesh_cats != 0" data-event-click="open_filter_menu('mesh')">
+							<icon name="funnel" />
+						</span>
+						<span class="head-note">Hops</span>
+						<span class="pill" data-class-on="mesh_hops == 1" data-class-off="mesh.mode != 1"
+							data-event-click="set_hops(1)">1</span>
+						<span class="pill" data-class-on="mesh_hops == 2" data-class-off="mesh.mode != 1"
+							data-event-click="set_hops(2)">2</span>
+						<span class="pill" data-class-on="mesh_hops == 3" data-class-off="mesh.mode != 1"
+							data-event-click="set_hops(3)">3</span>
+						<span class="pill" data-class-on="mesh_hops == 0" data-class-off="mesh.mode != 1"
+							data-event-click="set_hops(0)">All</span>
+						<span class="icon-button" data-class-on="mesh_focus" data-class-off="mesh.mode == 0"
+							data-event-click="toggle_focus"><icon name="focus" /></span>
+						<span class="icon-button" data-event-click="relayout_mesh"><icon name="shuffle" /></span>
+						<span class="icon-button" data-event-click="fit_mesh"><icon name="scan" /></span>
+					</div>
+					<mesh-graph></mesh-graph>
+				</div>
+
+				<div class="edge splitter">
+					<div class="grip" data-event-dragstart="drag_sidebar('right')"
+						data-event-drag="drag_sidebar('right')"></div>
+				</div>
+
+				<div class="sidebar right">
+					<div class="pane-head">
+						<span class="section" data-if="mesh.mode == 0">Mesh</span>
+						<span class="head-type" copy="" data-if="mesh.mode == 1">{{mesh.title}}</span>
+						<span class="head-type pair" data-if="mesh.mode == 2"><span>{{mesh.from}}</span><icon
+								name="arrow-left-right" /><span>{{mesh.to}}</span></span>
+						<span class="icon-button" data-if="mesh.mode != 0" data-event-click="clear_mesh_pick">
+							<icon name="x" />
+						</span>
+					</div>
+					<div class="pane-body mesh-info">
+						<div class="panel" copy-table="" data-if="mesh.mode == 0">
+							<div class="kv-row">
+								<div class="kv"><span class="k">Nodes</span><span class="v mono">{{mesh.nodes}}</span></div>
+								<div class="kv"><span class="k">Links</span><span class="v mono">{{mesh.links}}</span></div>
+							</div>
+							<div class="kv-row">
+								<div class="kv"><span class="k">Active links</span><span
+										class="v mono">{{mesh.active}}</span></div>
+								<div class="kv"><span class="k">Published</span><span
+										class="v mono">{{mesh.traffic}}</span></div>
+							</div>
+						</div>
+						<div class="panel" copy-table="" data-if="mesh.mode == 1">
+							<div class="kv-row">
+								<div class="kv"><span class="k">Host</span><span class="v mono">{{mesh.host}}</span></div>
+								<div class="kv"><span class="k">State</span><span class="v"><span class="dot"
+											data-class-ok="mesh.alive" data-class-warn="!mesh.alive"></span>
+										<span>{{mesh.alive ? 'alive' : 'joining'}}</span></span></div>
+							</div>
+							<div class="kv-row">
+								<div class="kv"><span class="k">Traffic counters</span><span class="v"><span
+											data-class-faint="!mesh.reports">{{mesh.reports ? 'reported' : 'no reply'}}</span></span>
+								</div>
+							</div>
+						</div>
+						<div class="placeholder" data-if="mesh.mode != 0 &amp;&amp; mesh.groups.size == 0">no names
+							between these</div>
+						<div data-for="g : mesh.groups" copy-table="">
+							<div class="section">{{g.title}} {{g.rows.size}}</div>
+							<div class="link-row" row="" data-for="r : g.rows" data-event-click="open_topic(r.name)">
+								<icon class="kind" data-attr-name="r.kind | icon"
+									data-class-function="r.kind == 'function'"
+									data-class-variable="r.kind == 'variable'" data-class-task="r.kind == 'task'" />
+								<div class="link-text">
+									<span class="link-name mono" cell="">{{r.name}}</span>
+									<div class="link-peers" data-if="r.from != '' || r.to != ''">
+										<span cell="">{{r.from}}</span><icon name="arrow-right" /><span
+											cell="">{{r.to}}</span>
+									</div>
+								</div>
+								<span class="link-rate mono" data-class-idle="!r.active" data-class-lost="r.lost"
+									cell="">{{r.rate}}</span>
+								<icon class="link-open" name="arrow-up-right" />
 							</div>
 						</div>
 					</div>

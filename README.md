@@ -44,6 +44,7 @@ to share the downloads between build trees.
 
 ## Status
 
-The Nodes tab and the Topics tab: discovery, the node's meta and log, the topic tree with
-subscriptions, the value tree with editing, publishing and calls, and a visual card per
-field.
+The Topics, Nodes and Mesh tabs: discovery, the node's meta and log, the topic tree with
+subscriptions and each name's rate as its nodes report it, the value tree with editing,
+publishing and calls, a visual card per field, and a graph of the nodes and the names
+between them with their traffic.

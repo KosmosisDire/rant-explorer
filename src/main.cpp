@@ -2,6 +2,7 @@
    documents in assets/, and one Rant node watching the mesh beside it. */
 
 #include "assets.hpp"
+#include "canvas.hpp"
 #include "capture.hpp"
 #include "clipboard.hpp"
 #include "decorators.hpp"
@@ -10,6 +11,7 @@
 #include "frame.hpp"
 #include "icons.hpp"
 #include "image.hpp"
+#include "mesh.hpp"
 #include "reload.hpp"
 #include "tree.hpp"
 #include "values.hpp"
@@ -162,12 +164,13 @@ struct TreeCell {
     bool        sub = false;       /* it is, kept or as a preview */
     bool        preview = false;   /* only while it is watched */
     bool        active = false;    /* messages are arriving */
+    bool        meta = false;      /* the rate is what the nodes report, not what arrives here */
     Rml::String value, rate, jitter;
 
     bool operator==(const TreeCell& o) const
     {
-        return dot == o.dot && sub == o.sub && preview == o.preview && active == o.active && value == o.value &&
-               rate == o.rate && jitter == o.jitter;
+        return dot == o.dot && sub == o.sub && preview == o.preview && active == o.active && meta == o.meta &&
+               value == o.value && rate == o.rate && jitter == o.jitter;
     }
 };
 
@@ -319,6 +322,13 @@ struct Ui {
     Rml::Vector<Capture::LogRow>      log;
     bool log_error = true, log_warn = true, log_info = true;
 
+    /* mesh tab: the head's filters, and the sidebar for the selection */
+    Rml::String mesh_filter;
+    int         mesh_cats  = 0;   /* the funnel's MeshCategory bits */
+    int         mesh_hops  = 1;   /* 0 for every hop */
+    bool        mesh_focus = false;
+    MeshDetails mesh;
+
     /* topics tab */
     Rml::String           topic_filter;
     int                   topic_cats = 0;          /* the funnel's TreeCategory bits */
@@ -439,23 +449,40 @@ Rml::Vector<MenuItem> column_menu(Rml::Element* head, const Ui& ui)
 constexpr float MENU_W_DP    = 200.f;
 constexpr float MENU_ITEM_DP = 26.f;
 
-/* The funnel's checklist, its boxes as the bits stand now. */
+/* A funnel checklist's group heading, and its box for one bit as the bits stand now. */
+void menu_header(Rml::Vector<MenuItem>& items, const char* label)
+{
+    MenuItem item;
+    item.label  = label;
+    item.header = true;
+    items.push_back(item);
+}
+
+void menu_box(Rml::Vector<MenuItem>& items, const char* label, unsigned bit, unsigned cats)
+{
+    MenuItem item;
+    item.label  = label;
+    item.action = std::to_string(bit);
+    item.check  = (cats & bit) ? 2 : 1;
+    items.push_back(item);
+}
+
+/* The last line of a checklist while any box is checked. */
+void menu_clear(Rml::Vector<MenuItem>& items, unsigned cats)
+{
+    if (!cats) return;
+    MenuItem clear;
+    clear.label  = "Clear filters";
+    clear.action = "clear";
+    items.push_back(clear);
+}
+
+/* The topic tree's funnel. */
 Rml::Vector<MenuItem> filter_menu(unsigned cats)
 {
     Rml::Vector<MenuItem> items;
-    auto header = [&items](const char* label) {
-        MenuItem item;
-        item.label  = label;
-        item.header = true;
-        items.push_back(item);
-    };
-    auto box = [&items, cats](const char* label, unsigned bit) {
-        MenuItem item;
-        item.label  = label;
-        item.action = std::to_string(bit);
-        item.check  = (cats & bit) ? 2 : 1;
-        items.push_back(item);
-    };
+    auto header = [&items](const char* label) { menu_header(items, label); };
+    auto box    = [&items, cats](const char* label, unsigned bit) { menu_box(items, label, bit, cats); };
     header("Kind");
     box("Topics", CAT_TOPIC);
     box("Functions", CAT_FUNCTION);
@@ -467,12 +494,27 @@ Rml::Vector<MenuItem> filter_menu(unsigned cats)
     header("State");
     box("Subscribed", CAT_SUBSCRIBED);
     box("Active", CAT_ACTIVE);
-    if (cats) {
-        MenuItem clear;
-        clear.label  = "Clear filters";
-        clear.action = "clear";
-        items.push_back(clear);
-    }
+    menu_clear(items, cats);
+    return items;
+}
+
+/* The mesh graph's funnel. */
+Rml::Vector<MenuItem> mesh_menu(unsigned cats)
+{
+    Rml::Vector<MenuItem> items;
+    auto header = [&items](const char* label) { menu_header(items, label); };
+    auto box    = [&items, cats](const char* label, unsigned bit) { menu_box(items, label, bit, cats); };
+    header("Kind");
+    box("Topics", MESH_TOPIC);
+    box("Functions", MESH_FUNCTION);
+    box("Variables", MESH_VARIABLE);
+    box("Tasks", MESH_TASK);
+    header("Links");
+    box("Active only", MESH_ACTIVE);
+    header("Nodes");
+    box("Connected only", MESH_CONNECTED);
+    box("No leaves", MESH_NO_LEAVES);
+    menu_clear(items, cats);
     return items;
 }
 
@@ -494,19 +536,23 @@ std::vector<std::string> subtree(const Capture& capture, const std::string& bran
     return names;
 }
 
-/* A topic's value, rate and jitter as its tree row shows them: a dash while it is not
-   subscribed, nothing for a function or task. */
+/* A topic's value, rate and jitter as its tree row shows them. Unsubscribed, the rate is
+   what its nodes report, meta says so, and the rest is a dash. A function or task has calls
+   per second only. */
 void topic_columns(const Capture& capture, const Capture::TopicRow& topic, std::string& value,
-                   std::string& rate, std::string& jitter)
+                   std::string& rate, std::string& jitter, bool& meta)
 {
-    if (!subscribable(topic)) return;
-    rate = jitter = DASH;
-    const Capture::WatchView* sub = capture.view(topic.name);
+    const Capture::WatchView* sub = subscribable(topic) ? capture.view(topic.name) : nullptr;
     if (sub && (capture.subscribed(topic.name) || topic.name == capture.watched().name)) {
         value  = preview_text(*sub);
         rate   = format_rate(sub->rate_hz);
         jitter = format_ms(sub->jitter_ms);
+        return;
     }
+    const double hz = capture.traffic_hz(topic.name);
+    meta = hz >= 0;
+    rate = format_rate(hz);
+    if (subscribable(topic)) jitter = DASH;
 }
 
 /* The topics the filter shows under a tree path, every one when it is empty, as the tree's
@@ -525,7 +571,8 @@ Table topic_table(const Capture& capture, const std::string& branch, const std::
     table.rows.push_back({ "Topic", "Value", "Rate", "Jitter" });
     for (const auto& entry : topics) {
         std::string value, rate, jitter;
-        topic_columns(capture, *entry.second, value, rate, jitter);
+        bool        meta = false;
+        topic_columns(capture, *entry.second, value, rate, jitter, meta);
         table.rows.push_back({ entry.second->name, value, rate, jitter });
     }
     return table;
@@ -774,7 +821,9 @@ int main(int argc, char** argv)
     frame_init(window, context);
 
     Capture capture(cap_opts);
+    ink_init();
     viz_init(capture);
+    mesh_init(capture);
     Editor  editor(capture);
 
     Ui ui;
@@ -786,6 +835,7 @@ int main(int argc, char** argv)
        The document holds a window of it, see window_tree. */
     std::vector<TreeRow> tree;
     bool                 tree_dirty = true;
+    std::string          scroll_to;   /* a tree path to bring into view once the tree has it */
 
     /* The value tree, rebuilt when the watched topic, its shape, a fold or a toggle moves.
        The document holds a window of it and only the value texts change per message. */
@@ -1017,6 +1067,7 @@ int main(int argc, char** argv)
             cell.RegisterMember("sub",     &TreeCell::sub);
             cell.RegisterMember("preview", &TreeCell::preview);
             cell.RegisterMember("active",  &TreeCell::active);
+            cell.RegisterMember("meta",    &TreeCell::meta);
             cell.RegisterMember("value",   &TreeCell::value);
             cell.RegisterMember("rate",    &TreeCell::rate);
             cell.RegisterMember("jitter",  &TreeCell::jitter);
@@ -1037,6 +1088,36 @@ int main(int argc, char** argv)
             log_row.RegisterMember("text",  &Capture::LogRow::text);
         }
         ctor.RegisterArray<Rml::Vector<Capture::LogRow>>();
+
+        if (auto row = ctor.RegisterStruct<MeshRow>()) {
+            row.RegisterMember("name",   &MeshRow::name);
+            row.RegisterMember("kind",   &MeshRow::kind);
+            row.RegisterMember("from",   &MeshRow::from);
+            row.RegisterMember("to",     &MeshRow::to);
+            row.RegisterMember("rate",   &MeshRow::rate);
+            row.RegisterMember("active", &MeshRow::active);
+            row.RegisterMember("lost",   &MeshRow::lost);
+        }
+        ctor.RegisterArray<std::vector<MeshRow>>();
+        if (auto group = ctor.RegisterStruct<MeshGroup>()) {
+            group.RegisterMember("title", &MeshGroup::title);
+            group.RegisterMember("rows",  &MeshGroup::rows);
+        }
+        ctor.RegisterArray<std::vector<MeshGroup>>();
+        if (auto details = ctor.RegisterStruct<MeshDetails>()) {
+            details.RegisterMember("mode",    &MeshDetails::mode);
+            details.RegisterMember("title",   &MeshDetails::title);
+            details.RegisterMember("from",    &MeshDetails::from);
+            details.RegisterMember("to",      &MeshDetails::to);
+            details.RegisterMember("host",    &MeshDetails::host);
+            details.RegisterMember("alive",   &MeshDetails::alive);
+            details.RegisterMember("reports", &MeshDetails::reports);
+            details.RegisterMember("nodes",   &MeshDetails::nodes);
+            details.RegisterMember("links",   &MeshDetails::links);
+            details.RegisterMember("active",  &MeshDetails::active);
+            details.RegisterMember("traffic", &MeshDetails::traffic);
+            details.RegisterMember("groups",  &MeshDetails::groups);
+        }
 
         ctor.Bind("status",          &ui.status);
         ctor.Bind("status_level",    &ui.status_level);
@@ -1095,6 +1176,11 @@ int main(int argc, char** argv)
         ctor.Bind("value_root_on",   &ui.value_root_on);
         ctor.Bind("cards",           &ui.cards);
         ctor.Bind("light",           &ui.light);
+        ctor.Bind("mesh_filter",     &ui.mesh_filter);
+        ctor.Bind("mesh_cats",       &ui.mesh_cats);
+        ctor.Bind("mesh_hops",       &ui.mesh_hops);
+        ctor.Bind("mesh_focus",      &ui.mesh_focus);
+        ctor.Bind("mesh",            &ui.mesh);
         ctor.Bind("maximized",       &ui.maximized);
 
         ctor.BindEventCallback("select_node",
@@ -1252,15 +1338,59 @@ int main(int argc, char** argv)
                         set_sub(name, !capture.subscribed(name) && !capture.previewing(name));
                     }
             });
-        /* The funnel opens its checklist under itself. */
+        /* A funnel opens its checklist under itself: the topic tree's "filter" or the mesh's. */
         ctor.BindEventCallback("open_filter_menu",
-            [&ui, context, open_menu](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList&) {
+            [&ui, context, open_menu](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList& args) {
+                const std::string   kind   = args.empty() ? "filter" : args[0].Get<Rml::String>();
                 const float         ratio  = context->GetDensityIndependentPixelRatio();
                 Rml::Element*       button = event.GetCurrentElement();
                 const Rml::Vector2f at     = button->GetAbsoluteOffset(Rml::BoxArea::Border);
                 const float         height = button->GetBox().GetSize(Rml::BoxArea::Border).y;
-                ui.menu_items = filter_menu((unsigned)ui.topic_cats);
-                open_menu("filter", at.x / ratio, (at.y + height) / ratio + 4.f);
+                ui.menu_items = kind == "mesh" ? mesh_menu((unsigned)ui.mesh_cats) : filter_menu((unsigned)ui.topic_cats);
+                open_menu(kind, at.x / ratio, (at.y + height) / ratio + 4.f);
+            });
+        ctor.BindEventCallback("set_hops",
+            [&ui](Rml::DataModelHandle handle, Rml::Event&, const Rml::VariantList& args) {
+                if (args.empty()) return;
+                ui.mesh_hops = args[0].Get<int>();
+                handle.DirtyVariable("mesh_hops");
+            });
+        ctor.BindEventCallback("toggle_focus",
+            [&ui](Rml::DataModelHandle handle, Rml::Event&, const Rml::VariantList&) {
+                ui.mesh_focus = !ui.mesh_focus;
+                handle.DirtyVariable("mesh_focus");
+                mesh_fit();
+            });
+        ctor.BindEventCallback("fit_mesh",
+            [](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) { mesh_fit(); });
+        ctor.BindEventCallback("relayout_mesh",
+            [](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) { mesh_relayout(); });
+        ctor.BindEventCallback("clear_mesh_pick",
+            [](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) { mesh_select(MeshPick()); });
+        ctor.BindEventCallback("clear_mesh_filter",
+            [&ui](Rml::DataModelHandle handle, Rml::Event&, const Rml::VariantList&) {
+                ui.mesh_filter.clear();
+                handle.DirtyVariable("mesh_filter");
+            });
+        /* A name in the Mesh sidebar opens in the Topics tab, its branches open and its row
+           brought into view. */
+        ctor.BindEventCallback("open_topic",
+            [&ui, &capture, &editor, &tree_dirty, &scroll_to](Rml::DataModelHandle handle, Rml::Event&,
+                                                              const Rml::VariantList& args) {
+                if (args.empty()) return;
+                const std::string name = args[0].Get<Rml::String>();
+                const std::string path = tree_path(name);
+                for (size_t at = path.find('/'); at != std::string::npos; at = path.find('/', at + 1))
+                    ui.expanded.insert(path.substr(0, at));
+                if (capture.watched().name != name) editor.end_draft();
+                ui.sel_name = name;
+                ui.sel_path = path;
+                ui.tab      = "topics";
+                handle.DirtyVariable("sel_path");
+                handle.DirtyVariable("tab");
+                capture.watch(name);
+                tree_dirty = true;
+                scroll_to  = path;
             });
         /* A right click on a tree row offers its own topic, and for a branch everything
            under it the filter shows. */
@@ -1351,17 +1481,19 @@ int main(int argc, char** argv)
                     apply_body(event.GetTargetElement()->GetOwnerDocument(), ui);
                     return;
                 }
-                if (ui.menu_kind == "filter") {
+                if (ui.menu_kind == "filter" || ui.menu_kind == "mesh") {
+                    const bool mesh = ui.menu_kind == "mesh";
+                    int&       cats = mesh ? ui.mesh_cats : ui.topic_cats;
                     if (action == "clear") {
-                        ui.topic_cats = 0;
+                        cats = 0;
                         close_menu();
                     } else {
-                        ui.topic_cats ^= std::atoi(action.c_str());
-                        ui.menu_items = filter_menu((unsigned)ui.topic_cats);
+                        cats ^= std::atoi(action.c_str());
+                        ui.menu_items = mesh ? mesh_menu((unsigned)cats) : filter_menu((unsigned)cats);
                         handle.DirtyVariable("menu_items");
                     }
-                    handle.DirtyVariable("topic_cats");
-                    tree_dirty = true;
+                    handle.DirtyVariable(mesh ? "mesh_cats" : "topic_cats");
+                    tree_dirty = tree_dirty || !mesh;
                     return;
                 }
                 if (action == "self_on" || action == "self_off") {
@@ -1797,7 +1929,7 @@ int main(int argc, char** argv)
                     const Rml::Element* focus = context->GetFocusElement();
                     const Rml::String   tag   = focus ? focus->GetTagName() : Rml::String();
                     if (tag != "input" && tag != "select" && tag != "textarea") {
-                        copy(ui.tab == "topics" ? ui.sel_name : ui.selected.name);
+                        copy(ui.tab == "topics" ? ui.sel_name : ui.tab == "mesh" ? ui.mesh.title : ui.selected.name);
                         break;
                     }
                 }
@@ -1828,7 +1960,11 @@ int main(int argc, char** argv)
         }
         if (ui.note_frames && --ui.note_frames == 0) ui.note.clear();
 
+        /* The traffic counters feed the topic tree's rates and the mesh graph. */
+        capture.set_traffic(ui.tab == "topics" || ui.tab == "mesh");
         capture.poll();
+        mesh_set_filter(MeshFilter{ ui.mesh_filter, (unsigned)ui.mesh_cats, ui.mesh_hops, ui.mesh_focus });
+        if (ui.tab == "mesh") sync(model, "mesh", ui.mesh, mesh_details());
 
         /* note, sel and meta are marked every frame at the end: sel and meta count live
            seconds, and note is written from everywhere. The rest move only when changed. */
@@ -1877,6 +2013,19 @@ int main(int argc, char** argv)
         }
         fit_head(document, "topic-tree");
         fit_head(document, "value-tree");
+        /* A row opened from another tab scrolls into view once its pane has a height. */
+        if (!scroll_to.empty() && document) {
+            Rml::Element* pane = document->GetElementById("topic-tree");
+            if (pane && pane->GetClientHeight() > 0) {
+                Rml::Element* shown = pane->QuerySelector(".tt-row");
+                const float row = shown ? shown->GetBox().GetSize(Rml::BoxArea::Border).y
+                                        : 28.f * context->GetDensityIndependentPixelRatio();
+                for (size_t i = 0; i < tree.size(); i++)
+                    if (tree[i].path == scroll_to)
+                        pane->SetScrollTop(std::max(0.f, i * row - pane->GetClientHeight() / 3));
+                scroll_to.clear();
+            }
+        }
         if (window_rows(context, document, "topic-tree", (int)tree.size(),
                         window_first, window_last, ui.tree_top, ui.tree_bottom)) {
             ui.tree_rows.assign(tree.begin() + window_first, tree.begin() + window_last);
@@ -1898,7 +2047,7 @@ int main(int argc, char** argv)
                     cell.preview = cell.dot && capture.previewing(topic.name);
                     cell.sub     = cell.preview || (cell.dot && capture.subscribed(topic.name));
                     cell.active  = cell.sub && view && view->rate_hz > 0;
-                    topic_columns(capture, topic, cell.value, cell.rate, cell.jitter);
+                    topic_columns(capture, topic, cell.value, cell.rate, cell.jitter, cell.meta);
                 }
                 cells.push_back(std::move(cell));
             }

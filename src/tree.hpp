@@ -27,6 +27,9 @@ struct TreeRow {
     int         topic = -1;          /* index into the topics the tree was built from */
 };
 
+/* hay holds needle, case blind. An empty needle is in everything. */
+bool contains_ci(const std::string& hay, const std::string& needle);
+
 /* The Lucide glyph for a kind, by the word the document holds it as. */
 const char* kind_icon(const std::string& word);
 
@@ -40,7 +43,7 @@ enum TreeCategory : unsigned {
     CAT_RELIABLE    = 1u << 4,
     CAT_BEST_EFFORT = 1u << 5,
     CAT_SUBSCRIBED  = 1u << 6,   /* this explorer holds a subscription, kept or a preview */
-    CAT_ACTIVE      = 1u << 7,   /* messages are arriving, so only seen while subscribed */
+    CAT_ACTIVE      = 1u << 7,   /* messages arrive here or the nodes report traffic */
 };
 constexpr unsigned CAT_KINDS = CAT_TOPIC | CAT_FUNCTION | CAT_VARIABLE | CAT_TASK;
 constexpr unsigned CAT_QOS   = CAT_RELIABLE | CAT_BEST_EFFORT;

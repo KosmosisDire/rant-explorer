@@ -139,6 +139,7 @@ add_custom_command(OUTPUT "${ASSETS_EMBEDDED}"
 add_executable(rant_explorer
   src/main.cpp
   src/assets.cpp
+  src/canvas.cpp
   src/capture.cpp
   src/clipboard.cpp
   src/decorators.cpp
@@ -147,6 +148,7 @@ add_executable(rant_explorer
   src/frame.cpp
   src/icons.cpp
   src/image.cpp
+  src/mesh.cpp
   src/reload.cpp
   src/tiling.cpp
   src/tree.cpp

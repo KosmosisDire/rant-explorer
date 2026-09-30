@@ -248,6 +248,19 @@ body.hide-value .c-value { display: none; }
 
 .viz-card viz { flex: 1 1 0; min-height: 0; }
 
+/* The mesh tab's detail is its head over the graph, which takes the rest. */
+.detail.graph {
+	display: flex;
+	flex-direction: column;
+}
+
+.detail.graph mesh-graph {
+	flex: 1 1 0;
+	min-height: 0;
+}
+
+.mesh-info { padding: 0dp var(--pad) var(--pad) var(--pad); }
+
 /* ------------------------------------------------------------------------ menu */
 
 /* The open menu sits on a layer over the whole window, which a press outside it closes.

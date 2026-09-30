@@ -1,5 +1,6 @@
 #include "viz.hpp"
 
+#include "canvas.hpp"
 #include "format.hpp"
 #include "image.hpp"
 #include "values.hpp"
@@ -27,31 +28,6 @@ using ValueNode = Capture::ValueNode;
 using Nodes     = std::vector<ValueNode>;
 
 Capture* source = nullptr;
-
-/* The drawing colours, the viz-* properties in components.rcss, so they follow the theme.
-   Each element reads them into ink before it draws. The trail is a point's history in the
-   air, the ground its foot and drop line. */
-struct Ink {
-    Rml::Colourb text, dim, faint, accent, green, amber, red, blue, purple, gray;
-    Rml::Colourb panel, border, grid, trail, ground;
-};
-Ink ink;
-
-const struct {
-    const char*  name;
-    Rml::Colourb Ink::*member;
-} INK_PROPERTIES[] = {
-    { "viz-text", &Ink::text },     { "viz-dim", &Ink::dim },       { "viz-faint", &Ink::faint },
-    { "viz-accent", &Ink::accent }, { "viz-green", &Ink::green },   { "viz-amber", &Ink::amber },
-    { "viz-red", &Ink::red },       { "viz-blue", &Ink::blue },     { "viz-purple", &Ink::purple },
-    { "viz-gray", &Ink::gray },     { "viz-panel", &Ink::panel },   { "viz-border", &Ink::border },
-    { "viz-grid", &Ink::grid },     { "viz-trail", &Ink::trail },   { "viz-ground", &Ink::ground },
-};
-
-void read_ink(Rml::Element& element)
-{
-    for (const auto& p : INK_PROPERTIES) ink.*p.member = element.GetProperty<Rml::Colourb>(p.name);
-}
 
 /* x, y and z. */
 Rml::Colourb axis_colour(int i)
@@ -227,211 +203,6 @@ std::string euler(const Quat& q)
 }
 
 /* ------------------------------------------------------------------ drawing kit */
-
-/* A rectangle of a drawing, in the element's pixels. */
-struct Area {
-    float x = 0, y = 0, w = 0, h = 0;
-};
-
-/* A drawing in an element's content box: pictures, then shapes in one mesh, then text.
-   The mesh is the element's, so its memory is kept from frame to frame. */
-class Canvas {
-public:
-    enum Align { Left, Center, Right };
-
-    Canvas(Rml::Element& element, Rml::Mesh& mesh) : element_(element), mesh_(mesh)
-    {
-        mesh_.vertices.clear();
-        mesh_.indices.clear();
-        const Rml::Context* context = element.GetContext();
-        ratio_  = context ? context->GetDensityIndependentPixelRatio() : 1.f;
-        origin_ = element.GetAbsoluteOffset(Rml::BoxArea::Content);
-        size_   = element.GetBox().GetSize(Rml::BoxArea::Content);
-    }
-
-    float w() const { return size_.x; }
-    float h() const { return size_.y; }
-    float dp(float v) const { return v * ratio_; }
-    Rml::Vector2f origin() const { return origin_; }
-    Area all() const { return Area{ 0, 0, size_.x, size_.y }; }
-
-    void line(float x0, float y0, float x1, float y1, Rml::Colourb colour, float width_dp = 1)
-    {
-        const float dx = x1 - x0, dy = y1 - y0, len = std::sqrt(dx * dx + dy * dy);
-        if (len < 1e-4f) return;
-        const float half = dp(width_dp) / 2, nx = -dy / len * half, ny = dx / len * half;
-        quad({ x0 + nx, y0 + ny }, { x1 + nx, y1 + ny }, { x1 - nx, y1 - ny }, { x0 - nx, y0 - ny }, colour);
-    }
-
-    void line(Rml::Vector2f a, Rml::Vector2f b, Rml::Colourb colour, float width_dp = 1)
-    {
-        line(a.x, a.y, b.x, b.y, colour, width_dp);
-    }
-
-    /* A line of dashes three dp long with three dp gaps. */
-    void dashed(Rml::Vector2f a, Rml::Vector2f b, Rml::Colourb colour)
-    {
-        const float dx = b.x - a.x, dy = b.y - a.y, len = std::sqrt(dx * dx + dy * dy), dash = dp(3);
-        for (float t = 0; t < len; t += 2 * dash) {
-            const float e = std::min(len, t + dash);
-            line(a.x + dx * t / len, a.y + dy * t / len, a.x + dx * e / len, a.y + dy * e / len, colour);
-        }
-    }
-
-    /* A line with a filled head at its end. */
-    void arrow(Rml::Vector2f a, Rml::Vector2f b, Rml::Colourb colour, float width_dp = 2)
-    {
-        line(a, b, colour, width_dp);
-        const float angle = std::atan2(b.y - a.y, b.x - a.x), l = dp(7);
-        if (std::hypot(b.x - a.x, b.y - a.y) < 1e-3f) return;
-        triangle(b, { b.x - l * std::cos(angle - 0.4f), b.y - l * std::sin(angle - 0.4f) },
-                 { b.x - l * std::cos(angle + 0.4f), b.y - l * std::sin(angle + 0.4f) }, colour);
-    }
-
-    void rect(float x, float y, float w, float h, Rml::Colourb colour)
-    {
-        quad({ x, y }, { x + w, y }, { x + w, y + h }, { x, y + h }, colour);
-    }
-
-    /* The outline of a rectangle. */
-    void frame(float x, float y, float w, float h, Rml::Colourb colour, float width_dp = 1)
-    {
-        line(x, y, x + w, y, colour, width_dp);
-        line(x + w, y, x + w, y + h, colour, width_dp);
-        line(x + w, y + h, x, y + h, colour, width_dp);
-        line(x, y + h, x, y, colour, width_dp);
-    }
-
-    void triangle(Rml::Vector2f a, Rml::Vector2f b, Rml::Vector2f c, Rml::Colourb colour)
-    {
-        const Rml::ColourbPremultiplied pm = colour.ToPremultiplied();
-        const int base = (int)mesh_.vertices.size();
-        for (const Rml::Vector2f& p : { a, b, c }) mesh_.vertices.push_back(vertex(p, pm));
-        mesh_.indices.insert(mesh_.indices.end(), { base, base + 1, base + 2 });
-    }
-
-    /* A disc with as many sides as its size in pixels needs, 6 for a trail dot, 16 at most. */
-    void dot(float x, float y, Rml::Colourb colour, float radius_dp = 3)
-    {
-        const float r = dp(radius_dp);
-        const int sides = std::max(6, std::min(16, (int)std::lround(r * 3)));
-        const float turn = 6.2831853f / sides;
-        const Rml::ColourbPremultiplied pm = colour.ToPremultiplied();
-        const int base = (int)mesh_.vertices.size();
-        mesh_.vertices.push_back(vertex({ x, y }, pm));
-        for (int i = 0; i < sides; i++) {
-            mesh_.vertices.push_back(vertex({ x + r * std::cos(turn * i), y + r * std::sin(turn * i) }, pm));
-            mesh_.indices.insert(mesh_.indices.end(), { base, base + 1 + i, base + 1 + (i + 1) % sides });
-        }
-    }
-
-    void dot(Rml::Vector2f p, Rml::Colourb colour, float radius_dp = 3) { dot(p.x, p.y, colour, radius_dp); }
-
-    /* Text on a baseline at y, aligned on x. */
-    void text(const std::string& s, float x, float y, Align align, Rml::Colourb colour, float size_dp = 10)
-    {
-        labels_.push_back(Label{ s, x, y, align, colour, (int)std::lround(dp(size_dp)) });
-    }
-
-    /* A texture stretched over a rectangle, drawn under the shapes and the text. Samples
-       stay half a texel inside the edge, so smoothing never wraps the far edge in. */
-    void picture(float x, float y, float w, float h, Rml::Texture texture, Rml::Vector2i texels)
-    {
-        const Rml::Vector2f inset(0.5f / std::max(1, texels.x), 0.5f / std::max(1, texels.y));
-        pictures_.push_back(Picture{ { x, y }, { w, h }, texture, inset });
-    }
-
-    void render()
-    {
-        Rml::RenderManager* rm = element_.GetRenderManager();
-        if (!rm) return;
-        /* Nothing draws outside the element: a scene's floor grid runs past its edges. */
-        const Rml::RenderState saved = rm->GetState();
-        const Rml::Rectanglei box = Rml::Rectanglei::FromPositionSize(
-            Rml::Vector2i((int)std::floor(origin_.x), (int)std::floor(origin_.y)),
-            Rml::Vector2i((int)std::ceil(size_.x), (int)std::ceil(size_.y)));
-        rm->SetScissorRegion(box.IntersectIfValid(saved.scissor_region));
-        for (const Picture& p : pictures_) {
-            Rml::Mesh quad;
-            Rml::MeshUtilities::GenerateQuad(quad, p.at, p.size, Rml::ColourbPremultiplied(255, 255, 255, 255),
-                                             p.inset, Rml::Vector2f(1, 1) - p.inset);
-            rm->MakeGeometry(std::move(quad)).Render(origin_, p.texture);
-        }
-        if (!mesh_.indices.empty()) {
-            Rml::Geometry shapes = rm->MakeGeometry(std::move(mesh_));
-            shapes.Render(origin_);
-            mesh_ = shapes.Release(Rml::Geometry::ReleaseMode::ClearMesh);
-        }
-
-        /* Every label's glyphs join one mesh per font texture, so the text is a draw or two. */
-        Rml::FontEngineInterface* fonts = Rml::GetFontEngineInterface();
-        static const Rml::String language;
-        const Rml::TextShapingContext shaping{ language };
-        std::vector<std::pair<int, Rml::FontFaceHandle>> faces;
-        Rml::TexturedMeshList batches, meshes;
-        for (const Label& label : labels_) {
-            auto found = std::find_if(faces.begin(), faces.end(), [&](const auto& f) { return f.first == label.size; });
-            if (found == faces.end()) {
-                faces.emplace_back(label.size, fonts->GetFontFaceHandle("ui-mono", Rml::Style::FontStyle::Normal,
-                                                                        Rml::Style::FontWeight::Normal, label.size));
-                found = faces.end() - 1;
-            }
-            const Rml::FontFaceHandle face = found->second;
-            if (!face) continue;
-            const float width = (float)fonts->GetStringWidth(face, label.s, shaping);
-            const float x = label.align == Right ? label.x - width : label.align == Center ? label.x - width / 2 : label.x;
-            meshes.clear();
-            fonts->GenerateString(*rm, face, 0, label.s, { std::round(x), std::round(label.y) },
-                                  label.colour.ToPremultiplied(), 1.f, shaping, meshes);
-            for (Rml::TexturedMesh& mesh : meshes) {
-                auto batch = std::find_if(batches.begin(), batches.end(), [&](const Rml::TexturedMesh& b) { return b.texture == mesh.texture; });
-                if (batch == batches.end()) {
-                    batches.push_back(std::move(mesh));
-                    continue;
-                }
-                const int base = (int)batch->mesh.vertices.size();
-                batch->mesh.vertices.insert(batch->mesh.vertices.end(), mesh.mesh.vertices.begin(), mesh.mesh.vertices.end());
-                for (const int i : mesh.mesh.indices) batch->mesh.indices.push_back(base + i);
-            }
-        }
-        for (Rml::TexturedMesh& batch : batches) rm->MakeGeometry(std::move(batch.mesh)).Render(origin_, batch.texture);
-        rm->SetState(saved);
-    }
-
-private:
-    struct Picture {
-        Rml::Vector2f at, size;
-        Rml::Texture  texture;
-        Rml::Vector2f inset;
-    };
-    struct Label {
-        std::string  s;
-        float        x, y;
-        Align        align;
-        Rml::Colourb colour;
-        int          size;
-    };
-
-    static Rml::Vertex vertex(Rml::Vector2f p, Rml::ColourbPremultiplied colour)
-    {
-        return Rml::Vertex{ p, colour, Rml::Vector2f(0, 0) };
-    }
-
-    void quad(Rml::Vector2f a, Rml::Vector2f b, Rml::Vector2f c, Rml::Vector2f d, Rml::Colourb colour)
-    {
-        const Rml::ColourbPremultiplied pm = colour.ToPremultiplied();
-        const int base = (int)mesh_.vertices.size();
-        for (const Rml::Vector2f& p : { a, b, c, d }) mesh_.vertices.push_back(vertex(p, pm));
-        mesh_.indices.insert(mesh_.indices.end(), { base, base + 1, base + 2, base, base + 2, base + 3 });
-    }
-
-    Rml::Element&        element_;
-    float                ratio_ = 1;
-    Rml::Vector2f        origin_, size_;
-    Rml::Mesh&           mesh_;
-    std::vector<Label>   labels_;
-    std::vector<Picture> pictures_;
-};
 
 /* Dots of one colour and size, one per cell of half their radius: a trail costs the area it
    covers, not the messages it holds, and looks the same. */
@@ -1756,8 +1527,6 @@ void viz_init(Capture& capture)
 {
     source = &capture;
     Rml::Factory::RegisterElementInstancer("viz", &instancer);
-    for (const auto& p : INK_PROPERTIES)
-        Rml::StyleSheetSpecification::RegisterProperty(p.name, "black", true, false).AddParser("color");
 }
 
 VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>& shown)

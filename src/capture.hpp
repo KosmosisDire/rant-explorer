@@ -116,6 +116,38 @@ public:
         }
     };
 
+    /* The mesh as a graph: each node, and a link from every provider of a name to every
+       consumer of it. Rates come from each node's @rant/meta traffic counters. */
+    struct MeshNode {
+        std::string id;          /* as NodeRow::id */
+        std::string name, host;
+        bool        alive = false;
+        bool        reports = false;   /* it has answered a traffic poll */
+    };
+    struct MeshLink {
+        int         from = 0, to = 0;   /* indices into the nodes, provider then consumer */
+        std::string name;
+        Kind        kind = Kind::Topic;
+        bool        reliable = false;
+        double      hz = -1;           /* messages each way per second, negative while unknown */
+        bool        active = false;    /* traffic within the last ACTIVE_S */
+        bool        lost = false;      /* the sender sends and the receiver has got none for LOST_S */
+        double      sent_hz = -1;      /* what the sender sends, for a lost link's rate */
+    };
+    /* A name one node offers or wants with nobody on the other side. */
+    struct MeshEnd {
+        int         node = 0;
+        std::string name;
+        Kind        kind = Kind::Topic;
+    };
+    struct MeshView {
+        std::vector<MeshNode> nodes;
+        std::vector<MeshLink> links;
+        std::vector<MeshEnd>  unheard;   /* provided, consumed by nobody */
+        std::vector<MeshEnd>  waiting;   /* consumed, provided by nobody */
+    };
+    static constexpr double ACTIVE_S = 10, LOST_S = 6;
+
     /* One line off the mesh wide @rant/log stream, already filtered to the selection. */
     struct LogRow {
         int         level = 2;   /* 0 error, 1 warn, 2 info */
@@ -325,9 +357,20 @@ public:
     /* The newest line from any node at any level, empty text while there is none. */
     const LogRow&                   latest_log() const { return latest_log_; }
 
+    /* While on, every node is asked for its traffic counters every few seconds. */
+    void   set_traffic(bool on) { traffic_on_ = on; }
+    /* A name's messages per second across the mesh, calls for a function or task, from the
+       traffic counters. Negative while no node has reported it. */
+    double traffic_hz(const std::string& name) const;
+    const MeshView& mesh() const { return mesh_; }
+    /* Bumps when mesh() was rebuilt: the graph moved or new counters arrived. */
+    uint32_t        mesh_epoch() const { return mesh_epoch_; }
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+
+    void build_mesh(uint64_t now_us);
 
     std::vector<MachineRow>  machines_;
     int                      node_count_ = 0;
@@ -337,6 +380,10 @@ private:
     LogRow                   latest_log_;
     std::vector<TopicRow>    topics_;
     uint32_t                 topics_epoch_ = 0;
+    MeshView                 mesh_;
+    uint32_t                 mesh_epoch_ = 0;
+    std::map<std::string, double> traffic_hz_;   /* by name, see traffic_hz */
+    bool                     traffic_on_ = false;
     WatchView                none_;   /* what watched() reads while nothing is */
 
     std::string selected_id_;

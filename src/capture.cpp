@@ -9,6 +9,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <tuple>
 #include <atomic>
 #include <mutex>
 #include <utility>
@@ -83,6 +84,11 @@ constexpr size_t LOG_RING = 512;
 
 /* How often the selected node's @rant/meta endpoint is asked, in microseconds. */
 constexpr uint64_t META_PERIOD_US = 1000000;
+
+/* How often every node is asked for its traffic counters, and when an unanswered ask is
+   given up. A reply further apart than three periods starts the rates over. */
+constexpr uint64_t TRAFFIC_PERIOD_US  = 2000000;
+constexpr uint64_t TRAFFIC_TIMEOUT_US = 10000000;
 
 /* The watch queue between the service thread and the next poll. A drain normally takes
    everything, so these only bound a stalled UI or a flood of large messages. */
@@ -521,6 +527,15 @@ struct Capture::Impl {
     std::atomic<bool>  meta_pending{false};
     int                meta_failures = 0;
 
+    /* One node's traffic counters, by channel name, as its reply left them. */
+    struct TrafficReply {
+        std::string id;
+        bool        ok = false;
+        uint64_t    at_us = 0;
+        std::vector<std::tuple<std::string, uint64_t, uint64_t>> counts;   /* channel, tx, rx */
+    };
+    std::vector<TrafficReply> traffic_inbox;
+
     rant::Node node;
 
     /* UI thread only below here. */
@@ -529,9 +544,17 @@ struct Capture::Impl {
         uint32_t epoch         = 0;
         int      updates       = 0;
         bool     seen          = false;
-        uint32_t counted_epoch = 0xFFFFFFFFu;   /* the epoch the counts below were walked at */
+        uint32_t counted_epoch = 0xFFFFFFFFu;   /* the epochs the counts below were walked at */
+        uint32_t counted_mesh  = 0xFFFFFFFFu;
         int      publishes     = 0;
         int      subscribes    = 0;
+        uint32_t peer          = 0;
+        struct End {
+            std::string name;
+            Kind        kind = Kind::Topic;
+            bool        provides = false, consumes = false, reliable = false;
+        };
+        std::vector<End> ends;   /* that walk, for the mesh graph */
     };
     std::map<std::string, Track> tracks;   /* by uuid hex */
 
@@ -544,11 +567,105 @@ struct Capture::Impl {
     uint64_t    last_meta_us   = 0;
     uint32_t    selected_peer  = 0;
     bool        have_selection = false;
-    uint32_t    endpoints_epoch = 0xFFFFFFFFu;
+    uint32_t    endpoints_epoch = 0xFFFFFFFFu, endpoints_mesh = 0xFFFFFFFFu;
     std::string endpoints_id;
     uint32_t    mesh_epoch = 0xFFFFFFFFu;   /* the epoch topics_ was walked at */
     int         mesh_nodes = -1;            /* and the node count then, since a drop is silent */
     std::map<std::string, rant::Entity> entities;   /* that walk by name, for kinds and schemas */
+
+    /* One channel's counters at one node, and the rates between its last two replies. */
+    struct Channel {
+        uint64_t tx = 0, rx = 0;
+        double   tx_hz = -1, rx_hz = -1;
+        uint64_t tx_moved_us = 0, rx_moved_us = 0;
+        uint64_t first_us = 0;   /* the reply it first showed in */
+    };
+    struct Traffic {
+        bool     pending = false;
+        uint64_t asked_us = 0, at_us = 0;
+        std::map<std::string, Channel> channels;
+    };
+    std::map<std::string, Traffic> traffic;   /* by uuid hex, like tracks */
+    bool                           graph_dirty = true;
+
+    /* Asks one node for its counters, one ask in flight per node. */
+    void ask_traffic(rant::Reflection& mesh, const std::string& id, uint32_t peer, uint64_t now)
+    {
+        Traffic& t = traffic[id];
+        if (now - t.asked_us < (t.pending ? TRAFFIC_TIMEOUT_US : TRAFFIC_PERIOD_US)) return;
+        t.pending  = true;
+        t.asked_us = now;
+        const rant::SendStatus sent = mesh.meta_async(peer, [this, id](const rant::MetaSnapshot& snap) {
+            TrafficReply reply;
+            reply.id    = id;
+            reply.ok    = snap.valid;
+            reply.at_us = steady_us();
+            const auto topics = snap.info.find("topics");
+            if (topics != snap.info.end() && topics->second.is_array())
+                for (const rant::MapItem& item : topics->second.as_array()) {
+                    if (!item.is_map()) continue;
+                    const rant::MapDict& d = item.as_map();
+                    reply.counts.emplace_back(dict_string(d, "name"), dict_uint(d, "txMsgs"), dict_uint(d, "rxMsgs"));
+                }
+            std::lock_guard<std::mutex> lock(mutex);
+            traffic_inbox.push_back(std::move(reply));
+        }, rant::MetaTopics);
+        if (sent != rant::SendStatus::Ok) t.pending = false;
+    }
+
+    /* Folds the replies that landed into rates. True when one did. */
+    bool fold_traffic()
+    {
+        std::vector<TrafficReply> replies;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            replies.swap(traffic_inbox);
+        }
+        bool moved = false;
+        for (const TrafficReply& reply : replies) {
+            const auto found = traffic.find(reply.id);
+            if (found == traffic.end()) continue;   /* the node left */
+            Traffic& t = found->second;
+            t.pending = false;
+            if (!reply.ok) continue;
+            const bool   fresh = t.at_us && reply.at_us > t.at_us && reply.at_us - t.at_us < 3 * TRAFFIC_PERIOD_US;
+            const double dt    = fresh ? (double)(reply.at_us - t.at_us) / 1e6 : 0;
+            std::map<std::string, Channel> next;
+            for (const auto& count : reply.counts) {
+                Channel c;
+                c.tx       = std::get<1>(count);
+                c.rx       = std::get<2>(count);
+                c.first_us = reply.at_us;
+                const auto old = t.channels.find(std::get<0>(count));
+                if (old != t.channels.end()) {
+                    c.tx_moved_us = old->second.tx_moved_us;
+                    c.rx_moved_us = old->second.rx_moved_us;
+                    c.first_us    = old->second.first_us;
+                    /* counters that went back are a restarted handle, so start over */
+                    if (fresh && c.tx >= old->second.tx && c.rx >= old->second.rx) {
+                        c.tx_hz = (double)(c.tx - old->second.tx) / dt;
+                        c.rx_hz = (double)(c.rx - old->second.rx) / dt;
+                        if (c.tx > old->second.tx) c.tx_moved_us = reply.at_us;
+                        if (c.rx > old->second.rx) c.rx_moved_us = reply.at_us;
+                    }
+                }
+                next[std::get<0>(count)] = c;
+            }
+            t.channels.swap(next);
+            t.at_us = reply.at_us;
+            moved   = true;
+        }
+        return moved;
+    }
+
+    /* A node's channel as its latest reply gave it, null when that is stale or lacks it. */
+    const Channel* channel(const std::string& id, const std::string& name, uint64_t now) const
+    {
+        const auto t = traffic.find(id);
+        if (t == traffic.end() || !t->second.at_us || now - t->second.at_us > 3 * TRAFFIC_PERIOD_US) return nullptr;
+        const auto c = t->second.channels.find(name);
+        return c == t->second.channels.end() ? nullptr : &c->second;
+    }
 
     /* What a handler hands over. The handler holds the inbox weakly, since a variable's
        observer stays registered until the node closes. */
@@ -1663,6 +1780,7 @@ void Capture::poll()
     const uint64_t now_steady = steady_us();
     rant::Reflection mesh = impl_->node.reflection();
     const std::vector<rant::Peer> peers = mesh.peers();
+    const uint32_t mesh_epoch = mesh.epoch();
 
     /* Slide the clock origin so node time never reads earlier than an announce we hold. */
     for (const rant::Peer& p : peers) {
@@ -1691,21 +1809,28 @@ void Capture::poll()
         if (!track.first_seen_us) {
             track.first_seen_us = now_steady;
             track.epoch         = p.epoch;
+            impl_->graph_dirty  = true;
         } else if (p.epoch != track.epoch) {
             track.epoch = p.epoch;
             track.updates++;
         }
 
         /* The reflection walk is O(topics) per peer, so only redo it when the peer's
-           announce actually moved. */
-        if (track.counted_epoch != p.epoch) {
+           announce moved, or the mesh did, since names arrive with the details later. */
+        if (track.counted_epoch != p.epoch || track.counted_mesh != mesh_epoch) {
             track.counted_epoch = p.epoch;
+            track.counted_mesh  = mesh_epoch;
             track.publishes = track.subscribes = 0;
+            track.ends.clear();
             for (const rant::Entity& e : mesh.entities(p.id)) {
                 if (e.provides) track.publishes++;
                 if (e.consumes) track.subscribes++;
+                track.ends.push_back(Impl::Track::End{ e.name, kind_of(e.kind), e.provides, e.consumes, e.reliable });
             }
+            impl_->graph_dirty = true;
         }
+        track.peer = p.id;
+        if (traffic_on_) impl_->ask_traffic(mesh, id, p.id, now_steady);
 
         NodeRow row;
         row.id            = id;
@@ -1744,8 +1869,15 @@ void Capture::poll()
         node_count_++;
     }
 
-    for (auto it = impl_->tracks.begin(); it != impl_->tracks.end();)
-        it = it->second.seen ? std::next(it) : impl_->tracks.erase(it);
+    for (auto it = impl_->tracks.begin(); it != impl_->tracks.end();) {
+        if (it->second.seen) {
+            ++it;
+            continue;
+        }
+        impl_->traffic.erase(it->first);
+        impl_->graph_dirty = true;
+        it = impl_->tracks.erase(it);
+    }
 
     std::sort(machines_.begin(), machines_.end(),
               [](const MachineRow& a, const MachineRow& b) { return a.host < b.host; });
@@ -1756,11 +1888,15 @@ void Capture::poll()
     impl_->selected_peer  = selected_peer;
     impl_->have_selection = have_selection;
 
+    if (impl_->fold_traffic() || impl_->graph_dirty) build_mesh(now_steady);
+
     /* The endpoint lists follow the same epoch rule as the counts. */
     if (have_selection &&
-        (impl_->endpoints_id != selected_id_ || impl_->endpoints_epoch != selected_epoch)) {
+        (impl_->endpoints_id != selected_id_ || impl_->endpoints_epoch != selected_epoch ||
+         impl_->endpoints_mesh != mesh_epoch)) {
         impl_->endpoints_id    = selected_id_;
         impl_->endpoints_epoch = selected_epoch;
+        impl_->endpoints_mesh  = mesh_epoch;
         publishes_.clear();
         subscribes_.clear();
         for (const rant::Entity& e : mesh.entities(selected_peer)) {
@@ -1787,7 +1923,6 @@ void Capture::poll()
     }
 
     /* The mesh fold is O(entities), so it is walked only when the mesh moved. */
-    const uint32_t mesh_epoch = mesh.epoch();
     if (mesh_epoch != impl_->mesh_epoch || node_count_ != impl_->mesh_nodes) {
         impl_->mesh_epoch = mesh_epoch;
         impl_->mesh_nodes = node_count_;
@@ -1959,4 +2094,118 @@ void Capture::poll()
             log_.push_back(Impl::row(*it));
         }
     }
+}
+
+double Capture::traffic_hz(const std::string& name) const
+{
+    const auto it = traffic_hz_.find(name);
+    return it == traffic_hz_.end() ? -1 : it->second;
+}
+
+void Capture::build_mesh(uint64_t now_us)
+{
+    impl_->graph_dirty = false;
+    mesh_ = MeshView();
+    traffic_hz_.clear();
+
+    struct Sides {
+        Kind             kind = Kind::Topic;
+        bool             reliable = false;
+        std::vector<int> providers, consumers;
+    };
+    std::map<std::string, Sides> names;
+    for (const MachineRow& m : machines_)
+        for (const NodeRow& n : m.nodes) {
+            const auto track = impl_->tracks.find(n.id);
+            if (track == impl_->tracks.end()) continue;
+            const int at = (int)mesh_.nodes.size();
+            const auto t = impl_->traffic.find(n.id);
+            MeshNode node;
+            node.id      = n.id;
+            node.name    = n.name;
+            node.host    = m.host;
+            node.alive   = n.alive;
+            node.reports = t != impl_->traffic.end() && t->second.at_us &&
+                           now_us - t->second.at_us <= 3 * TRAFFIC_PERIOD_US;
+            mesh_.nodes.push_back(std::move(node));
+            for (const Impl::Track::End& e : track->second.ends) {
+                Sides& sides   = names[e.name];
+                sides.kind     = e.kind;
+                sides.reliable = sides.reliable || e.reliable;
+                if (e.provides) sides.providers.push_back(at);
+                if (e.consumes) sides.consumers.push_back(at);
+            }
+        }
+
+    /* The channels a name rides on, each with the side that sends on it. A call's rate is
+       its requests: the answers and the progress only keep it active. */
+    struct Lane {
+        const char* suffix;
+        bool        by_provider;
+        bool        counted;
+    };
+    static const std::vector<Lane> TOPIC = { { "", true, true } };
+    static const std::vector<Lane> VARIABLE = { { "", true, true }, { "@set", false, true } };
+    static const std::vector<Lane> FUNCTION = { { "@req", false, true }, { "@rsp", true, false } };
+    static const std::vector<Lane> TASK = { { "@req", false, true }, { "@prg", true, false }, { "@rsp", true, false } };
+
+    for (const auto& entry : names) {
+        const std::string& name  = entry.first;
+        const Sides&       sides = entry.second;
+        const std::vector<Lane>& lanes = sides.kind == Kind::Variable ? VARIABLE
+                                       : sides.kind == Kind::Function ? FUNCTION
+                                       : sides.kind == Kind::Task     ? TASK : TOPIC;
+
+        /* The tree's rate: what every sender committed on the primary channel, or what the
+           busiest receiver got when no sender reports. */
+        double tx_sum = -1, rx_most = -1;
+        for (const MeshNode& node : mesh_.nodes)
+            if (const Impl::Channel* c = impl_->channel(node.id, name + (is_call(sides.kind) ? "@req" : ""), now_us)) {
+                if (c->tx_hz >= 0) tx_sum = std::max(tx_sum, 0.0) + c->tx_hz;
+                rx_most = std::max(rx_most, c->rx_hz);
+            }
+        if (tx_sum >= 0 || rx_most >= 0) traffic_hz_[name] = std::max(tx_sum, rx_most);
+
+        if (sides.consumers.empty())
+            for (const int p : sides.providers) mesh_.unheard.push_back(MeshEnd{ p, name, sides.kind });
+        if (sides.providers.empty())
+            for (const int c : sides.consumers) mesh_.waiting.push_back(MeshEnd{ c, name, sides.kind });
+
+        for (const int p : sides.providers)
+            for (const int c : sides.consumers) {
+                if (p == c) continue;
+                MeshLink link;
+                link.from     = p;
+                link.to       = c;
+                link.name     = name;
+                link.kind     = sides.kind;
+                link.reliable = sides.reliable;
+                /* A lane carries at most what its sender sent and its receiver got, since
+                   either may also talk to others. One side alone stands in for both. */
+                uint64_t moved = 0;
+                for (const Lane& lane : lanes) {
+                    const std::string& sender   = mesh_.nodes[lane.by_provider ? p : c].id;
+                    const std::string& receiver = mesh_.nodes[lane.by_provider ? c : p].id;
+                    const Impl::Channel* s = impl_->channel(sender, name + lane.suffix, now_us);
+                    const Impl::Channel* r = impl_->channel(receiver, name + lane.suffix, now_us);
+                    const double sent = s ? s->tx_hz : -1, got = r ? r->rx_hz : -1;
+                    const double hz   = sent >= 0 && got >= 0 ? std::min(sent, got) : std::max(sent, got);
+                    if (hz >= 0 && lane.counted) link.hz = std::max(link.hz, 0.0) + hz;
+                    if (sent >= 0 && lane.counted) link.sent_hz = std::max(link.sent_hz, 0.0) + sent;
+                    /* The sender sent lately and the receiver got nothing from anyone well
+                       before that. A response goes to one caller, so it proves nothing. */
+                    const uint64_t lost_us = (uint64_t)(LOST_S * 1e6);
+                    if (s && r && std::string(lane.suffix) != "@rsp" && s->tx_moved_us &&
+                        now_us - s->tx_moved_us < (uint64_t)(ACTIVE_S * 1e6) &&
+                        s->tx_moved_us > std::max(r->rx_moved_us, r->first_us) + lost_us)
+                        link.lost = true;
+                    const uint64_t at = s && r ? std::min(s->tx_moved_us, r->rx_moved_us)
+                                      : s ? s->tx_moved_us : r ? r->rx_moved_us : 0;
+                    moved = std::max(moved, at);
+                }
+                link.active = moved && now_us - moved < (uint64_t)(ACTIVE_S * 1e6);
+                mesh_.links.push_back(std::move(link));
+            }
+    }
+    mesh_epoch_++;
 }

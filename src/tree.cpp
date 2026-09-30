@@ -9,8 +9,6 @@ std::string tree_indent(int depth)
     return std::to_string(depth * 15) + "dp";
 }
 
-namespace {
-
 bool contains_ci(const std::string& hay, const std::string& needle)
 {
     if (needle.empty()) return true;
@@ -20,6 +18,8 @@ bool contains_ci(const std::string& hay, const std::string& needle)
                                 });
     return it != hay.end();
 }
+
+namespace {
 
 std::vector<std::string> split_segments(const std::string& name)
 {
@@ -86,7 +86,7 @@ bool topic_passes(const Capture& capture, const Capture::TopicRow& topic, const 
         return false;
     if (cats & CAT_ACTIVE) {
         const Capture::WatchView* view = capture.view(topic.name);
-        if (!view || !(view->rate_hz > 0)) return false;
+        if (!(view && view->rate_hz > 0) && !(capture.traffic_hz(topic.name) > 0)) return false;
     }
     if (text.empty() || contains_ci(topic.name, text) || contains_ci(topic.type, text)) return true;
     for (const std::string& node : topic.nodes)

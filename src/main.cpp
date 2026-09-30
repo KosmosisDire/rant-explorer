@@ -324,14 +324,16 @@ struct Ui {
 
     /* mesh tab: the head's filters, and the sidebar for the selection */
     Rml::String mesh_filter;
-    int         mesh_cats  = 0;   /* the funnel's MeshCategory bits */
+    int         mesh_cats  = MESH_DEFAULT;   /* the funnel's MeshCategory bits */
+    bool        mesh_funnel = false;         /* they differ from the default, so it is lit */
     int         mesh_hops  = 1;   /* 0 for every hop */
     bool        mesh_focus = false;
     MeshDetails mesh;
 
     /* topics tab */
     Rml::String           topic_filter;
-    int                   topic_cats = 0;          /* the funnel's TreeCategory bits */
+    int                   topic_cats = CAT_DEFAULT;   /* the funnel's TreeCategory bits */
+    bool                  topic_funnel = false;       /* they differ from the default, so it is lit */
     bool                  filtering = false;       /* the text or the funnel hides something */
     std::set<std::string> expanded;        /* the branches open, by tree path */
     Rml::String           sel_path;        /* the selected row's tree path, empty for none */
@@ -467,14 +469,14 @@ void menu_box(Rml::Vector<MenuItem>& items, const char* label, unsigned bit, uns
     items.push_back(item);
 }
 
-/* The last line of a checklist while any box is checked. */
-void menu_clear(Rml::Vector<MenuItem>& items, unsigned cats)
+/* The last line of a checklist while its boxes differ from where they start. */
+void menu_reset(Rml::Vector<MenuItem>& items, unsigned cats, unsigned start)
 {
-    if (!cats) return;
-    MenuItem clear;
-    clear.label  = "Clear filters";
-    clear.action = "clear";
-    items.push_back(clear);
+    if (cats == start) return;
+    MenuItem reset;
+    reset.label  = "Reset filters";
+    reset.action = "reset";
+    items.push_back(reset);
 }
 
 /* The topic tree's funnel. */
@@ -494,7 +496,9 @@ Rml::Vector<MenuItem> filter_menu(unsigned cats)
     header("State");
     box("Subscribed", CAT_SUBSCRIBED);
     box("Active", CAT_ACTIVE);
-    menu_clear(items, cats);
+    header("Names");
+    box("Hide system names", CAT_NO_SYSTEM);
+    menu_reset(items, cats, CAT_DEFAULT);
     return items;
 }
 
@@ -514,7 +518,9 @@ Rml::Vector<MenuItem> mesh_menu(unsigned cats)
     header("Nodes");
     box("Connected only", MESH_CONNECTED);
     box("No leaves", MESH_NO_LEAVES);
-    menu_clear(items, cats);
+    header("Names");
+    box("Hide system names", MESH_NO_SYSTEM);
+    menu_reset(items, cats, MESH_DEFAULT);
     return items;
 }
 
@@ -1137,6 +1143,8 @@ int main(int argc, char** argv)
         ctor.Bind("note",            &ui.note);
         ctor.Bind("topic_filter",    &ui.topic_filter);
         ctor.Bind("topic_cats",      &ui.topic_cats);
+        ctor.Bind("topic_funnel",    &ui.topic_funnel);
+        ctor.Bind("mesh_funnel",     &ui.mesh_funnel);
         ctor.Bind("filtering",       &ui.filtering);
         ctor.Bind("menu_open",       &ui.menu_open);
         ctor.Bind("menu_left",       &ui.menu_left);
@@ -1484,8 +1492,8 @@ int main(int argc, char** argv)
                 if (ui.menu_kind == "filter" || ui.menu_kind == "mesh") {
                     const bool mesh = ui.menu_kind == "mesh";
                     int&       cats = mesh ? ui.mesh_cats : ui.topic_cats;
-                    if (action == "clear") {
-                        cats = 0;
+                    if (action == "reset") {
+                        cats = mesh ? MESH_DEFAULT : CAT_DEFAULT;
                         close_menu();
                     } else {
                         cats ^= std::atoi(action.c_str());
@@ -1870,6 +1878,10 @@ int main(int argc, char** argv)
     /* What the tree was last built from, and the window of it the document holds. */
     uint32_t    tree_epoch = 0xFFFFFFFFu;
     Rml::String       tree_filter;
+    /* The search the tree last opened branches for, empty for none, and the branches open
+       before it began, put back when it ends. */
+    std::string           tree_search;
+    std::set<std::string> expanded_before;
     std::vector<bool> tree_passing;   /* per topic, while a state box is checked */
     int               window_first = -1, window_last = -1;
 
@@ -1964,6 +1976,8 @@ int main(int argc, char** argv)
         capture.set_traffic(ui.tab == "topics" || ui.tab == "mesh");
         capture.poll();
         mesh_set_filter(MeshFilter{ ui.mesh_filter, (unsigned)ui.mesh_cats, ui.mesh_hops, ui.mesh_focus });
+        sync(model, "topic_funnel", ui.topic_funnel, ui.topic_cats != (int)CAT_DEFAULT);
+        sync(model, "mesh_funnel", ui.mesh_funnel, ui.mesh_cats != (int)MESH_DEFAULT);
         if (ui.tab == "mesh") sync(model, "mesh", ui.mesh, mesh_details());
 
         /* note, sel and meta are marked every frame at the end: sel and meta count live
@@ -2004,6 +2018,21 @@ int main(int argc, char** argv)
             tree_filter = ui.topic_filter;
             tree_dirty  = false;
             int matched = 0;
+            /* A search opens the branches holding its matches once, then leaves them to the
+               user. Ending it puts back what was open before. */
+            const unsigned search_cats = (unsigned)ui.topic_cats & CAT_SEARCH;
+            const std::string search = ui.topic_filter.empty() && !search_cats
+                                     ? std::string() : ui.topic_filter + "|" + std::to_string(search_cats);
+            if (search != tree_search) {
+                if (tree_search.empty()) expanded_before = ui.expanded;
+                if (search.empty()) {
+                    ui.expanded = expanded_before;
+                } else {
+                    const std::set<std::string> open = matched_branches(capture, ui.topic_filter, (unsigned)ui.topic_cats);
+                    ui.expanded.insert(open.begin(), open.end());
+                }
+                tree_search = search;
+            }
             tree = build_tree(capture, ui.expanded, ui.topic_filter, (unsigned)ui.topic_cats, matched);
             window_first = window_last = -1;
             sync(model, "topic_matched", ui.topic_matched, matched);

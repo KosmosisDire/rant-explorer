@@ -19,6 +19,11 @@ bool contains_ci(const std::string& hay, const std::string& needle)
     return it != hay.end();
 }
 
+bool is_system(const std::string& name)
+{
+    return !name.empty() && name[0] == '@';
+}
+
 namespace {
 
 std::vector<std::string> split_segments(const std::string& name)
@@ -51,7 +56,7 @@ struct Split {
 };
 
 void flatten(const std::vector<Node>& nodes, int at, int depth, const std::set<std::string>& expanded,
-             bool filtering, std::vector<TreeRow>& out)
+             std::vector<TreeRow>& out)
 {
     for (const int child : nodes[at].children) {
         const Node& node = nodes[child];
@@ -61,11 +66,11 @@ void flatten(const std::vector<Node>& nodes, int at, int depth, const std::set<s
         row.indent    = tree_indent(depth);
         row.depth     = depth;
         row.branch    = !node.children.empty();
-        row.open      = row.branch && (filtering || expanded.count(node.path));
+        row.open      = row.branch && expanded.count(node.path);
         row.has_topic = node.topic >= 0;
         row.topic     = node.topic;
         out.push_back(row);
-        if (row.open) flatten(nodes, child, depth + 1, expanded, filtering, out);
+        if (row.open) flatten(nodes, child, depth + 1, expanded, out);
     }
 }
 
@@ -82,6 +87,7 @@ bool topic_passes(const Capture& capture, const Capture::TopicRow& topic, const 
         if (!(cats & bit)) return false;
     }
     if ((cats & CAT_QOS) && !(cats & (topic.reliable ? CAT_RELIABLE : CAT_BEST_EFFORT))) return false;
+    if ((cats & CAT_NO_SYSTEM) && is_system(topic.name)) return false;
     if ((cats & CAT_SUBSCRIBED) && !capture.subscribed(topic.name) && !capture.previewing(topic.name))
         return false;
     if (cats & CAT_ACTIVE) {
@@ -108,6 +114,21 @@ const char* kind_icon(const std::string& word)
     if (word == Capture::kind_word(Kind::Variable)) return "variable";
     if (word == Capture::kind_word(Kind::Task))     return "list-clock";
     return "rss";
+}
+
+std::set<std::string> matched_branches(const Capture& capture, const std::string& text, unsigned cats)
+{
+    std::set<std::string> out;
+    for (const Capture::TopicRow& topic : capture.topics()) {
+        if (!topic_passes(capture, topic, text, cats)) continue;
+        std::string path;
+        const std::vector<std::string> segments = split_segments(topic.name);
+        for (size_t i = 0; i + 1 < segments.size(); i++) {
+            path += (i ? "/" : "") + segments[i];
+            out.insert(path);
+        }
+    }
+    return out;
 }
 
 std::vector<TreeRow> build_tree(const Capture& capture, const std::set<std::string>& expanded,
@@ -144,7 +165,7 @@ std::vector<TreeRow> build_tree(const Capture& capture, const std::set<std::stri
     }
 
     std::vector<TreeRow> rows;
-    flatten(nodes, 0, 0, expanded, !text.empty() || cats, rows);
+    flatten(nodes, 0, 0, expanded, rows);
     for (size_t i = 0; i < rows.size(); i++) {
         if (rows[i].has_topic) {
             rows[i].kind       = topics[rows[i].topic].kind;

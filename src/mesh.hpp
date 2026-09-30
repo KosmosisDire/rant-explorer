@@ -24,12 +24,15 @@ enum MeshCategory : unsigned {
     MESH_ACTIVE    = 1u << 4,   /* only links with traffic */
     MESH_CONNECTED = 1u << 5,   /* no node without a link */
     MESH_NO_LEAVES = 1u << 6,   /* no node with one neighbour only */
+    MESH_NO_SYSTEM = 1u << 7,   /* no link that is only a system name */
 };
 constexpr unsigned MESH_KINDS = MESH_TOPIC | MESH_FUNCTION | MESH_VARIABLE | MESH_TASK;
+/* What the funnel starts with, and what resetting it puts back. */
+constexpr unsigned MESH_DEFAULT = MESH_NO_SYSTEM;
 
 struct MeshFilter {
     std::string text;            /* a node's name, or a name one of its links carries */
-    unsigned    cats = 0;
+    unsigned    cats = MESH_DEFAULT;
     int         hops = 1;        /* how far around the selected node stays lit, 0 for all */
     bool        focus = false;   /* past the hops is hidden rather than dimmed */
 

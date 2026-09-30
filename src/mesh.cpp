@@ -130,6 +130,7 @@ void rebuild()
     for (size_t i = 0; i < mesh.links.size(); i++) {
         const Capture::MeshLink& l = mesh.links[i];
         if (!kind_kept(f.cats, l.kind) || ((f.cats & MESH_ACTIVE) && !l.active)) continue;
+        if ((f.cats & MESH_NO_SYSTEM) && is_system(l.name)) continue;
         if (!f.text.empty() && !hit(l.name) && !hit(mesh.nodes[l.from].name) && !hit(mesh.nodes[l.to].name)) continue;
         kept[i] = 1;
         around[l.from].insert(l.to);
@@ -861,6 +862,13 @@ private:
 
 Rml::ElementInstancerGeneric<MeshElement> instancer;
 
+/* A system name while the funnel hides them. It is a view setting rather than a search,
+   so the sidebar follows it too. */
+bool name_hidden(const std::string& name)
+{
+    return (st.filter.cats & MESH_NO_SYSTEM) && is_system(name);
+}
+
 /* The rows of a set of links grouped by name, each with the nodes at the end the
    context does not already say: its consumers, or its providers. */
 std::vector<MeshRow> rows_of(const std::vector<int>& links, bool from, bool to)
@@ -915,7 +923,7 @@ std::vector<MeshRow> ends_of(const std::vector<Capture::MeshEnd>& ends, int node
     const Capture::MeshView& mesh = source->mesh();
     std::map<std::string, MeshRow> rows;
     for (const Capture::MeshEnd& end : ends) {
-        if (node >= 0 && end.node != node) continue;
+        if ((node >= 0 && end.node != node) || name_hidden(end.name)) continue;
         MeshRow& row = rows[end.name];
         row.name = end.name;
         row.kind = end.kind;
@@ -979,6 +987,9 @@ MeshDetails mesh_details()
     refresh();
     const Capture::MeshView& mesh = source->mesh();
     const int node = index_of(st.pick.node), from = index_of(st.pick.from), to = index_of(st.pick.to);
+    std::vector<int> kept;
+    for (size_t i = 0; i < mesh.links.size(); i++)
+        if (!name_hidden(mesh.links[i].name)) kept.push_back((int)i);
 
     if (node >= 0) {
         const Capture::MeshNode& n = mesh.nodes[node];
@@ -988,9 +999,9 @@ MeshDetails mesh_details()
         out.alive   = n.alive;
         out.reports = n.reports;
         std::vector<int> sends, receives;
-        for (size_t i = 0; i < mesh.links.size(); i++) {
-            if (mesh.links[i].from == node) sends.push_back((int)i);
-            if (mesh.links[i].to == node) receives.push_back((int)i);
+        for (const int i : kept) {
+            if (mesh.links[i].from == node) sends.push_back(i);
+            if (mesh.links[i].to == node) receives.push_back(i);
         }
         add_group(out, "Sends", rows_of(sends, false, true));
         add_group(out, "Receives", rows_of(receives, true, false));
@@ -1003,9 +1014,9 @@ MeshDetails mesh_details()
         out.from = mesh.nodes[from].name;
         out.to   = mesh.nodes[to].name;
         std::vector<int> there, back;
-        for (size_t i = 0; i < mesh.links.size(); i++) {
-            if (mesh.links[i].from == from && mesh.links[i].to == to) there.push_back((int)i);
-            if (mesh.links[i].from == to && mesh.links[i].to == from) back.push_back((int)i);
+        for (const int i : kept) {
+            if (mesh.links[i].from == from && mesh.links[i].to == to) there.push_back(i);
+            if (mesh.links[i].from == to && mesh.links[i].to == from) back.push_back(i);
         }
         add_group(out, out.from + " to " + out.to, rows_of(there, false, false));
         add_group(out, out.to + " to " + out.from, rows_of(back, false, false));
@@ -1014,20 +1025,21 @@ MeshDetails mesh_details()
 
     int    active = 0;
     double published = -1;
-    for (const Capture::MeshLink& l : mesh.links) active += l.active ? 1 : 0;
+    for (const int i : kept) active += mesh.links[i].active ? 1 : 0;
     for (const Capture::TopicRow& topic : source->topics()) {
+        if (name_hidden(topic.name)) continue;
         const double hz = source->traffic_hz(topic.name);
         if (hz >= 0) published = std::max(published, 0.0) + hz;
     }
     out.nodes   = std::to_string(mesh.nodes.size());
-    out.links   = std::to_string(mesh.links.size());
+    out.links   = std::to_string(kept.size());
     out.active  = std::to_string(active);
     out.traffic = format_rate(published);
 
     std::vector<int> lost, busy;
-    for (size_t i = 0; i < mesh.links.size(); i++) {
-        if (mesh.links[i].lost) lost.push_back((int)i);
-        else if (mesh.links[i].hz > 0) busy.push_back((int)i);
+    for (const int i : kept) {
+        if (mesh.links[i].lost) lost.push_back(i);
+        else if (mesh.links[i].hz > 0) busy.push_back(i);
     }
     std::vector<MeshRow> dropped;
     for (const int i : lost) {

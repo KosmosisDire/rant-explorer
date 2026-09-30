@@ -30,6 +30,9 @@ struct TreeRow {
 /* hay holds needle, case blind. An empty needle is in everything. */
 bool contains_ci(const std::string& hay, const std::string& needle);
 
+/* A name under a namespace the libraries keep for themselves, such as @rant. */
+bool is_system(const std::string& name);
+
 /* The Lucide glyph for a kind, by the word the document holds it as. */
 const char* kind_icon(const std::string& word);
 
@@ -44,8 +47,14 @@ enum TreeCategory : unsigned {
     CAT_BEST_EFFORT = 1u << 5,
     CAT_SUBSCRIBED  = 1u << 6,   /* this explorer holds a subscription, kept or a preview */
     CAT_ACTIVE      = 1u << 7,   /* messages arrive here or the nodes report traffic */
+    CAT_NO_SYSTEM   = 1u << 8,   /* no system name */
 };
 constexpr unsigned CAT_KINDS = CAT_TOPIC | CAT_FUNCTION | CAT_VARIABLE | CAT_TASK;
+/* What the funnel starts with, and what resetting it puts back. */
+constexpr unsigned CAT_DEFAULT = CAT_NO_SYSTEM;
+/* The boxes that make a search, which opens the branches holding its matches. Hiding
+   system names is where the tree starts, not a search. */
+constexpr unsigned CAT_SEARCH = ~CAT_NO_SYSTEM;
 constexpr unsigned CAT_QOS   = CAT_RELIABLE | CAT_BEST_EFFORT;
 
 /* A topic passes the text when its name, its type or one of its nodes' names contains
@@ -56,8 +65,11 @@ bool topic_passes(const Capture& capture, const Capture::TopicRow& topic, const 
 /* A name on the mesh as a tree path: its segments joined by '/'. */
 std::string tree_path(const std::string& name);
 
-/* The rows in tree order, of the topics that pass. While anything filters, every branch
-   opens so a match is never hidden. matched counts the topics kept. */
+/* The tree path of every branch above a topic that passes. */
+std::set<std::string> matched_branches(const Capture& capture, const std::string& text, unsigned cats);
+
+/* The rows in tree order, of the topics that pass, through the expanded branches.
+   matched counts the topics kept. */
 std::vector<TreeRow> build_tree(const Capture& capture, const std::set<std::string>& expanded,
                                 const std::string& text, unsigned cats, int& matched);
 

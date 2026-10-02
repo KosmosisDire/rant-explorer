@@ -882,17 +882,18 @@ private:
         time_grid(c, X, now, top, bottom);
         value_grid(c, x0, x1, lo_, hi_, Y, node.is_float);
         /* The line, cut to the plot so the tail slides off the left edge and a new extreme
-           the range has not eased out to yet stays inside. */
+           the range has not eased out to yet stays inside. The newest value holds until now. */
         Columns columns;
         for (const Capture::TracePoint& p : points) columns.add({ X(p.t), Y(p.v) });
+        if (!points.empty() && points.back().t < now) columns.add({ X(now), Y(points.back().v) });
         const std::vector<Rml::Vector2f>& line = columns.points();
         for (size_t i = 1; i < line.size(); i++) {
             float ax = line[i - 1].x, ay = line[i - 1].y, bx = line[i].x, by = line[i].y;
             if (clip(ax, ay, bx, by, x0, top, x1, bottom)) c.line(ax, ay, bx, by, ink.accent, 1.5f);
         }
         if (!points.empty()) {
-            const float x = X(points.back().t), y = Y(points.back().v);
-            if (y >= top && y <= bottom) c.dot(x, y, ink.accent);
+            const float y = Y(points.back().v);
+            if (y >= top && y <= bottom) c.dot(X(std::max(now, points.back().t)), y, ink.accent);
         }
         corner(c, c.all(), value_text(node));
     }

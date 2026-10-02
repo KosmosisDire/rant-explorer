@@ -1037,11 +1037,15 @@ struct Capture::Impl {
                                                          : Capture::now_s();
     }
 
+    static bool traceable(const ValueNode& node)
+    {
+        return node.kind == ValueNode::Number || node.kind == ValueNode::Bool || node.kind == ValueNode::Enum;
+    }
+
     static void add_trace_points(Sub& s, const std::vector<ValueNode>& nodes, double t)
     {
         for (const ValueNode& node : nodes) {
-            if (node.kind != ValueNode::Number && node.kind != ValueNode::Bool && node.kind != ValueNode::Enum)
-                continue;
+            if (!traceable(node)) continue;
             const auto it = s.traces.find(node.path);
             if (it == s.traces.end()) continue;
             if (!it->second.empty() && t < it->second.back().t) continue;   /* never back in time */
@@ -1073,6 +1077,18 @@ struct Capture::Impl {
             Sub::Stream& st = entry.second;
             if (st.queue.push(std::move(p), STREAM_QUEUE_COUNT, STREAM_QUEUE_BYTES)) st.lost = true;
         }
+    }
+
+    /* A trace opened on a value already shown starts from it, so a plot need not wait for
+       the next message. */
+    static void seed_trace(Sub& s, const std::string& path)
+    {
+        if (s.view.last_s < 0) return;
+        for (const ValueNode& node : s.view.nodes)
+            if (node.path == path && traceable(node)) {
+                s.traces[path].push_back(TracePoint{ s.view.last_s, node.number });
+                return;
+            }
     }
 
     static void trim_traces(Sub& s)
@@ -1491,7 +1507,8 @@ void Capture::trace(const std::string& name, const std::vector<TraceSpec>& specs
         if (!s->trace_seconds.count(it->first)) it = s->traces.erase(it);
         else ++it;
     }
-    for (const auto& entry : s->trace_seconds) s->traces[entry.first];
+    for (const auto& entry : s->trace_seconds)
+        if (s->traces.try_emplace(entry.first).second) Impl::seed_trace(*s, entry.first);
 }
 
 void Capture::stream(const std::string& name, const std::vector<std::string>& paths)

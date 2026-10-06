@@ -875,6 +875,7 @@ std::vector<MeshRow> rows_of(const std::vector<int>& links, bool from, bool to)
 {
     const Capture::MeshView& mesh = source->mesh();
     struct Group {
+        std::string           name;
         Kind                  kind = Kind::Topic;
         std::set<std::string> from, to;
         double                hz = -1, sent = -1;
@@ -883,7 +884,8 @@ std::vector<MeshRow> rows_of(const std::vector<int>& links, bool from, bool to)
     std::map<std::string, Group> groups;
     for (const int i : links) {
         const Capture::MeshLink& l = mesh.links[i];
-        Group& g = groups[l.name];
+        Group& g = groups[Capture::key(l.kind, l.name)];
+        g.name = l.name;
         g.kind = l.kind;
         if (from) g.from.insert(mesh.nodes[l.from].name);
         if (to) g.to.insert(mesh.nodes[l.to].name);
@@ -904,7 +906,8 @@ std::vector<MeshRow> rows_of(const std::vector<int>& links, bool from, bool to)
     std::vector<MeshRow> rows;
     for (const auto& entry : groups) {
         MeshRow row;
-        row.name   = entry.first;
+        row.key    = entry.first;
+        row.name   = entry.second.name;
         row.kind   = entry.second.kind;
         row.from   = join(entry.second.from);
         row.to     = join(entry.second.to);
@@ -924,10 +927,12 @@ std::vector<MeshRow> ends_of(const std::vector<Capture::MeshEnd>& ends, int node
     std::map<std::string, MeshRow> rows;
     for (const Capture::MeshEnd& end : ends) {
         if ((node >= 0 && end.node != node) || name_hidden(end.name)) continue;
-        MeshRow& row = rows[end.name];
+        const std::string key = Capture::key(end.kind, end.name);
+        MeshRow& row = rows[key];
+        row.key  = key;
         row.name = end.name;
         row.kind = end.kind;
-        const double hz = source->traffic_hz(end.name);
+        const double hz = source->traffic_hz(key);
         row.rate = hz > 0 ? format_rate(hz) : std::string();
         if (name_nodes) row.to += (row.to.empty() ? "" : ", ") + mesh.nodes[end.node].name;
     }
@@ -1028,7 +1033,7 @@ MeshDetails mesh_details()
     for (const int i : kept) active += mesh.links[i].active ? 1 : 0;
     for (const Capture::TopicRow& topic : source->topics()) {
         if (name_hidden(topic.name)) continue;
-        const double hz = source->traffic_hz(topic.name);
+        const double hz = source->traffic_hz(topic.key);
         if (hz >= 0) published = std::max(published, 0.0) + hz;
     }
     out.nodes   = std::to_string(mesh.nodes.size());
@@ -1045,6 +1050,7 @@ MeshDetails mesh_details()
     for (const int i : lost) {
         const Capture::MeshLink& l = mesh.links[i];
         MeshRow row;
+        row.key  = Capture::key(l.kind, l.name);
         row.name = l.name;
         row.kind = l.kind;
         row.from = mesh.nodes[l.from].name;
@@ -1068,6 +1074,7 @@ MeshDetails mesh_details()
     for (const int i : busy) {
         const Capture::MeshLink& l = mesh.links[i];
         MeshRow row;
+        row.key    = Capture::key(l.kind, l.name);
         row.name   = l.name;
         row.kind   = l.kind;
         row.from   = mesh.nodes[l.from].name;

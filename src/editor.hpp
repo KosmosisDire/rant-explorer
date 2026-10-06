@@ -15,9 +15,9 @@ class Editor {
 public:
     explicit Editor(Capture& capture) : capture_(capture) {}
 
-    /* The watched topic's view, and any topic's by name. */
-    ValueView& view() { return views_[capture_.watched().name]; }
-    ValueView& view(const std::string& name) { return views_[name]; }
+    /* The watched topic's view, and any topic's by its Capture::key. */
+    ValueView& view() { return views_[capture_.watched().key]; }
+    ValueView& view(const std::string& key) { return views_[key]; }
     const std::map<std::string, ValueView>& views() const { return views_; }
 
     /* The nodes the tree shows: a composed topic's frozen draft, else the newest value. */

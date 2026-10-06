@@ -61,6 +61,17 @@ std::string entity_note(const rant::Entity& e)
     return note;
 }
 
+/* A view named by its key, the kind read back from the key's word. */
+void name_view(Capture::WatchView& v, const std::string& key)
+{
+    using Kind = Capture::Kind;
+    v.key  = key;
+    v.name = Capture::name_of(key);
+    v.kind = Kind::Topic;
+    for (const Kind kind : { Kind::Function, Kind::Variable, Kind::Task })
+        if (key.compare(0, key.find(':'), Capture::kind_word(kind)) == 0) v.kind = kind;
+}
+
 uint64_t dict_uint(const rant::MapDict& d, const char* key)
 {
     const auto it = d.find(key);
@@ -571,7 +582,7 @@ struct Capture::Impl {
     std::string endpoints_id;
     uint32_t    mesh_epoch = 0xFFFFFFFFu;   /* the epoch topics_ was walked at */
     int         mesh_nodes = -1;            /* and the node count then, since a drop is silent */
-    std::map<std::string, rant::Entity> entities;   /* that walk by name, for kinds and schemas */
+    std::map<std::string, rant::Entity> entities;   /* that walk by key, for schemas */
 
     /* One channel's counters at one node, and the rates between its last two replies. */
     struct Channel {
@@ -794,23 +805,31 @@ struct Capture::Impl {
         bool listening() const { return live.valid() && (live.topic.valid() || live.variable.valid()); }
     };
 
-    std::map<std::string, Sub>       subs;
-    std::string                      watch_name;   /* what the UI asked for */
+    std::map<std::string, Sub>       subs;         /* by key */
+    std::string                      watch_key;    /* what the UI asked for */
     std::vector<Handle>              retiring;     /* a close refuses mid dispatch, so it retries */
     std::map<uint64_t, rant::Schema> schemas;      /* every schema seen, parsed here once */
 
-    Sub* find(const std::string& name)
+    Sub* find(const std::string& key)
     {
-        const auto it = subs.find(name);
+        const auto it = subs.find(key);
         return it == subs.end() ? nullptr : &it->second;
     }
 
-    /* The watched name's sub, null while nothing is watched or the node failed. */
-    static Sub* watched(Impl* im) { return im ? im->find(im->watch_name) : nullptr; }
-
-    const rant::Entity* entity(const std::string& name) const
+    /* The key's sub, made on first use. Its kind comes from the key and never changes. */
+    Sub& open(const std::string& key)
     {
-        const auto it = entities.find(name);
+        Sub& s = subs[key];
+        if (s.view.key.empty()) name_view(s.view, key);
+        return s;
+    }
+
+    /* The watched key's sub, null while nothing is watched or the node failed. */
+    static Sub* watched(Impl* im) { return im ? im->find(im->watch_key) : nullptr; }
+
+    const rant::Entity* entity(const std::string& key) const
+    {
+        const auto it = entities.find(key);
         return it == entities.end() ? nullptr : &it->second;
     }
 
@@ -1147,11 +1166,11 @@ struct Capture::Impl {
         if (recv_us && now_us - (int64_t)recv_us < s.clock_offset_us) s.clock_offset_us = now_us - (int64_t)recv_us;
     }
 
-    /* Keeps one name's handle in line with what it is and decodes what arrived since. */
-    void poll_sub(const std::string& name, Sub& s, uint32_t epoch)
+    /* Keeps one key's handle in line with what it is and decodes what arrived since. */
+    void poll_sub(Sub& s, uint32_t epoch)
     {
-        const rant::Entity* e = entity(name);
-        if (e) s.view.kind = kind_of(e->kind);
+        const std::string&  name = s.view.name;
+        const rant::Entity* e    = entity(s.view.key);
         if (is_call(s.view.kind)) {
             poll_call(name, s, e, epoch);
             return;
@@ -1445,19 +1464,30 @@ const char* Capture::kind_word(Kind kind)
     }
 }
 
-void Capture::watch(const std::string& name)
+std::string Capture::key(Kind kind, const std::string& name)
+{
+    return std::string(kind_word(kind)) + ":" + name;
+}
+
+std::string Capture::name_of(const std::string& key)
+{
+    const size_t colon = key.find(':');
+    return colon == std::string::npos ? key : key.substr(colon + 1);
+}
+
+void Capture::watch(const std::string& key)
 {
     if (!impl_) {
-        none_.name = name;
+        name_view(none_, key);
         return;
     }
     Impl& im = *impl_;
-    if (im.watch_name == name) return;
-    /* a draft belongs to the watch, so leaving the name ends it */
-    if (Impl::Sub* old = im.find(im.watch_name)) old->compose_hash = 0;
-    im.watch_name = name;
-    none_.name    = name;
-    if (!name.empty()) im.subs[name].view.name = name;
+    if (im.watch_key == key) return;
+    /* a draft belongs to the watch, so leaving the key ends it */
+    if (Impl::Sub* old = im.find(im.watch_key)) old->compose_hash = 0;
+    im.watch_key = key;
+    name_view(none_, key);
+    if (!key.empty()) im.open(key);
 }
 
 const Capture::WatchView& Capture::watched() const
@@ -1466,39 +1496,37 @@ const Capture::WatchView& Capture::watched() const
     return s ? s->view : none_;
 }
 
-void Capture::subscribe(const std::string& name, bool on)
+void Capture::subscribe(const std::string& key, bool on)
 {
-    if (!impl_ || name.empty()) return;
+    if (!impl_ || key.empty()) return;
     if (on) {
-        Impl::Sub& s = impl_->subs[name];
-        s.wanted    = true;
-        s.view.name = name;
-    } else if (Impl::Sub* s = impl_->find(name)) {
+        impl_->open(key).wanted = true;
+    } else if (Impl::Sub* s = impl_->find(key)) {
         s->wanted = false;
     }
 }
 
-bool Capture::subscribed(const std::string& name) const
+bool Capture::subscribed(const std::string& key) const
 {
-    const Impl::Sub* s = impl_ ? impl_->find(name) : nullptr;
+    const Impl::Sub* s = impl_ ? impl_->find(key) : nullptr;
     return s && s->listening() && s->wanted;
 }
 
-bool Capture::previewing(const std::string& name) const
+bool Capture::previewing(const std::string& key) const
 {
-    const Impl::Sub* s = impl_ && name == impl_->watch_name ? impl_->find(name) : nullptr;
+    const Impl::Sub* s = impl_ && key == impl_->watch_key ? impl_->find(key) : nullptr;
     return s && s->listening() && !s->wanted;
 }
 
-const Capture::WatchView* Capture::view(const std::string& name) const
+const Capture::WatchView* Capture::view(const std::string& key) const
 {
-    const Impl::Sub* s = impl_ ? impl_->find(name) : nullptr;
+    const Impl::Sub* s = impl_ ? impl_->find(key) : nullptr;
     return s ? &s->view : nullptr;
 }
 
-void Capture::trace(const std::string& name, const std::vector<TraceSpec>& specs)
+void Capture::trace(const std::string& key, const std::vector<TraceSpec>& specs)
 {
-    Impl::Sub* s = impl_ ? impl_->find(name) : nullptr;
+    Impl::Sub* s = impl_ ? impl_->find(key) : nullptr;
     if (!s) return;
     s->trace_seconds.clear();
     for (const TraceSpec& spec : specs)
@@ -1511,9 +1539,9 @@ void Capture::trace(const std::string& name, const std::vector<TraceSpec>& specs
         if (s->traces.try_emplace(entry.first).second) Impl::seed_trace(*s, entry.first);
 }
 
-void Capture::stream(const std::string& name, const std::vector<std::string>& paths)
+void Capture::stream(const std::string& key, const std::vector<std::string>& paths)
 {
-    Impl::Sub* s = impl_ ? impl_->find(name) : nullptr;
+    Impl::Sub* s = impl_ ? impl_->find(key) : nullptr;
     if (!s) return;
     for (auto it = s->streams.begin(); it != s->streams.end();) {
         if (std::find(paths.begin(), paths.end(), it->first) == paths.end()) it = s->streams.erase(it);
@@ -1522,11 +1550,11 @@ void Capture::stream(const std::string& name, const std::vector<std::string>& pa
     for (const std::string& path : paths) s->streams[path];
 }
 
-std::vector<Capture::Packet> Capture::take(const std::string& name, const std::string& path, bool& lost)
+std::vector<Capture::Packet> Capture::take(const std::string& key, const std::string& path, bool& lost)
 {
     std::vector<Packet> out;
     lost = false;
-    Impl::Sub* s = impl_ ? impl_->find(name) : nullptr;
+    Impl::Sub* s = impl_ ? impl_->find(key) : nullptr;
     if (!s || !s->streams.count(path)) return out;
     Impl::Sub::Stream& st = s->streams[path];
     std::deque<Packet> queued = st.queue.take();
@@ -1536,10 +1564,10 @@ std::vector<Capture::Packet> Capture::take(const std::string& name, const std::s
     return out;
 }
 
-const std::vector<Capture::ValueNode>& Capture::whole(const std::string& name) const
+const std::vector<Capture::ValueNode>& Capture::whole(const std::string& key) const
 {
     static const std::vector<ValueNode> nothing;
-    Impl::Sub* s = impl_ ? impl_->find(name) : nullptr;
+    Impl::Sub* s = impl_ ? impl_->find(key) : nullptr;
     if (!s) return nothing;
     /* a call's parts are small and already whole */
     if (is_call(s->view.kind)) return s->view.nodes;
@@ -1618,7 +1646,7 @@ bool Capture::draft(Draft& out) const
         out.message = s->view.message;
         out.schema  = s->last_hash;
     } else {
-        const rant::Entity* e = impl_->entity(impl_->watch_name);
+        const rant::Entity* e = impl_->entity(impl_->watch_key);
         if (!e || !e->schema) return false;
         impl_->know(e->schema);
         out.schema  = e->schema.hash();
@@ -1753,9 +1781,9 @@ std::string Capture::cancel()
     }
 }
 
-const std::deque<Capture::TracePoint>* Capture::trace_of(const std::string& name, const std::string& path) const
+const std::deque<Capture::TracePoint>* Capture::trace_of(const std::string& key, const std::string& path) const
 {
-    const Impl::Sub* s = impl_ ? impl_->find(name) : nullptr;
+    const Impl::Sub* s = impl_ ? impl_->find(key) : nullptr;
     if (!s) return nullptr;
     const auto it = s->traces.find(path);
     return it == s->traces.end() ? nullptr : &it->second;
@@ -1957,8 +1985,9 @@ void Capture::poll()
             impl_->know(e.schema);
             impl_->know(e.rsp_schema);
             impl_->know(e.progress_schema);
-            impl_->entities[e.name] = e;
             TopicRow row;
+            row.key       = key(kind_of(e.kind), e.name);
+            impl_->entities[row.key] = e;
             row.name      = e.name;
             row.kind      = kind_of(e.kind);
             row.note      = entity_note(e);
@@ -1969,6 +1998,10 @@ void Capture::poll()
             row.nodes     = nodes_of[e.name];
             topics_.push_back(std::move(row));
         }
+        /* A name offered as two kinds is a fault on the mesh, so every row of it says so. */
+        std::map<std::string, int> rows_of;
+        for (const TopicRow& row : topics_) rows_of[row.name]++;
+        for (TopicRow& row : topics_) row.shared = rows_of[row.name] > 1;
         topics_epoch_++;
     }
 
@@ -1976,12 +2009,12 @@ void Capture::poll()
     impl_->retire_pending();
     for (auto it = impl_->subs.begin(); it != impl_->subs.end();) {
         Impl::Sub& s = it->second;
-        if (it->first != impl_->watch_name && (!s.wanted || is_call(s.view.kind))) {
+        if (it->first != impl_->watch_key && (!s.wanted || is_call(s.view.kind))) {
             impl_->drop_live(s);
             it = impl_->subs.erase(it);
             continue;
         }
-        impl_->poll_sub(it->first, s, mesh_epoch);
+        impl_->poll_sub(s, mesh_epoch);
         ++it;
     }
 
@@ -2113,9 +2146,9 @@ void Capture::poll()
     }
 }
 
-double Capture::traffic_hz(const std::string& name) const
+double Capture::traffic_hz(const std::string& key) const
 {
-    const auto it = traffic_hz_.find(name);
+    const auto it = traffic_hz_.find(key);
     return it == traffic_hz_.end() ? -1 : it->second;
 }
 
@@ -2126,6 +2159,7 @@ void Capture::build_mesh(uint64_t now_us)
     traffic_hz_.clear();
 
     struct Sides {
+        std::string      name;
         Kind             kind = Kind::Topic;
         bool             reliable = false;
         std::vector<int> providers, consumers;
@@ -2146,7 +2180,8 @@ void Capture::build_mesh(uint64_t now_us)
                            now_us - t->second.at_us <= 3 * TRAFFIC_PERIOD_US;
             mesh_.nodes.push_back(std::move(node));
             for (const Impl::Track::End& e : track->second.ends) {
-                Sides& sides   = names[e.name];
+                Sides& sides   = names[key(e.kind, e.name)];
+                sides.name     = e.name;
                 sides.kind     = e.kind;
                 sides.reliable = sides.reliable || e.reliable;
                 if (e.provides) sides.providers.push_back(at);
@@ -2167,8 +2202,8 @@ void Capture::build_mesh(uint64_t now_us)
     static const std::vector<Lane> TASK = { { "@req", false, true }, { "@prg", true, false }, { "@rsp", true, false } };
 
     for (const auto& entry : names) {
-        const std::string& name  = entry.first;
         const Sides&       sides = entry.second;
+        const std::string& name  = sides.name;
         const std::vector<Lane>& lanes = sides.kind == Kind::Variable ? VARIABLE
                                        : sides.kind == Kind::Function ? FUNCTION
                                        : sides.kind == Kind::Task     ? TASK : TOPIC;
@@ -2181,7 +2216,7 @@ void Capture::build_mesh(uint64_t now_us)
                 if (c->tx_hz >= 0) tx_sum = std::max(tx_sum, 0.0) + c->tx_hz;
                 rx_most = std::max(rx_most, c->rx_hz);
             }
-        if (tx_sum >= 0 || rx_most >= 0) traffic_hz_[name] = std::max(tx_sum, rx_most);
+        if (tx_sum >= 0 || rx_most >= 0) traffic_hz_[entry.first] = std::max(tx_sum, rx_most);
 
         if (sides.consumers.empty())
             for (const int p : sides.providers) mesh_.unheard.push_back(MeshEnd{ p, name, sides.kind });

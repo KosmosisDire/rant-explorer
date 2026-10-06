@@ -73,13 +73,13 @@
 						<div data-style-height="tree_top"></div>
 						<div data-for="r, i : tree_rows">
 							<div class="tt-row" row="" data-attr-subtree="r.branch ? r.path : ''"
-								data-class-selected="r.path == sel_path" data-class-odd="r.odd"
-								data-class-namespace="!r.has_topic" data-event-click="click_row(r.path, r.has_topic)"
-								data-event-mousedown="row_menu(r.path)">
+								data-class-selected="r.has_topic &amp;&amp; r.key == sel_key" data-class-odd="r.odd"
+								data-class-namespace="!r.has_topic" data-event-click="click_row(r.path, r.key)"
+								data-event-mousedown="row_menu(r.path, r.key)">
 								<span class="tt-cell sub">
 									<span class="sub-dot" data-if="tree_cells[i].dot" data-class-on="tree_cells[i].sub"
 										data-class-active="tree_cells[i].active" data-class-preview="tree_cells[i].preview"
-										data-event-click="toggle_sub(r.path)"></span>
+										data-event-click="toggle_sub(r.key)"></span>
 								</span>
 								<span class="tt-cell share c-topic tt-tree" data-attr-cell="r.topic_name">
 									<span class="indent" data-style-width="r.indent"></span>
@@ -91,6 +91,7 @@
 										data-class-function="r.kind == 'function'"
 										data-class-variable="r.kind == 'variable'" data-class-task="r.kind == 'task'" />
 									<span class="name mono">{{r.name}}{{r.branch ? '/' : ''}}</span>
+									<icon class="shared bad" name="triangle-alert" data-if="r.shared" />
 								</span>
 								<span class="tt-cell share c-topic-value mono" cell="">{{tree_cells[i].value}}</span>
 								<span class="tt-cell share c-topic-rate num mono" cell=""
@@ -122,6 +123,7 @@
 							<span class="tag" copy="" data-if="topic.type != '' || value_type != ''">{{topic.type
 								!= '' ? topic.type : value_type}}</span>
 							<span class="tag" data-if="topic.note != ''">{{topic.note}}</span>
+							<span class="tag bad" data-if="topic.shared">duplicate</span>
 						</div>
 						<div class="viz-area" data-if="has_topic">
 							<div class="hint" data-if="cards.size == 0"><span>Toggle a field in the value tree to see it
@@ -129,7 +131,7 @@
 							<div class="viz-card" data-for="c : cards" data-attr-topic="c.topic"
 								data-attr-path="c.path">
 								<span class="viz-name mono"><span class="viz-topic"
-										data-if="c.other">{{c.topic}}</span><span>{{c.name}}</span></span>
+										data-if="c.other">{{c.topic_name}}</span><span>{{c.name}}</span></span>
 								<span class="viz-pin" data-class-on="c.pinned"
 									data-event-click="pin_card(c.topic, c.path)">
 									<icon name="pin" />
@@ -590,7 +592,7 @@
 							between these</div>
 						<div data-for="g : mesh.groups" copy-table="">
 							<div class="section">{{g.title}} {{g.rows.size}}</div>
-							<div class="link-row" row="" data-for="r : g.rows" data-event-click="open_topic(r.name)">
+							<div class="link-row" row="" data-for="r : g.rows" data-event-click="open_topic(r.key)">
 								<icon class="kind" data-attr-name="r.kind | icon"
 									data-class-function="r.kind == 'function'"
 									data-class-variable="r.kind == 'variable'" data-class-task="r.kind == 'task'" />

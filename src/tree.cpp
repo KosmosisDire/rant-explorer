@@ -44,7 +44,7 @@ std::vector<std::string> split_segments(const std::string& name)
 
 struct Node {
     std::string      name, path;
-    int              topic = -1;
+    std::vector<int> topics;     /* one per kind the name is offered as, in topic order */
     std::vector<int> children;   /* in the order they were made, which is sorted */
 };
 
@@ -67,9 +67,16 @@ void flatten(const std::vector<Node>& nodes, int at, int depth, const std::set<s
         row.depth     = depth;
         row.branch    = !node.children.empty();
         row.open      = row.branch && expanded.count(node.path);
-        row.has_topic = node.topic >= 0;
-        row.topic     = node.topic;
+        row.has_topic = !node.topics.empty();
+        row.topic     = row.has_topic ? node.topics[0] : -1;
         out.push_back(row);
+        /* every other kind the name is offered as follows as a leaf of its own */
+        for (size_t k = 1; k < node.topics.size(); k++) {
+            TreeRow twin = row;
+            twin.branch = twin.open = false;
+            twin.topic  = node.topics[k];
+            out.push_back(twin);
+        }
         if (row.open) flatten(nodes, child, depth + 1, expanded, out);
     }
 }
@@ -88,11 +95,11 @@ bool topic_passes(const Capture& capture, const Capture::TopicRow& topic, const 
     }
     if ((cats & CAT_QOS) && !(cats & (topic.reliable ? CAT_RELIABLE : CAT_BEST_EFFORT))) return false;
     if ((cats & CAT_NO_SYSTEM) && is_system(topic.name)) return false;
-    if ((cats & CAT_SUBSCRIBED) && !capture.subscribed(topic.name) && !capture.previewing(topic.name))
+    if ((cats & CAT_SUBSCRIBED) && !capture.subscribed(topic.key) && !capture.previewing(topic.key))
         return false;
     if (cats & CAT_ACTIVE) {
-        const Capture::WatchView* view = capture.view(topic.name);
-        if (!(view && view->rate_hz > 0) && !(capture.traffic_hz(topic.name) > 0)) return false;
+        const Capture::WatchView* view = capture.view(topic.key);
+        if (!(view && view->rate_hz > 0) && !(capture.traffic_hz(topic.key) > 0)) return false;
     }
     if (text.empty() || contains_ci(topic.name, text) || contains_ci(topic.type, text)) return true;
     for (const std::string& node : topic.nodes)
@@ -161,8 +168,9 @@ std::vector<TreeRow> build_tree(const Capture& capture, const std::set<std::stri
             nodes[at].children.push_back((int)nodes.size() - 1);
             at = (int)nodes.size() - 1;
         }
-        nodes[at].topic = split.topic;
+        nodes[at].topics.push_back(split.topic);
     }
+    for (Node& node : nodes) std::sort(node.topics.begin(), node.topics.end());
 
     std::vector<TreeRow> rows;
     flatten(nodes, 0, 0, expanded, rows);
@@ -170,6 +178,8 @@ std::vector<TreeRow> build_tree(const Capture& capture, const std::set<std::stri
         if (rows[i].has_topic) {
             rows[i].kind       = topics[rows[i].topic].kind;
             rows[i].topic_name = topics[rows[i].topic].name;
+            rows[i].key        = topics[rows[i].topic].key;
+            rows[i].shared     = topics[rows[i].topic].shared;
         }
         rows[i].odd = i % 2 == 1;
     }

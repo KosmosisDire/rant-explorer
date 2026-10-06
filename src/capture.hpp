@@ -24,6 +24,11 @@ public:
     /* What a name on the mesh is. The document binds it as its word. */
     enum class Kind : uint8_t { Topic, Function, Variable, Task };
     static const char* kind_word(Kind kind);
+    /* A name on the mesh with its kind, "topic:a/b". One name can be offered as two kinds, so
+       this keys a row, a watch, a subscription and a card. */
+    static std::string key(Kind kind, const std::string& name);
+    /* The name in a key. */
+    static std::string name_of(const std::string& key);
     /* A function or a task is called, never subscribed. */
     static bool is_call(Kind kind) { return kind == Kind::Function || kind == Kind::Task; }
 
@@ -100,6 +105,7 @@ public:
 
     /* One name on the mesh, folded across every node that advertises it. */
     struct TopicRow {
+        std::string key;         /* see key() */
         std::string name;
         Kind        kind = Kind::Topic;
         std::string note;        /* read-only, half advertised, schema conflict: joined, or empty */
@@ -107,12 +113,13 @@ public:
         std::string type;        /* the advertised root type, empty while untyped */
         bool        reliable = false;
         bool        writable = false;   /* a variable whose owner takes remote sets */
+        bool        shared = false;     /* its name is offered as another kind too */
         std::vector<std::string> nodes;   /* every node that provides or consumes it */
 
         bool operator==(const TopicRow& o) const
         {
-            return name == o.name && kind == o.kind && note == o.note && from == o.from && type == o.type &&
-                   reliable == o.reliable && writable == o.writable && nodes == o.nodes;
+            return key == o.key && note == o.note && from == o.from && type == o.type &&
+                   reliable == o.reliable && writable == o.writable && shared == o.shared && nodes == o.nodes;
         }
     };
 
@@ -204,7 +211,8 @@ public:
     /* One subscribed name and its latest value, decoded with the writer's schema. A function
        or task holds its parts instead: the request or goal to fill in, then what came back. */
     struct WatchView {
-        std::string name;          /* empty while nothing is watched */
+        std::string key;           /* see key(), empty while nothing is watched */
+        std::string name;
         Kind        kind = Kind::Topic;
         std::string status;        /* why no value shows yet, empty once one has arrived */
         std::string type;          /* the root type as the DSL spells it */
@@ -261,21 +269,21 @@ public:
     void select(const std::string& id);
     const std::string& selected() const { return selected_id_; }
 
-    /* The one name the value tree shows, subscribed while it is watched. An empty name
-       watches nothing. A subscription is untyped, so each message decodes with its
+    /* The one name the value tree shows, by key, subscribed while it is watched. An empty
+       key watches nothing. A subscription is untyped, so each message decodes with its
        writer's schema. A function or task is not subscribed: its form is built instead. */
-    void watch(const std::string& name);
+    void watch(const std::string& key);
     const WatchView& watched() const;
 
     /* Keeps a topic or variable subscribed whether or not it is watched, for the topic
        tree's columns and for cards pinned from it. subscribed() is that choice, once its
        handle is live. */
-    void subscribe(const std::string& name, bool on);
-    bool subscribed(const std::string& name) const;
+    void subscribe(const std::string& key, bool on);
+    bool subscribed(const std::string& key) const;
     /* The watch is live but not kept by subscribe(), so it ends when the watch moves. */
-    bool previewing(const std::string& name) const;
-    /* A subscribed or watched name's view, null for any other. */
-    const WatchView* view(const std::string& name) const;
+    bool previewing(const std::string& key) const;
+    /* A subscribed or watched key's view, null for any other. */
+    const WatchView* view(const std::string& key) const;
 
     /* Shows a hundred more elements of the watched value's long array at path, where its
        gap was. It holds for every later message while the name stays subscribed. */
@@ -284,7 +292,7 @@ public:
     /* The newest value with every array element, not only the tree's window. Decoded on
        the first call after a message and kept until the next, for cards that draw a whole
        array. Empty for a name that is not subscribed. */
-    const std::vector<ValueNode>& whole(const std::string& name) const;
+    const std::vector<ValueNode>& whole(const std::string& key) const;
 
     /* The scalar fields of the watch that keep a history, by path, each with how many
        seconds it holds. Every message adds a point, so a plot misses nothing between
@@ -294,8 +302,8 @@ public:
         std::string path;
         double      seconds = 10;
     };
-    void trace(const std::string& name, const std::vector<TraceSpec>& specs);
-    const std::deque<TracePoint>* trace_of(const std::string& name, const std::string& path) const;
+    void trace(const std::string& key, const std::vector<TraceSpec>& specs);
+    const std::deque<TracePoint>* trace_of(const std::string& key, const std::string& path) const;
     /* The clock trace points are on, in seconds. */
     static double now_s();
 
@@ -309,10 +317,10 @@ public:
     };
     /* The VideoFrame fields a card decodes, by path. Every message queues its frame at each
        path until taken, since a decoder needs the whole stream in order. */
-    void stream(const std::string& name, const std::vector<std::string>& paths);
+    void stream(const std::string& key, const std::vector<std::string>& paths);
     /* The frames queued at path, oldest first. lost says the queue overflowed since the
        last take, so the decoder must start over at a keyframe. */
-    std::vector<Packet> take(const std::string& name, const std::string& path, bool& lost);
+    std::vector<Packet> take(const std::string& key, const std::string& path, bool& lost);
 
     /* A message in the schema with that hash, base with the edited nodes written into it by
        their addressing. Empty with the reason in error when a value does not fit its field. */
@@ -359,9 +367,9 @@ public:
 
     /* While on, every node is asked for its traffic counters every few seconds. */
     void   set_traffic(bool on) { traffic_on_ = on; }
-    /* A name's messages per second across the mesh, calls for a function or task, from the
+    /* A key's messages per second across the mesh, calls for a function or task, from the
        traffic counters. Negative while no node has reported it. */
-    double traffic_hz(const std::string& name) const;
+    double traffic_hz(const std::string& key) const;
     const MeshView& mesh() const { return mesh_; }
     /* Bumps when mesh() was rebuilt: the graph moved or new counters arrived. */
     uint32_t        mesh_epoch() const { return mesh_epoch_; }
@@ -382,7 +390,7 @@ private:
     uint32_t                 topics_epoch_ = 0;
     MeshView                 mesh_;
     uint32_t                 mesh_epoch_ = 0;
-    std::map<std::string, double> traffic_hz_;   /* by name, see traffic_hz */
+    std::map<std::string, double> traffic_hz_;   /* by key, see traffic_hz */
     bool                     traffic_on_ = false;
     WatchView                none_;   /* what watched() reads while nothing is */
 

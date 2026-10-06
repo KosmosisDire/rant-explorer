@@ -57,6 +57,7 @@ icon.kind.task     { color: var(--green); }
 	color: var(--faint);
 	padding: 1dp 5dp;
 }
+.tag.bad { color: var(--red); background-color: var(--red-bg); }
 
 /* A filter toggle: lit while its filter is on. */
 .pill {
@@ -264,6 +265,7 @@ td.held, th.held, .kv.held, [cell].held, viz [cell-path].held { background-color
 }
 .tt-tree .caret icon { font-size: 12dp; }
 .tt-tree icon.kind   { flex: 0 0 auto; }
+.tt-tree icon.shared { flex: 0 0 auto; }   /* a name offered as two kinds, red by .bad */
 
 .tt-tree .name {
 	display: block;

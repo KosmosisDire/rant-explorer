@@ -151,7 +151,8 @@ private:
 /* One card in the detail: a field whose visual is on, from the selected topic or pinned
    from another one. */
 struct CardRow {
-    Rml::String topic;
+    Rml::String topic;        /* the topic's Capture::key */
+    Rml::String topic_name;
     Rml::String path;
     Rml::String name;
     bool        pinned = false;
@@ -336,8 +337,7 @@ struct Ui {
     bool                  topic_funnel = false;       /* they differ from the default, so it is lit */
     bool                  filtering = false;       /* the text or the funnel hides something */
     std::set<std::string> expanded;        /* the branches open, by tree path */
-    Rml::String           sel_path;        /* the selected row's tree path, empty for none */
-    std::string           sel_name;        /* its topic's name on the mesh */
+    Rml::String           sel_key;         /* the selected row's Capture::key, empty for none */
     Rml::Vector<TreeRow>  tree_rows;       /* the rows near the viewport, see window_tree */
     Rml::Vector<TreeCell> tree_cells;      /* their columns, parallel to tree_rows */
     Rml::String           tree_top = "0dp", tree_bottom = "0dp";   /* the spacers for the rest */
@@ -529,17 +529,17 @@ bool subscribable(const Capture::TopicRow& topic)
     return !Capture::is_call(topic.kind);
 }
 
-/* The subscribable topics under a tree path that pass the filter, not the path's own. */
+/* The keys of the subscribable topics under a tree path that pass the filter, not the path's own. */
 std::vector<std::string> subtree(const Capture& capture, const std::string& branch,
                                  const std::string& text, unsigned cats)
 {
-    std::vector<std::string> names;
+    std::vector<std::string> keys;
     const std::string prefix = branch + "/";
     for (const Capture::TopicRow& topic : capture.topics())
         if (subscribable(topic) && tree_path(topic.name).compare(0, prefix.size(), prefix) == 0 &&
             topic_passes(capture, topic, text, cats))
-            names.push_back(topic.name);
-    return names;
+            keys.push_back(topic.key);
+    return keys;
 }
 
 /* A topic's value, rate and jitter as its tree row shows them. Unsubscribed, the rate is
@@ -548,14 +548,14 @@ std::vector<std::string> subtree(const Capture& capture, const std::string& bran
 void topic_columns(const Capture& capture, const Capture::TopicRow& topic, std::string& value,
                    std::string& rate, std::string& jitter, bool& meta)
 {
-    const Capture::WatchView* sub = subscribable(topic) ? capture.view(topic.name) : nullptr;
-    if (sub && (capture.subscribed(topic.name) || topic.name == capture.watched().name)) {
+    const Capture::WatchView* sub = subscribable(topic) ? capture.view(topic.key) : nullptr;
+    if (sub && (capture.subscribed(topic.key) || topic.key == capture.watched().key)) {
         value  = preview_text(*sub);
         rate   = format_rate(sub->rate_hz);
         jitter = format_ms(sub->jitter_ms);
         return;
     }
-    const double hz = capture.traffic_hz(topic.name);
+    const double hz = capture.traffic_hz(topic.key);
     meta = hz >= 0;
     rate = format_rate(hz);
     if (subscribable(topic)) jitter = DASH;
@@ -876,12 +876,12 @@ int main(int argc, char** argv)
         ui.menu_open = false;
         model.DirtyVariable("menu_open");
     };
-    /* A topic's newest value, arrays whole, and the view it came with. Null when it has none. */
-    auto value_of = [&capture](const std::string& name, const std::vector<Capture::ValueNode>*& nodes)
+    /* A topic's newest value by key, arrays whole, and the view it came with. Null when it has none. */
+    auto value_of = [&capture](const std::string& key, const std::vector<Capture::ValueNode>*& nodes)
         -> const Capture::WatchView* {
-        const Capture::WatchView* view = name == capture.watched().name ? &capture.watched() : capture.view(name);
+        const Capture::WatchView* view = key == capture.watched().key ? &capture.watched() : capture.view(key);
         if (!view) return nullptr;
-        const std::vector<Capture::ValueNode>& whole = capture.whole(name);
+        const std::vector<Capture::ValueNode>& whole = capture.whole(key);
         nodes = whole.empty() ? &view->nodes : &whole;
         return view;
     };
@@ -1006,12 +1006,14 @@ int main(int argc, char** argv)
         }
 
         if (auto topic = ctor.RegisterStruct<Capture::TopicRow>()) {
+            topic.RegisterMember("key",       &Capture::TopicRow::key);
             topic.RegisterMember("name",      &Capture::TopicRow::name);
             topic.RegisterMember("kind",      &Capture::TopicRow::kind);
             topic.RegisterMember("note",      &Capture::TopicRow::note);
             topic.RegisterMember("from",      &Capture::TopicRow::from);
             topic.RegisterMember("type",      &Capture::TopicRow::type);
             topic.RegisterMember("reliable",  &Capture::TopicRow::reliable);
+            topic.RegisterMember("shared",    &Capture::TopicRow::shared);
         }
 
         if (auto row = ctor.RegisterStruct<TreeRow>()) {
@@ -1020,6 +1022,8 @@ int main(int argc, char** argv)
             row.RegisterMember("indent",    &TreeRow::indent);
             row.RegisterMember("kind",      &TreeRow::kind);
             row.RegisterMember("topic_name", &TreeRow::topic_name);
+            row.RegisterMember("key",       &TreeRow::key);
+            row.RegisterMember("shared",    &TreeRow::shared);
             row.RegisterMember("branch",    &TreeRow::branch);
             row.RegisterMember("open",      &TreeRow::open);
             row.RegisterMember("has_topic", &TreeRow::has_topic);
@@ -1061,6 +1065,7 @@ int main(int argc, char** argv)
 
         if (auto card = ctor.RegisterStruct<CardRow>()) {
             card.RegisterMember("topic",  &CardRow::topic);
+            card.RegisterMember("topic_name", &CardRow::topic_name);
             card.RegisterMember("path",   &CardRow::path);
             card.RegisterMember("name",   &CardRow::name);
             card.RegisterMember("pinned", &CardRow::pinned);
@@ -1096,6 +1101,7 @@ int main(int argc, char** argv)
         ctor.RegisterArray<Rml::Vector<Capture::LogRow>>();
 
         if (auto row = ctor.RegisterStruct<MeshRow>()) {
+            row.RegisterMember("key",    &MeshRow::key);
             row.RegisterMember("name",   &MeshRow::name);
             row.RegisterMember("kind",   &MeshRow::kind);
             row.RegisterMember("from",   &MeshRow::from);
@@ -1150,7 +1156,7 @@ int main(int argc, char** argv)
         ctor.Bind("menu_left",       &ui.menu_left);
         ctor.Bind("menu_top",        &ui.menu_top);
         ctor.Bind("menu_items",      &ui.menu_items);
-        ctor.Bind("sel_path",        &ui.sel_path);
+        ctor.Bind("sel_key",         &ui.sel_key);
         ctor.Bind("tree_rows",       &ui.tree_rows);
         ctor.Bind("tree_cells",      &ui.tree_cells);
         ctor.Bind("value_kind",      &ui.value_kind);
@@ -1301,34 +1307,32 @@ int main(int argc, char** argv)
                 event.StopPropagation();   /* the row under the caret must not also select */
             });
         ctor.BindEventCallback("click_row",
-            [&ui, &tree, &capture, &editor, toggle_branch](Rml::DataModelHandle handle, Rml::Event&,
-                                                              const Rml::VariantList& args) {
+            [&ui, &capture, &editor, toggle_branch](Rml::DataModelHandle handle, Rml::Event&,
+                                                    const Rml::VariantList& args) {
                 if (args.size() < 2) return;
-                const Rml::String path = args[0].Get<Rml::String>();
-                if (!args[1].Get<bool>()) {
-                    toggle_branch(path);
+                const Rml::String key = args[1].Get<Rml::String>();
+                if (key.empty()) {
+                    toggle_branch(args[0].Get<Rml::String>());
                     return;
                 }
-                for (const TreeRow& row : tree)
-                    if (row.path == path && row.topic >= 0) ui.sel_name = capture.topics()[row.topic].name;
-                if (capture.watched().name != ui.sel_name) editor.end_draft();
-                ui.sel_path = path;
-                handle.DirtyVariable("sel_path");
+                if (capture.watched().key != key) editor.end_draft();
+                ui.sel_key = key;
+                handle.DirtyVariable("sel_key");
                 /* Selecting only previews: the watch lets go when another row is picked,
                    unless a subscribe or a pinned card keeps it. */
-                capture.watch(ui.sel_name);
+                capture.watch(key);
             });
         /* Letting a topic go drops its pinned cards, which would have nothing to show, and
            ends its watch, so a preview lets go too. Keeping the selected one watches it again. */
-        auto set_sub = [&editor, &ui, &capture, &value_dirty](const std::string& name, bool on) {
-            capture.subscribe(name, on);
+        auto set_sub = [&editor, &ui, &capture, &value_dirty](const std::string& key, bool on) {
+            capture.subscribe(key, on);
             if (on) {
-                if (name == ui.sel_name) capture.watch(name);
+                if (key == ui.sel_key) capture.watch(key);
                 return;
             }
-            editor.view(name).pinned.clear();
+            editor.view(key).pinned.clear();
             value_dirty = true;
-            if (name == capture.watched().name) {
+            if (key == capture.watched().key) {
                 editor.end_draft();
                 capture.watch("");
             }
@@ -1336,15 +1340,13 @@ int main(int argc, char** argv)
         /* A row's dot is its own topic's alone. A click subscribes, or lets a kept
            subscription or a preview go. */
         ctor.BindEventCallback("toggle_sub",
-            [&tree, &capture, set_sub](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList& args) {
+            [&capture, set_sub](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList& args) {
                 if (args.empty()) return;
-                const Rml::String path = args[0].Get<Rml::String>();
+                const Rml::String key = args[0].Get<Rml::String>();
                 event.StopPropagation();
-                for (const TreeRow& row : tree)
-                    if (row.path == path && row.topic >= 0 && subscribable(capture.topics()[row.topic])) {
-                        const std::string& name = capture.topics()[row.topic].name;
-                        set_sub(name, !capture.subscribed(name) && !capture.previewing(name));
-                    }
+                for (const Capture::TopicRow& topic : capture.topics())
+                    if (topic.key == key && subscribable(topic))
+                        set_sub(key, !capture.subscribed(key) && !capture.previewing(key));
             });
         /* A funnel opens its checklist under itself: the topic tree's "filter" or the mesh's. */
         ctor.BindEventCallback("open_filter_menu",
@@ -1380,41 +1382,39 @@ int main(int argc, char** argv)
                 ui.mesh_filter.clear();
                 handle.DirtyVariable("mesh_filter");
             });
-        /* A name in the Mesh sidebar opens in the Topics tab, its branches open and its row
-           brought into view. */
+        /* A name in the Mesh sidebar opens in the Topics tab by its key, its branches open
+           and its row brought into view. */
         ctor.BindEventCallback("open_topic",
             [&ui, &capture, &editor, &tree_dirty, &scroll_to](Rml::DataModelHandle handle, Rml::Event&,
                                                               const Rml::VariantList& args) {
                 if (args.empty()) return;
-                const std::string name = args[0].Get<Rml::String>();
-                const std::string path = tree_path(name);
+                const std::string key  = args[0].Get<Rml::String>();
+                const std::string path = tree_path(Capture::name_of(key));
                 for (size_t at = path.find('/'); at != std::string::npos; at = path.find('/', at + 1))
                     ui.expanded.insert(path.substr(0, at));
-                if (capture.watched().name != name) editor.end_draft();
-                ui.sel_name = name;
-                ui.sel_path = path;
-                ui.tab      = "topics";
-                handle.DirtyVariable("sel_path");
+                if (capture.watched().key != key) editor.end_draft();
+                ui.sel_key = key;
+                ui.tab     = "topics";
+                handle.DirtyVariable("sel_key");
                 handle.DirtyVariable("tab");
-                capture.watch(name);
+                capture.watch(key);
                 tree_dirty = true;
                 scroll_to  = path;
             });
         /* A right click on a tree row offers its own topic, and for a branch everything
            under it the filter shows. */
         ctor.BindEventCallback("row_menu",
-            [&ui, &tree, &capture](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList& args) {
-                if (args.empty() || event.GetParameter<int>("button", 0) != 1) return;
-                const Rml::String path = args[0].Get<Rml::String>();
+            [&ui, &capture](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList& args) {
+                if (args.size() < 2 || event.GetParameter<int>("button", 0) != 1) return;
+                const Rml::String path = args[0].Get<Rml::String>(), key = args[1].Get<Rml::String>();
                 std::string self;
-                for (const TreeRow& row : tree)
-                    if (row.path == path && row.topic >= 0 && subscribable(capture.topics()[row.topic]))
-                        self = capture.topics()[row.topic].name;
-                std::vector<std::string> names = subtree(capture, path, ui.topic_filter, (unsigned)ui.topic_cats);
-                const bool branch = !names.empty();
-                if (!self.empty()) names.push_back(self);
+                for (const Capture::TopicRow& topic : capture.topics())
+                    if (topic.key == key && subscribable(topic)) self = key;
+                std::vector<std::string> keys = subtree(capture, path, ui.topic_filter, (unsigned)ui.topic_cats);
+                const bool branch = !keys.empty();
+                if (!self.empty()) keys.push_back(self);
                 int on = 0;
-                for (const std::string& name : names) on += capture.subscribed(name) ? 1 : 0;
+                for (const std::string& k : keys) on += capture.subscribed(k) ? 1 : 0;
 
                 auto item = [&ui](const Rml::String& label, const char* action) {
                     MenuItem m;
@@ -1425,10 +1425,10 @@ int main(int argc, char** argv)
                 if (!self.empty() && !capture.subscribed(self)) item("Subscribe", "self_on");
                 if (!self.empty() && (capture.subscribed(self) || capture.previewing(self)))
                     item("Unsubscribe", "self_off");
-                if (branch && on < (int)names.size())
-                    item(Rml::CreateString("Subscribe All (%d)", (int)names.size()), "all_on");
+                if (branch && on < (int)keys.size())
+                    item(Rml::CreateString("Subscribe All (%d)", (int)keys.size()), "all_on");
                 if (branch && on > 0)
-                    item(Rml::CreateString("Unsubscribe All (%d)", (int)names.size()), "all_off");
+                    item(Rml::CreateString("Unsubscribe All (%d)", (int)keys.size()), "all_off");
                 ui.menu_branch       = path;
                 ui.menu_self         = self;
                 ui.menu_pending_kind = "tree";
@@ -1507,10 +1507,10 @@ int main(int argc, char** argv)
                 if (action == "self_on" || action == "self_off") {
                     set_sub(ui.menu_self, action == "self_on");
                 } else {
-                    std::vector<std::string> names = subtree(capture, ui.menu_branch, ui.topic_filter,
-                                                             (unsigned)ui.topic_cats);
-                    if (!ui.menu_self.empty()) names.push_back(ui.menu_self);
-                    for (const std::string& name : names) set_sub(name, action == "all_on");
+                    std::vector<std::string> keys = subtree(capture, ui.menu_branch, ui.topic_filter,
+                                                            (unsigned)ui.topic_cats);
+                    if (!ui.menu_self.empty()) keys.push_back(ui.menu_self);
+                    for (const std::string& key : keys) set_sub(key, action == "all_on");
                 }
                 close_menu();
             });
@@ -1533,8 +1533,8 @@ int main(int argc, char** argv)
             [&editor, &ui, &capture, &value_dirty](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList& args) {
                 if (args.empty()) return;
                 const Rml::String  path = args[0].Get<Rml::String>();
-                const std::string& name = capture.watched().name;
-                ValueView& view = editor.view(name);
+                const std::string& key  = capture.watched().key;
+                ValueView& view = editor.view(key);
                 event.StopPropagation();   /* the row under the toggle must not also fold */
                 if (view.shown.erase(path)) {
                     view.pinned.erase(path);
@@ -1545,18 +1545,18 @@ int main(int argc, char** argv)
                 } else {
                     view.shown.insert(path);
                     view.pinned.insert(path);
-                    if (!Capture::is_call(capture.watched().kind)) capture.subscribe(name, true);
+                    if (!Capture::is_call(capture.watched().kind)) capture.subscribe(key, true);
                 }
                 value_dirty = true;
             });
         ctor.BindEventCallback("pin_card",
             [&editor, &capture, &value_dirty](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
                 if (args.size() < 2) return;
-                const Rml::String name = args[0].Get<Rml::String>(), path = args[1].Get<Rml::String>();
-                ValueView& view = editor.view(name);
+                const Rml::String key = args[0].Get<Rml::String>(), path = args[1].Get<Rml::String>();
+                ValueView& view = editor.view(key);
                 if (!view.pinned.erase(path)) {
                     view.pinned.insert(path);
-                    capture.subscribe(name, true);
+                    capture.subscribe(key, true);
                 }
                 value_dirty = true;
             });
@@ -1886,7 +1886,7 @@ int main(int argc, char** argv)
     int               window_first = -1, window_last = -1;
 
     /* The same for the value tree, plus the message its texts were last written from. */
-    std::string value_name, value_shape;
+    std::string value_key, value_shape;
     uint64_t    value_seq = 0;
     int         value_first = -1, value_last = -1;
 
@@ -1941,7 +1941,7 @@ int main(int argc, char** argv)
                     const Rml::Element* focus = context->GetFocusElement();
                     const Rml::String   tag   = focus ? focus->GetTagName() : Rml::String();
                     if (tag != "input" && tag != "select" && tag != "textarea") {
-                        copy(ui.tab == "topics" ? ui.sel_name : ui.tab == "mesh" ? ui.mesh.title : ui.selected.name);
+                        copy(ui.tab == "topics" ? Capture::name_of(ui.sel_key) : ui.tab == "mesh" ? ui.mesh.title : ui.selected.name);
                         break;
                     }
                 }
@@ -2071,10 +2071,10 @@ int main(int argc, char** argv)
                 TreeCell cell;
                 if (row.topic >= 0 && row.topic < (int)capture.topics().size()) {
                     const Capture::TopicRow&  topic = capture.topics()[row.topic];
-                    const Capture::WatchView* view  = capture.view(topic.name);
+                    const Capture::WatchView* view  = capture.view(topic.key);
                     cell.dot     = subscribable(topic);
-                    cell.preview = cell.dot && capture.previewing(topic.name);
-                    cell.sub     = cell.preview || (cell.dot && capture.subscribed(topic.name));
+                    cell.preview = cell.dot && capture.previewing(topic.key);
+                    cell.sub     = cell.preview || (cell.dot && capture.subscribed(topic.key));
                     cell.active  = cell.sub && view && view->rate_hz > 0;
                     topic_columns(capture, topic, cell.value, cell.rate, cell.jitter, cell.meta);
                 }
@@ -2097,8 +2097,8 @@ int main(int argc, char** argv)
         rebuild |= sync(model, "value_writable", ui.value_writable, watch.writable);
         rebuild |= sync(model, "value_can_compose", ui.value_can_compose, can_compose);
         rebuild |= sync(model, "value_kind", ui.value_kind, watch.kind);
-        if (rebuild || watch.name != value_name || (watch.shape != value_shape && !view.composing)) {
-            value_name  = watch.name;
+        if (rebuild || watch.key != value_key || (watch.shape != value_shape && !view.composing)) {
+            value_key   = watch.key;
             value_shape = watch.shape;
             value_dirty = false;
             sync(model, "value_composing", ui.value_composing, view.composing);
@@ -2113,22 +2113,23 @@ int main(int argc, char** argv)
             /* The selected topic's cards in tree order, then every other topic's pinned ones.
                Pinning never moves a card, since it keeps its place among the selected's. */
             ui.cards.clear();
-            auto card = [&ui, &watch](const std::string& topic, const std::string& path, const ValueView& of) {
+            auto card = [&ui, &watch](const std::string& key, const std::string& path, const ValueView& of) {
                 CardRow row;
-                row.topic  = topic;
-                row.path   = path;
-                row.name   = path.empty() ? "value" : path;
-                row.pinned = of.pinned.count(path) > 0;
-                row.other  = topic != watch.name;
+                row.topic      = key;
+                row.topic_name = Capture::name_of(key);
+                row.path       = path;
+                row.name       = path.empty() ? "value" : path;
+                row.pinned     = of.pinned.count(path) > 0;
+                row.other      = key != watch.key;
                 ui.cards.push_back(row);
             };
-            if (!watch.nodes.empty() && ui.value_root_on && !callable) card(watch.name, "", view);
+            if (!watch.nodes.empty() && ui.value_root_on && !callable) card(watch.key, "", view);
             for (const Capture::ValueNode& node : watch.nodes)
                 if (node.kind != Capture::ValueNode::Gap && node.kind != Capture::ValueNode::Part &&
                     !node.path.empty() && view.shown.count(node.path))
-                    card(watch.name, node.path, view);
+                    card(watch.key, node.path, view);
             for (const auto& entry : editor.views())
-                if (entry.first != watch.name && capture.view(entry.first))
+                if (entry.first != watch.key && capture.view(entry.first))
                     for (const std::string& path : entry.second.pinned) card(entry.first, path, entry.second);
             /* Past the most the pane tiles, the root's default card goes first, since the
                user never asked for it, then the last ones. */
@@ -2147,7 +2148,7 @@ int main(int argc, char** argv)
                 traced.erase(entry.first);
                 continue;
             }
-            const std::set<std::string>& paths = entry.first == watch.name ? entry.second.shown : entry.second.pinned;
+            const std::set<std::string>& paths = entry.first == watch.key ? entry.second.shown : entry.second.pinned;
             std::string key = sub->shape + "|";
             for (const std::string& path : paths) key += path + ",";
             if (traced[entry.first] == key) continue;
@@ -2214,7 +2215,7 @@ int main(int argc, char** argv)
 
         Capture::TopicRow topic;
         for (const Capture::TopicRow& row : capture.topics())
-            if (row.name == ui.sel_name) topic = row;
+            if (row.key == ui.sel_key) topic = row;
         sync(model, "has_topic", ui.has_topic, !topic.name.empty());
         sync(model, "topic", ui.topic, std::move(topic));
 

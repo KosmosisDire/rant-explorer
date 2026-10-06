@@ -1,6 +1,6 @@
 /* The topic tree: every name on the mesh split on '/' or '.' into a segment tree, then
    flattened into the rows the document binds, honouring the expanded set. A segment can
-   be both a branch and a topic. */
+   be both a branch and a topic, and a name offered as two kinds is two rows. */
 #ifndef TREE_HPP
 #define TREE_HPP
 
@@ -15,15 +15,17 @@ std::string tree_indent(int depth);
 
 struct TreeRow {
     std::string name;        /* the last segment */
-    std::string path;        /* the segments joined by '/', the key for expand and select */
+    std::string path;        /* the segments joined by '/', the key for expand */
     std::string indent;      /* tree_indent of its depth */
     Capture::Kind kind = Capture::Kind::Topic;   /* the topic's, unset for a namespace */
     std::string topic_name;  /* the name on the mesh, empty for a namespace */
+    std::string key;         /* the topic's Capture::key, the key for select */
     int         depth = 0;
     bool        branch = false;      /* has children */
     bool        open = false;        /* a branch showing them */
     bool        has_topic = false;   /* a name on the mesh, not only a namespace */
     bool        odd = false;         /* every other row is striped */
+    bool        shared = false;      /* its name is offered as another kind too */
     int         topic = -1;          /* index into the topics the tree was built from */
 };
 

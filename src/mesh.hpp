@@ -62,6 +62,7 @@ void mesh_relayout();
 /* One line of the sidebar: a name, the nodes it runs from and to where the context does
    not already say, and its traffic. */
 struct MeshRow {
+    std::string   key;    /* the name's Capture::key, what a click opens */
     std::string   name;
     Capture::Kind kind = Capture::Kind::Topic;
     std::string   from, to;
@@ -71,7 +72,7 @@ struct MeshRow {
 
     bool operator==(const MeshRow& o) const
     {
-        return name == o.name && kind == o.kind && from == o.from && to == o.to && rate == o.rate &&
+        return key == o.key && from == o.from && to == o.to && rate == o.rate &&
                active == o.active && lost == o.lost;
     }
 };

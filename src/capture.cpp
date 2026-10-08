@@ -12,6 +12,7 @@
 #include <tuple>
 #include <atomic>
 #include <mutex>
+#include <random>
 #include <utility>
 
 #include <rant.hpp>
@@ -28,6 +29,14 @@ uint64_t wall_us()
 {
     using namespace std::chrono;
     return (uint64_t)duration_cast<microseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+/* "explorer-" and 8 random hex digits, the library's "node-" form under our own word. */
+std::string default_name()
+{
+    char buf[18];
+    std::snprintf(buf, sizeof buf, "explorer-%08x", (unsigned)std::random_device{}());
+    return buf;
 }
 
 /* "1.2.3.4:7401" groups under "1.2.3.4". */
@@ -1468,7 +1477,7 @@ Capture::Capture(const Options& opts)
     node_opts.match_wait          = std::chrono::milliseconds(-1);
 
     try {
-        impl_ = std::make_unique<Impl>(opts.name, node_opts);
+        impl_ = std::make_unique<Impl>(opts.name.empty() ? default_name() : opts.name, node_opts);
     } catch (const rant::Error& e) {
         error_ = e.what();
         return;

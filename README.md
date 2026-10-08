@@ -1,8 +1,7 @@
-# Rant Explorer (C++)
+# Rant Explorer
 
-The Rant network explorer, rewritten in C++ over the Rant C++ wrapper, with RmlUi laying
-out the UI from RML and RCSS. It replaces `../explorer-rant`, which is the C original over
-Clay and SDL3.
+The Rant network explorer, written in C++ over the Rant C++ wrapper, with RmlUi laying
+out the UI from RML and RCSS.
 
 ## Usage
 

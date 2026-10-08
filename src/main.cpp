@@ -744,6 +744,7 @@ int main(int argc, char** argv)
     }
 
     SDL_SetMainReady();
+    SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");   /* the click that focuses the window also lands */
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;

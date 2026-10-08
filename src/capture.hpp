@@ -108,18 +108,19 @@ public:
         std::string key;         /* see key() */
         std::string name;
         Kind        kind = Kind::Topic;
-        std::string note;        /* read-only, half advertised, schema conflict: joined, or empty */
+        std::string note;        /* read-only, half advertised: joined, or empty */
         std::string from;        /* the node the schema was read from, empty while untyped */
         std::string type;        /* the advertised root type, empty while untyped */
         bool        reliable = false;
         bool        writable = false;   /* a variable whose owner takes remote sets */
-        bool        shared = false;     /* its name is offered as another kind too */
         std::vector<std::string> nodes;   /* every node that provides or consumes it */
+        std::vector<std::string> issues;  /* every fault that stops its nodes connecting, one line each */
 
         bool operator==(const TopicRow& o) const
         {
             return key == o.key && note == o.note && from == o.from && type == o.type &&
-                   reliable == o.reliable && writable == o.writable && shared == o.shared && nodes == o.nodes;
+                   reliable == o.reliable && writable == o.writable && nodes == o.nodes &&
+                   issues == o.issues;
         }
     };
 

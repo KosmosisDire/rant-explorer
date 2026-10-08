@@ -1005,6 +1005,7 @@ int main(int argc, char** argv)
             meta.RegisterMember("peer_rows",      &Capture::MetaView::peer_rows);
         }
 
+        ctor.RegisterArray<Rml::Vector<Rml::String>>();   /* before the structs that hold one */
         if (auto topic = ctor.RegisterStruct<Capture::TopicRow>()) {
             topic.RegisterMember("key",       &Capture::TopicRow::key);
             topic.RegisterMember("name",      &Capture::TopicRow::name);
@@ -1013,7 +1014,7 @@ int main(int argc, char** argv)
             topic.RegisterMember("from",      &Capture::TopicRow::from);
             topic.RegisterMember("type",      &Capture::TopicRow::type);
             topic.RegisterMember("reliable",  &Capture::TopicRow::reliable);
-            topic.RegisterMember("shared",    &Capture::TopicRow::shared);
+            topic.RegisterMember("issues",    &Capture::TopicRow::issues);
         }
 
         if (auto row = ctor.RegisterStruct<TreeRow>()) {
@@ -1023,7 +1024,7 @@ int main(int argc, char** argv)
             row.RegisterMember("kind",      &TreeRow::kind);
             row.RegisterMember("topic_name", &TreeRow::topic_name);
             row.RegisterMember("key",       &TreeRow::key);
-            row.RegisterMember("shared",    &TreeRow::shared);
+            row.RegisterMember("fault",     &TreeRow::fault);
             row.RegisterMember("branch",    &TreeRow::branch);
             row.RegisterMember("open",      &TreeRow::open);
             row.RegisterMember("has_topic", &TreeRow::has_topic);
@@ -1031,7 +1032,6 @@ int main(int argc, char** argv)
         }
         ctor.RegisterArray<Rml::Vector<TreeRow>>();
 
-        ctor.RegisterArray<Rml::Vector<Rml::String>>();   /* before the structs that hold one */
         if (auto row = ctor.RegisterStruct<ValueRow>()) {
             row.RegisterMember("name",   &ValueRow::name);
             row.RegisterMember("type",   &ValueRow::type);

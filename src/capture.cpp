@@ -57,8 +57,51 @@ std::string entity_note(const rant::Entity& e)
     };
     if (e.kind == rant::EntityKind::Variable) add(e.writable ? "writable" : "read-only");
     if (e.incomplete) add("half advertised");
-    if (e.conflict)   add("schema conflict");
     return note;
+}
+
+/* One node's side of a name, from its own reflection. */
+struct Endpoint {
+    uint32_t     peer = 0;
+    std::string  node;
+    rant::Entity entity;
+};
+
+/* Why each writer cannot reach each reader on another node, by the transport's gates in
+   their order. A function's or task's provider reads the request, so it is the reader. */
+std::vector<std::string> match_issues(Capture::Kind kind, const std::vector<Endpoint>& ends)
+{
+    const bool provider_writes = kind == Capture::Kind::Topic || kind == Capture::Kind::Variable;
+    std::vector<std::string> issues;
+    for (const Endpoint& w : ends) {
+        if (!(provider_writes ? w.entity.provides : w.entity.consumes)) continue;
+        for (const Endpoint& r : ends) {
+            if (r.peer == w.peer || !(provider_writes ? r.entity.consumes : r.entity.provides)) continue;
+            const rant::Schema& rs = r.entity.schema;
+            const rant::Schema& ws = w.entity.schema;
+            std::string issue;
+            if (r.entity.reliable && !w.entity.reliable)
+                issue = r.node + " wants reliable, " + w.node + " sends best effort";
+            else if (rs && !ws)
+                issue = r.node + " is typed, " + w.node + " sends untyped";
+            else if (rs && !rs.can_read(ws))
+                issue = r.node + " cannot read " + w.node + ": " + rs.why_not(ws);
+            if (!issue.empty() && std::find(issues.begin(), issues.end(), issue) == issues.end())
+                issues.push_back(std::move(issue));
+        }
+    }
+    return issues;
+}
+
+/* The distinct node names among the ends, joined. */
+std::string node_list(const std::vector<Endpoint>& ends)
+{
+    std::vector<std::string> names;
+    for (const Endpoint& end : ends)
+        if (std::find(names.begin(), names.end(), end.node) == names.end()) names.push_back(end.node);
+    std::string list;
+    for (const std::string& name : names) list += (list.empty() ? "" : ", ") + name;
+    return list;
 }
 
 /* A view named by its key, the kind read back from the key's word. */
@@ -1974,11 +2017,13 @@ void Capture::poll()
         topics_.clear();
         impl_->entities.clear();
         std::map<std::string, std::vector<std::string>> nodes_of;
+        std::map<std::string, std::vector<Endpoint>>    ends_of;   /* by key */
         for (const rant::Peer& p : peers) {
             if (!p.active) continue;
-            for (const rant::Entity& e : mesh.entities(p.id)) {
+            for (rant::Entity& e : mesh.entities(p.id)) {
                 std::vector<std::string>& names = nodes_of[e.name];
                 if (std::find(names.begin(), names.end(), p.name) == names.end()) names.push_back(p.name);
+                ends_of[key(kind_of(e.kind), e.name)].push_back(Endpoint{ p.id, p.name, std::move(e) });
             }
         }
         for (const rant::Entity& e : mesh.mesh()) {
@@ -1996,12 +2041,25 @@ void Capture::poll()
             row.reliable  = e.reliable;
             row.writable  = e.kind == rant::EntityKind::Variable && e.writable;
             row.nodes     = nodes_of[e.name];
+            row.issues    = match_issues(row.kind, ends_of[row.key]);
+            /* The mesh fold also flags rival providers, which no pair above names. */
+            if (e.conflict && row.issues.empty())
+                row.issues.push_back("its nodes declare schemas that cannot read each other");
             topics_.push_back(std::move(row));
         }
-        /* A name offered as two kinds is a fault on the mesh, so every row of it says so. */
-        std::map<std::string, int> rows_of;
-        for (const TopicRow& row : topics_) rows_of[row.name]++;
-        for (TopicRow& row : topics_) row.shared = rows_of[row.name] > 1;
+        /* A name offered as two kinds never connects, so every row of it says so first. */
+        std::map<std::string, std::vector<size_t>> rows_of;
+        for (size_t i = 0; i < topics_.size(); i++) rows_of[topics_[i].name].push_back(i);
+        for (TopicRow& row : topics_) {
+            std::vector<std::string> kinds;
+            for (const size_t i : rows_of[row.name]) {
+                if (topics_[i].kind == row.kind) continue;
+                const std::string nodes = node_list(ends_of[topics_[i].key]);
+                kinds.push_back(std::string("also a ") + kind_word(topics_[i].kind) +
+                                (nodes.empty() ? "" : " on " + nodes) + ", a name can be one kind only");
+            }
+            row.issues.insert(row.issues.begin(), kinds.begin(), kinds.end());
+        }
         topics_epoch_++;
     }
 

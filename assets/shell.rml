@@ -91,7 +91,7 @@
 										data-class-function="r.kind == 'function'"
 										data-class-variable="r.kind == 'variable'" data-class-task="r.kind == 'task'" />
 									<span class="name mono">{{r.name}}{{r.branch ? '/' : ''}}</span>
-									<icon class="shared bad" name="triangle-alert" data-if="r.shared" />
+									<icon class="fault bad" name="triangle-alert" data-if="r.fault" />
 								</span>
 								<span class="tt-cell share c-topic-value mono" cell="">{{tree_cells[i].value}}</span>
 								<span class="tt-cell share c-topic-rate num mono" cell=""
@@ -123,7 +123,11 @@
 							<span class="tag" copy="" data-if="topic.type != '' || value_type != ''">{{topic.type
 								!= '' ? topic.type : value_type}}</span>
 							<span class="tag" data-if="topic.note != ''">{{topic.note}}</span>
-							<span class="tag bad" data-if="topic.shared">duplicate</span>
+						</div>
+						<div class="issues" data-if="has_topic &amp;&amp; topic.issues.size > 0">
+							<div class="issue" data-for="s : topic.issues">
+								<icon class="bad" name="triangle-alert" /><span copy="">{{s}}</span>
+							</div>
 						</div>
 						<div class="viz-area" data-if="has_topic">
 							<div class="hint" data-if="cards.size == 0"><span>Toggle a field in the value tree to see it

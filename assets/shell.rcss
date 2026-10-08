@@ -233,7 +233,7 @@ body.hide-value .c-value { display: none; }
 	flex-direction: column;
 }
 
-.feed .detail-head { flex: 0 0 auto; }
+.feed .detail-head, .feed .issues { flex: 0 0 auto; }
 
 /* The cards are tiled by tile_cards in main.cpp, which writes each one's box inline, so
    the area only has to be the rest of the pane. The visual takes the card's height from a

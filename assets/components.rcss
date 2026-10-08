@@ -265,7 +265,7 @@ td.held, th.held, .kv.held, [cell].held, viz [cell-path].held { background-color
 }
 .tt-tree .caret icon { font-size: 12dp; }
 .tt-tree icon.kind   { flex: 0 0 auto; }
-.tt-tree icon.shared { flex: 0 0 auto; }   /* a name offered as two kinds, red by .bad */
+.tt-tree icon.fault  { flex: 0 0 auto; }   /* the topic has issues, red by .bad */
 
 .tt-tree .name {
 	display: block;
@@ -914,6 +914,22 @@ scrollbarvertical sliderarrowinc {
 	gap: 10dp;
 	margin-bottom: 14dp;
 }
+
+/* Under the heading, one line per fault that stops the nodes connecting. */
+.issues {
+	display: flex;
+	flex-direction: column;
+	gap: 4dp;
+	margin-bottom: 14dp;
+}
+.issue {
+	display: flex;
+	align-items: flex-start;
+	gap: 6dp;
+	font-size: 11dp;
+	color: var(--text);
+}
+.issue icon { flex: 0 0 auto; }
 
 /* --------------------------------------------------------------------------- menu */
 

@@ -25,7 +25,7 @@ struct TreeRow {
     bool        open = false;        /* a branch showing them */
     bool        has_topic = false;   /* a name on the mesh, not only a namespace */
     bool        odd = false;         /* every other row is striped */
-    bool        shared = false;      /* its name is offered as another kind too */
+    bool        fault = false;       /* its topic has issues */
     int         topic = -1;          /* index into the topics the tree was built from */
 };
 

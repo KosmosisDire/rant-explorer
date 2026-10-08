@@ -179,7 +179,7 @@ std::vector<TreeRow> build_tree(const Capture& capture, const std::set<std::stri
             rows[i].kind       = topics[rows[i].topic].kind;
             rows[i].topic_name = topics[rows[i].topic].name;
             rows[i].key        = topics[rows[i].topic].key;
-            rows[i].shared     = topics[rows[i].topic].shared;
+            rows[i].fault      = !topics[rows[i].topic].issues.empty();
         }
         rows[i].odd = i % 2 == 1;
     }

@@ -14,7 +14,7 @@
 class Capture {
 public:
     struct Options {
-        std::string name;                  /* empty = "explorer-XXXXXXXX" */
+        std::string name = "explorer";
         std::string discovery_group;
         std::string multicast_interface;
         uint16_t    domain = 0;

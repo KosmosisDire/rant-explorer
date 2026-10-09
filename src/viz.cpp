@@ -796,12 +796,146 @@ std::pair<std::string, std::string> describe(const Solid& o)
     return { r + "  length " + f3(length(o.b - o.a)), "from " + point(o.a) };
 }
 
-/* An array's count by its element's kind: 3 spheres, 2 boxes. */
+/* An array's count by its element's kind: 3 spheres, 2 boxes, 4 poses. */
 std::string counted(size_t n, const std::string& kind)
 {
-    std::string noun = kind == "AlignedBox" || kind == "OrientedBox" ? "box" : kind;
+    std::string noun = kind;
+    if (noun.size() > 2 && noun.compare(noun.size() - 2, 2, "2D") == 0) noun.resize(noun.size() - 2);
+    if (noun == "AlignedBox" || noun == "OrientedBox") noun = "box";
     std::transform(noun.begin(), noun.end(), noun.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
     return format_number((double)n) + " " + noun + (n == 1 ? "" : noun.back() == 'x' ? "es" : "s");
+}
+
+/* ------------------------------------------------------------------ figures */
+
+/* The box of a 2D scene fitted to an area, with the grid and both axes, x right and y up,
+   each named at its end. Its reach is a largest component, since the box is square. */
+struct Plane {
+    double k = 1, cx = 0, cy = 0;
+    Rml::Vector2f operator()(double x, double y) const { return { (float)(cx + x * k), (float)(cy - y * k) }; }
+    Rml::Vector2f operator()(const V3& p) const { return (*this)(p.x, p.y); }
+};
+
+Plane plane(Canvas& c, const Area& a, double r)
+{
+    Plane p;
+    p.k  = std::min(a.w - c.dp(16), a.h - c.dp(TOP + BOT + 4)) / (2 * r);
+    p.cx = a.x + a.w / 2;
+    p.cy = a.y + c.dp(TOP) + (a.h - c.dp(TOP + BOT)) / 2;
+    const double step = nice(r / 2);
+    for (double m = std::ceil(-r / step) * step; m <= r + 1e-9; m += step) {
+        c.line(p(m, -r), p(m, r), ink.grid);
+        c.line(p(-r, m), p(r, m), ink.grid);
+    }
+    const double end = r * 0.92;
+    c.line(p(-r, 0), p(end, 0), axis_colour(0), THIN);
+    c.line(p(0, -r), p(0, end), axis_colour(1), THIN);
+    c.text("x", p(end, 0).x + c.dp(8), p(end, 0).y + c.dp(5), Canvas::Center, axis_colour(0), LABEL);
+    c.text("y", p(0, end).x, p(0, end).y - c.dp(6), Canvas::Center, axis_colour(1), LABEL);
+    return p;
+}
+
+/* A Pose2D: where it is, and its angle in radians from +x toward +y. */
+struct Placed2D {
+    V3     at;
+    double angle = 0;
+};
+
+Placed2D placed_2d(const Nodes& nodes, int index)
+{
+    if (index < -1) return Placed2D{};
+    const int p = kid(nodes, index, "position");
+    return Placed2D{ p >= 0 ? vec(nodes, p) : V3{}, number(nodes, index, "angle") };
+}
+
+/* A pose on a plane: a dot where it is and an arrow along its heading. */
+void heading(Canvas& c, const Plane& p, const Placed2D& at, double len, Rml::Colourb colour)
+{
+    const V3 tip{ at.at.x + std::cos(at.angle) * len, at.at.y + std::sin(at.angle) * len, 0 };
+    c.arrow(p(at.at), p(tip), colour, ARROW);
+    c.dot(p(at.at), colour, 4);
+}
+
+/* An angle in degrees, wrapped to a half turn either way. */
+std::string degrees(double radians)
+{
+    return print("%.1f\xC2\xB0", std::remainder(radians, 6.28318530717959) * 180 / 3.14159265358979);
+}
+
+/* A standard 2D shape read from its node, as the corners of its outline, or a circle. */
+struct Figure {
+    std::string     kind;
+    V3              centre;
+    V3              size;      /* a box's edge lengths */
+    double          angle = 0, radius = 0;
+    std::vector<V3> points;    /* a box's or a polygon's corners in order */
+};
+
+Figure figure(const Nodes& nodes, int index, const std::string& kind)
+{
+    Figure out;
+    out.kind = kind;
+    auto at = [&](const char* name) {
+        const int k = kid(nodes, index, name);
+        return k >= 0 ? vec(nodes, k) : V3{};
+    };
+    if (kind == "AlignedBox2D") {
+        const V3 lo = at("min"), hi = at("max");
+        out.centre = (lo + hi) * 0.5;
+        out.size   = hi - lo;
+        out.points = { lo, V3{ hi.x, lo.y, 0 }, hi, V3{ lo.x, hi.y, 0 } };
+    } else if (kind == "OrientedBox2D") {
+        const Placed2D p = placed_2d(nodes, kid(nodes, index, "pose"));
+        out.centre = p.at;
+        out.angle  = p.angle;
+        out.size   = at("size");
+        const double ca = std::cos(p.angle), sa = std::sin(p.angle);
+        for (const V3& h : { V3{ -0.5, -0.5, 0 }, V3{ 0.5, -0.5, 0 }, V3{ 0.5, 0.5, 0 }, V3{ -0.5, 0.5, 0 } }) {
+            const double x = h.x * out.size.x, y = h.y * out.size.y;
+            out.points.push_back(V3{ p.at.x + x * ca - y * sa, p.at.y + x * sa + y * ca, 0 });
+        }
+    } else if (kind == "Circle") {
+        out.centre = at("center");
+        out.radius = number(nodes, index, "radius");
+    } else if (kind == "Polygon2D") {
+        const int points = kid(nodes, index, "points");
+        if (points >= 0)
+            for (const int k : children_of(nodes, points)) out.points.push_back(vec(nodes, k));
+        for (const V3& v : out.points) out.centre = out.centre + v * (1.0 / out.points.size());
+    }
+    return out;
+}
+
+/* Grows a plane's reach to hold a figure. */
+void hold(Reach& reach, const Figure& f)
+{
+    auto take = [&reach](const V3& p, double pad) {
+        reach.seen = std::max({ reach.seen, std::fabs(p.x) + pad, std::fabs(p.y) + pad });
+    };
+    if (f.kind == "Circle") take(f.centre, f.radius);
+    for (const V3& p : f.points) take(p, 0);
+}
+
+void draw_figure(Canvas& c, const Plane& p, const Figure& f, Rml::Colourb colour)
+{
+    if (f.kind == "Circle") {
+        c.polyline(circle(p(f.centre), (float)(f.radius * p.k)), colour, STROKE);
+        c.dot(p(f.centre), colour, 3);
+        return;
+    }
+    std::vector<Rml::Vector2f> corners;
+    for (const V3& v : f.points) corners.push_back(p(v));
+    c.polyline(corners, colour, STROKE, true);
+    if (f.kind == "Polygon2D")
+        for (const Rml::Vector2f& v : corners) c.dot(v, colour, 3.5f);
+}
+
+std::pair<std::string, std::string> describe(const Figure& f)
+{
+    const std::string at = "at (" + f3(f.centre.x) + ", " + f3(f.centre.y) + ")";
+    if (f.kind == "Circle")    return { "radius " + f3(f.radius), at };
+    if (f.kind == "Polygon2D") return { format_number((double)f.points.size()) + " points", {} };
+    return { "size " + f3(f.size.x) + " x " + f3(f.size.y), at };
 }
 
 /* A turn about an axis through the origin: an arc of radius rho sweeping sweep radians the
@@ -961,6 +1095,10 @@ protected:
         case Visual::Color:      colour(c, nodes); break;
         case Visual::Joints:     joints(c, nodes); break;
         case Visual::Vec2s:      vec2s(c, nodes); break;
+        case Visual::Pose2D:     pose_2d(c, nodes); break;
+        case Visual::Poses2D:    poses_2d(c, nodes); break;
+        case Visual::Figure:     figure_one(c, nodes, node); break;
+        case Visual::Figures:    figures(c, nodes, node); break;
         case Visual::Vec3s:      vec3s(c, nodes); break;
         case Visual::Poses:      poses(c, nodes, node); break;
         case Visual::Geos:       geos(c, nodes); break;
@@ -1330,32 +1468,6 @@ private:
 
     /* ---------------------------------------------------------------- planes */
 
-    /* The box of a 2D scene fitted to an area, with the grid and both axes, x right and
-       y up, each named at its end. */
-    struct Plane {
-        double k = 1, cx = 0, cy = 0;
-        Rml::Vector2f operator()(double x, double y) const { return { (float)(cx + x * k), (float)(cy - y * k) }; }
-    };
-
-    Plane plane(Canvas& c, const Area& a, double r)
-    {
-        Plane p;
-        p.k  = std::min(a.w - c.dp(16), a.h - c.dp(TOP + BOT + 4)) / (2 * r);
-        p.cx = a.x + a.w / 2;
-        p.cy = a.y + c.dp(TOP) + (a.h - c.dp(TOP + BOT)) / 2;
-        const double step = nice(r / 2);
-        for (double m = std::ceil(-r / step) * step; m <= r + 1e-9; m += step) {
-            c.line(p(m, -r), p(m, r), ink.grid);
-            c.line(p(-r, m), p(r, m), ink.grid);
-        }
-        const double end = r * 0.92;
-        c.line(p(-r, 0), p(end, 0), axis_colour(0), THIN);
-        c.line(p(0, -r), p(0, end), axis_colour(1), THIN);
-        c.text("x", p(end, 0).x + c.dp(8), p(end, 0).y + c.dp(5), Canvas::Center, axis_colour(0), LABEL);
-        c.text("y", p(0, end).x, p(0, end).y - c.dp(6), Canvas::Center, axis_colour(1), LABEL);
-        return p;
-    }
-
     void vec2(Canvas& c, const Nodes& nodes)
     {
         const V3 v = vec(nodes, found_);
@@ -1381,6 +1493,70 @@ private:
             index_label(c, p(v[i].x, v[i].y), i);
         }
         foot(c, c.all(), format_number((double)v.size()) + " vectors");
+    }
+
+    /* A Pose2D: its heading at its position joined to the origin, and the position's trail. */
+    void pose_2d(Canvas& c, const Nodes& nodes)
+    {
+        const Placed2D at = placed_2d(nodes, found_);
+        /* the margin keeps the heading inside */
+        const double r = reach_[0].grow({ at.at.x, at.at.y }, dt_, 1.3);
+        const Plane p = plane(c, c.all(), r);
+        if (history_) {
+            const std::string base = child_path(path_, "position");
+            Dots dots(c, ink.trail, 2);
+            for (const V3& t : trail(base + ".x", base + ".y")) dots.add(p(t.x, t.y));
+        }
+        c.line(p(0, 0), p(at.at), ink.faint, THIN);
+        heading(c, p, at, 0.2 * r, ink.accent);
+        note(c, c.all(), "angle " + degrees(at.angle));
+        foot(c, c.all(), "x " + f3(at.at.x) + "  y " + f3(at.at.y));
+    }
+
+    /* A chain of Pose2Ds: consecutive ones joined, a heading at each. */
+    void poses_2d(Canvas& c, const Nodes& nodes)
+    {
+        std::vector<Placed2D> list;
+        for (const int i : children_of(nodes, found_)) {
+            list.push_back(placed_2d(nodes, i));
+            reach_[0].seen = std::max({ reach_[0].seen, std::fabs(list.back().at.x), std::fabs(list.back().at.y) });
+        }
+        const double r = reach_[0].grow({}, dt_, 1.2);
+        const Plane p = plane(c, c.all(), r);
+        for (size_t i = 1; i < list.size(); i++) c.line(p(list[i - 1].at), p(list[i].at), ink.dim, THIN);
+        for (size_t i = 0; i < list.size(); i++) {
+            heading(c, p, list[i], 0.15 * r, palette((long long)i));
+            index_label(c, p(list[i].at), i);
+        }
+        foot(c, c.all(), counted(list.size(), "Pose2D"));
+    }
+
+    /* One standard 2D shape on a plane that grows to hold it. */
+    void figure_one(Canvas& c, const Nodes& nodes, const ValueNode& node)
+    {
+        const Figure one = figure(nodes, found_, node.std_name);
+        hold(reach_[0], one);
+        const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_));
+        draw_figure(c, p, one, ink.accent);
+        if (one.kind == "OrientedBox2D") note(c, c.all(), "angle " + degrees(one.angle));
+        const auto text = describe(one);
+        foot(c, c.all(), text.first, text.second);
+    }
+
+    /* An array of one kind of 2D shape on one plane, each in its own colour. */
+    void figures(Canvas& c, const Nodes& nodes, const ValueNode& node)
+    {
+        std::vector<Figure> list;
+        for (const int i : children_of(nodes, found_)) {
+            list.push_back(figure(nodes, i, node.elem_std));
+            hold(reach_[0], list.back());
+        }
+        const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_));
+        for (size_t i = 0; i < list.size(); i++) {
+            draw_figure(c, p, list[i], palette((long long)i));
+            index_label(c, p(list[i].centre), i);
+        }
+        foot(c, c.all(), counted(list.size(), node.elem_std));
     }
 
     /* ---------------------------------------------------------------- scenes */
@@ -1413,13 +1589,14 @@ private:
     {
         const bool framed = node.std_name == "Transform";
         const Placed p = placed(nodes, framed ? kid(nodes, found_, "pose") : found_);
-        const double r = reach_[0].grow({ length(p.at) }, dt_);
+        /* the margin keeps the triad inside */
+        const double r = reach_[0].grow({ length(p.at) }, dt_, 1.3);
         const Scene s = scene(c, c.all(), r, camera());
         const std::string base = child_path(framed ? child_path(path_, "pose") : path_, "position");
         const std::vector<V3> t = history_ ? trail(base + ".x", base + ".y", base + ".z") : std::vector<V3>();
         layered(c, s, p.at, &t, [&] {
             c.line(s(0, 0, 0), s(p.at), ink.faint, THIN);
-            triad(c, s, p.at, p.turn, 2 * r * 0.15);
+            triad(c, s, p.at, p.turn, 0.2 * r);
         });
         note(c, c.all(), euler(p.turn));
         const int parent = framed ? kid(nodes, found_, "parent") : -2;
@@ -1500,11 +1677,11 @@ private:
             at.push_back(p.back().at);
         }
         for (const V3& e : at) reach_[0].seen = std::max(reach_[0].seen, length(e));
-        const double r = reach_[0].grow({}, dt_);
+        const double r = reach_[0].grow({}, dt_, 1.2);
         const Scene s = scene(c, c.all(), r, camera());
         back_to_front(c, s, at, [&](size_t i) {
             if (i) c.line(s(at[i - 1]), s(at[i]), ink.dim, THIN);
-            triad(c, s, at[i], p[i].turn, 2 * r * 0.08);
+            triad(c, s, at[i], p[i].turn, 0.15 * r);
             index_label(c, s(at[i]), i, ink.dim);
         });
         foot(c, c.all(), format_number((double)p.size()) + (framed ? " transforms" : " poses"));
@@ -1828,7 +2005,8 @@ public:
         case Visual::Vec3: case Visual::Quat: case Visual::Pose: case Visual::Twist: case Visual::Wrench:
         case Visual::Solid: case Visual::Vec3s: case Visual::Poses: case Visual::Solids:
             return Tile{ 1, 1.5 };
-        case Visual::Vec2: case Visual::Vec2s:
+        case Visual::Vec2: case Visual::Vec2s: case Visual::Pose2D: case Visual::Poses2D:
+        case Visual::Figure: case Visual::Figures:
             return Tile{ 1.3, 1 };
         case Visual::Geo: case Visual::Geos:
             return Tile{ 1.5, 1 };
@@ -1933,7 +2111,7 @@ bool viz_history(Visual visual)
 {
     switch (visual) {
     case Visual::Plot: case Visual::State: case Visual::Vec2: case Visual::Vec3: case Visual::Pose:
-    case Visual::Wrench: case Visual::Geo:
+    case Visual::Pose2D: case Visual::Wrench: case Visual::Geo:
         return true;
     default:
         return false;
@@ -1961,6 +2139,7 @@ VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>&
         case Visual::Pose:
             add(child_path(std_name == "Transform" ? child_path(path, "pose") : path, "position"), { "x", "y", "z" });
             break;
+        case Visual::Pose2D: add(child_path(path, "position"), { "x", "y" }); break;
         case Visual::Wrench: add(child_path(path, "force"), { "x", "y", "z" }); break;
         case Visual::Geo:   add(path, { "lat", "lon" }); break;
         default: break;

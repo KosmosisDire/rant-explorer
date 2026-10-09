@@ -24,10 +24,13 @@ Visual struct_visual(const std::string& name)
         { "Float2", Visual::Vec2 }, { "Double2", Visual::Vec2 }, { "Int2", Visual::Vec2 },
         { "Float3", Visual::Vec3 }, { "Double3", Visual::Vec3 }, { "Int3", Visual::Vec3 },
         { "Quaternion", Visual::Quat }, { "Pose", Visual::Pose }, { "Transform", Visual::Pose },
+        { "Pose2D", Visual::Pose2D },
         { "Twist", Visual::Twist }, { "Wrench", Visual::Wrench },
         { "AlignedBox", Visual::Solid }, { "OrientedBox", Visual::Solid }, { "Plane", Visual::Solid },
         { "Segment", Visual::Solid }, { "Sphere", Visual::Solid }, { "Capsule", Visual::Solid },
         { "Cylinder", Visual::Solid }, { "Cone", Visual::Solid }, { "Polygon", Visual::Solid },
+        { "AlignedBox2D", Visual::Figure }, { "OrientedBox2D", Visual::Figure },
+        { "Circle", Visual::Figure }, { "Polygon2D", Visual::Figure },
         { "GeoPoint", Visual::Geo }, { "Color", Visual::Color },
         { "JointState", Visual::Joints }, { "Image", Visual::Image },
         { "VideoFrame", Visual::Video },
@@ -44,12 +47,14 @@ Visual array_of_struct(const std::string& name)
     static const struct { const char* name; Visual visual; } table[] = {
         { "Float3", Visual::Vec3s }, { "Double3", Visual::Vec3s }, { "Int3", Visual::Vec3s },
         { "Float2", Visual::Vec2s }, { "Double2", Visual::Vec2s }, { "Int2", Visual::Vec2s },
-        { "Pose", Visual::Poses }, { "Transform", Visual::Poses }, { "GeoPoint", Visual::Geos },
+        { "Pose", Visual::Poses }, { "Transform", Visual::Poses }, { "Pose2D", Visual::Poses2D },
+        { "GeoPoint", Visual::Geos },
         { "Color", Visual::Colors },
     };
     for (const auto& entry : table)
         if (name == entry.name) return entry.visual;
     if (struct_visual(name) == Visual::Solid) return Visual::Solids;
+    if (struct_visual(name) == Visual::Figure) return Visual::Figures;
     return struct_visual(name) == Visual::Kv ? Visual::Table : Visual::Multi;
 }
 

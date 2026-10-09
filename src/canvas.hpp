@@ -51,8 +51,10 @@ public:
         line(a.x, a.y, b.x, b.y, colour, width_dp);
     }
     /* A line of dashes three dp long with three dp gaps. */
-    void dashed(Rml::Vector2f a, Rml::Vector2f b, Rml::Colourb colour);
-    /* A line with a filled head at its end. */
+    void dashed(Rml::Vector2f a, Rml::Vector2f b, Rml::Colourb colour, float width_dp = 1);
+    /* Lines through points with round joins, so a thick bend has no notch. */
+    void polyline(const std::vector<Rml::Vector2f>& points, Rml::Colourb colour, float width_dp = 1, bool closed = false);
+    /* A line with a filled head at its end, sized to the line. */
     void arrow(Rml::Vector2f a, Rml::Vector2f b, Rml::Colourb colour, float width_dp = 2);
     void rect(float x, float y, float w, float h, Rml::Colourb colour);
     /* A filled rectangle with corners of radius r_dp. */

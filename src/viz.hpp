@@ -7,6 +7,7 @@
 #include "capture.hpp"
 #include "image.hpp"
 #include "tiling.hpp"
+#include "values.hpp"
 
 #include <set>
 #include <string>
@@ -24,7 +25,12 @@ struct VizFeeds {
     std::vector<Capture::TraceSpec> traces;
     std::vector<std::string>        streams;
 };
-VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>& shown);
+/* The still paths show only their newest value, so they are not traced. */
+VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>& shown,
+                   const std::set<std::string>& still);
+
+/* A visual that draws what came before, so its card offers to turn that off. */
+bool viz_history(Visual visual);
 
 /* What a card's visual wants from the tiling. The default for any other element. */
 Tile viz_tile(Rml::Element* element);

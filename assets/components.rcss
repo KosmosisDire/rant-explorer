@@ -580,7 +580,7 @@ select.pill-edit selectbox option:checked { color: var(--text); }
 	position: absolute;
 	top: 5dp;
 	left: 8dp;
-	font-size: 11dp;
+	font-size: 12dp;
 	color: var(--text);
 }
 
@@ -626,7 +626,7 @@ select.pill-edit selectbox option:checked { color: var(--text); }
 viz, mesh-graph {
 	display: block;
 	font-family: ui-mono;
-	font-size: 10dp;
+	font-size: 12dp;
 	color: var(--dim);
 
 	/* What a drawing paints with, read by canvas.cpp. */
@@ -655,17 +655,17 @@ viz.pans.zoomed { cursor: move; }
 viz.html {
 	display: flex;
 	flex-direction: column;
-	padding: 24dp 8dp 8dp 8dp;
+	padding: 28dp 10dp 10dp 10dp;
 	overflow-y: auto;
 }
 
-viz .big       { font-size: 22dp; color: var(--text); }
-viz .big.text  { font-size: 15dp; white-space: pre-wrap; }
-viz .hex       { font-size: 11dp; line-height: 1.5; white-space: pre; }
+viz .big       { font-size: 28dp; color: var(--text); }
+viz .big.text  { font-size: 18dp; white-space: pre-wrap; }
+viz .hex       { font-size: 13dp; line-height: 1.5; white-space: pre; }
 
 viz .chips { display: flex; flex-wrap: wrap; gap: 4dp; }
 viz .chip {
-	font-size: 11dp;
+	font-size: 13dp;
 	color: var(--text);
 	padding: 2dp 6dp;
 }
@@ -677,11 +677,11 @@ viz .cells .cell {
 	align-items: center;
 	gap: 6dp;
 	padding: 3dp 8dp 3dp 6dp;
-	font-size: 11dp;
+	font-size: 13dp;
 }
-viz .cells .lamp    { width: 10dp; height: 10dp; border-radius: 5dp; background-color: var(--border2); }
+viz .cells .lamp    { width: 12dp; height: 12dp; border-radius: 6dp; background-color: var(--border2); }
 viz .cells .lamp.on { background-color: var(--green); }
-viz .cells .idx  { font-size: 10dp; color: var(--faint); }
+viz .cells .idx  { font-size: 12dp; color: var(--faint); }
 
 /* A matrix: rows of equal cells, since RCSS has no grid. */
 viz .matrix { display: flex; flex-direction: column; gap: 3dp; }
@@ -690,7 +690,7 @@ viz .matrix-row span {
 	flex: 1;
 	padding: 6dp 4dp;
 	text-align: center;
-	font-size: 12dp;
+	font-size: 14dp;
 	color: var(--text);
 }
 
@@ -702,7 +702,7 @@ viz .scroll-table {
 	border-radius: 3dp;
 }
 /* A nested array's cell is a long line, so a cell wraps inside its column. */
-viz .scroll-table td { color: var(--text); white-space: normal; word-break: break-word; overflow: hidden; }
+viz .scroll-table td { font-size: 13dp; color: var(--text); white-space: normal; word-break: break-word; overflow: hidden; }
 
 /* A grid of small copies, each the element's own visual with its own bounds. */
 viz .multi {
@@ -723,7 +723,7 @@ viz .multi-cell > .idx {
 	position: absolute;
 	top: 6dp;
 	left: 8dp;
-	font-size: 10dp;
+	font-size: 12dp;
 	color: var(--dim);
 }
 
@@ -733,7 +733,7 @@ viz .pair {
 	display: flex;
 	gap: var(--gap);
 	padding: 5dp 0dp;
-	font-size: 11dp;
+	font-size: 13dp;
 }
 viz .pair + .pair  { border-top: 1dp var(--border); }
 viz .pair-key      { color: var(--dim); }

@@ -43,7 +43,13 @@ Rml::Colourb palette(long long i)
 }
 
 /* The strips kept free for text at the top and bottom of a drawing, in dp. */
-constexpr float TOP = 22, BOT = 16;
+constexpr float TOP = 28, BOT = 22;
+
+/* Text sizes in dp: a label, the value at the top right, and a value shown alone. */
+constexpr float LABEL = 12, VALUE = 18, ALONE = 48;
+
+/* Line widths in dp: an axis or an outline, a data line or a shape, an arrow. Grids are 1. */
+constexpr float THIN = 1.5f, STROKE = 2.5f, ARROW = 3.5f;
 
 /* How much history a plot shows and a trail keeps, and how far ahead a twist's path looks. */
 constexpr double PLOT_SECONDS = 10, TRAIL_SECONDS = 30, TWIST_AHEAD = 2;
@@ -161,6 +167,19 @@ Quat quat(const Nodes& nodes, int index)
 {
     return Quat{ number(nodes, index, "x"), number(nodes, index, "y"), number(nodes, index, "z"),
                  number(nodes, index, "w") };
+}
+
+/* A Pose: where it is and how it is turned. The identity for no node. */
+struct Placed {
+    V3   at;
+    Quat turn;
+};
+
+Placed placed(const Nodes& nodes, int index)
+{
+    if (index < -1) return Placed{};
+    const int p = kid(nodes, index, "position"), o = kid(nodes, index, "orientation");
+    return Placed{ p >= 0 ? vec(nodes, p) : V3{}, o >= 0 ? quat(nodes, o) : Quat{} };
 }
 
 V3 operator+(const V3& a, const V3& b) { return V3{ a.x + b.x, a.y + b.y, a.z + b.z }; }
@@ -333,9 +352,9 @@ void time_grid(Canvas& c, X x_of, double now, float y0, float y1)
     for (int sec = 2; sec <= 10; sec += 2) {
         const float x = x_of(now - sec);
         c.line(x, y0, x, y1, ink.grid);
-        c.text("-" + std::to_string(sec) + " s", x, c.h() - c.dp(5), sec == 10 ? Canvas::Left : Canvas::Center, ink.faint);
+        c.text("-" + std::to_string(sec) + " s", x, c.h() - c.dp(6), sec == 10 ? Canvas::Left : Canvas::Center, ink.faint, LABEL);
     }
-    c.text("now", x_of(now), c.h() - c.dp(5), Canvas::Right, ink.faint);
+    c.text("now", x_of(now), c.h() - c.dp(6), Canvas::Right, ink.faint, LABEL);
 }
 
 /* Horizontal lines at round steps across a value range, labelled in the left gutter. */
@@ -345,21 +364,54 @@ void value_grid(Canvas& c, float x0, float x1, double lo, double hi, Y y_of, boo
     const double step = nice((hi - lo) / 4);
     for (double v = std::ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
         c.line(x0, y_of(v), x1, y_of(v), ink.grid);
-        c.text(axis_label(v, is_float), x0 - c.dp(6), y_of(v) + c.dp(3), Canvas::Right, ink.faint);
+        c.text(axis_label(v, is_float), x0 - c.dp(6), y_of(v) + c.dp(4), Canvas::Right, ink.faint, LABEL);
     }
 }
 
+/* The left gutter a value grid labels in. */
+constexpr float GUTTER = 72;
+
 /* The current value at the top right of an area, clear of the pin and close buttons. */
-void corner(Canvas& c, const Area& a, const std::string& s, Rml::Colourb colour = ink.text, float size = 14)
+void corner(Canvas& c, const Area& a, const std::string& s, Rml::Colourb colour = ink.text)
 {
-    c.text(s, a.x + a.w - c.dp(54), a.y + c.dp(17), Canvas::Right, colour, size);
+    c.text(s, a.x + a.w - c.dp(54), a.y + c.dp(21), Canvas::Right, colour, VALUE);
 }
 
-/* Components along the bottom of an area: the left in the text colour, the right faint. */
+/* Components along the bottom of an area: the left dim, the right faint. What does not fit
+   is left out, the right first. */
 void foot(Canvas& c, const Area& a, const std::string& left, const std::string& right = {})
 {
-    if (!left.empty())  c.text(left, a.x + c.dp(8), a.y + a.h - c.dp(5), Canvas::Left, ink.dim);
-    if (!right.empty()) c.text(right, a.x + a.w - c.dp(8), a.y + a.h - c.dp(5), Canvas::Right, ink.faint);
+    const float room = a.w - c.dp(16), lw = c.text_width(left, LABEL), rw = c.text_width(right, LABEL);
+    if (!left.empty() && lw <= room) c.text(left, a.x + c.dp(8), a.y + a.h - c.dp(6), Canvas::Left, ink.dim, LABEL);
+    if (!right.empty() && (left.empty() ? rw : lw + c.dp(16) + rw) <= room)
+        c.text(right, a.x + a.w - c.dp(8), a.y + a.h - c.dp(6), Canvas::Right, ink.faint, LABEL);
+}
+
+/* A drawing's second reading, at the top right where a plot's value goes, while there is
+   room beside a short card name. */
+void note(Canvas& c, const Area& a, const std::string& s)
+{
+    if (c.text_width(s, LABEL) > a.w - c.dp(54 + 120)) return;
+    c.text(s, a.x + a.w - c.dp(54), a.y + c.dp(19), Canvas::Right, ink.dim, LABEL);
+}
+
+/* An element's index beside the point it is drawn at, in its colour. */
+void index_label(Canvas& c, Rml::Vector2f at, size_t i, Rml::Colourb colour)
+{
+    c.text(std::to_string(i), at.x + c.dp(8), at.y - c.dp(6), Canvas::Left, colour, LABEL);
+}
+
+void index_label(Canvas& c, Rml::Vector2f at, size_t i)
+{
+    index_label(c, at, i, palette((long long)i));
+}
+
+/* A value shown alone in the middle of an area, as large as fits up to ALONE dp. */
+void alone(Canvas& c, const Area& a, const std::string& s, Rml::Colourb colour = ink.text)
+{
+    const float room = a.w - c.dp(24), wide = c.text_width(s, ALONE);
+    const float size = wide > room && wide > 0 ? std::max(LABEL, ALONE * room / wide) : ALONE;
+    c.text(s, a.x + a.w / 2, a.y + c.dp(TOP / 2) + a.h / 2 + c.dp(size * 0.35f), Canvas::Center, colour, size);
 }
 
 /* ------------------------------------------------------------------ bounds */
@@ -430,9 +482,9 @@ void axes(Canvas& c, const Scene& s)
     const V3 ends[3] = { { r, 0, 0 }, { 0, r, 0 }, { 0, 0, r } };
     const char* names[3] = { "x", "y", "z" };
     for (int i = 0; i < 3; i++) {
-        c.line(s(0, 0, 0), s(ends[i]), axis_colour(i));
+        c.line(s(0, 0, 0), s(ends[i]), axis_colour(i), THIN);
         const Rml::Vector2f e = s(ends[i]);
-        c.text(names[i], e.x + (i == 2 ? 0 : c.dp(7)), e.y + (i == 2 ? -c.dp(5) : c.dp(4)), Canvas::Center, axis_colour(i));
+        c.text(names[i], e.x + (i == 2 ? 0 : c.dp(8)), e.y + (i == 2 ? -c.dp(6) : c.dp(5)), Canvas::Center, axis_colour(i), LABEL);
     }
 }
 
@@ -441,13 +493,13 @@ void axes(Canvas& c, const Scene& s)
 void shadow(Canvas& c, const Scene& s, const V3& v, const std::vector<V3>* trail, bool front)
 {
     if (trail) {
-        Dots dots(c, ink.trail, 1.5f);
+        Dots dots(c, ink.trail, 2);
         for (const V3& p : *trail)
             if (s.front(p) == front) dots.add(s(p));
     }
     if (s.front(v) != front) return;
-    c.dot(s(v.x, v.y, 0), ink.ground, 2);
-    c.dashed(s(v.x, v.y, 0), s(v), ink.ground);
+    c.dot(s(v.x, v.y, 0), ink.ground, 3);
+    c.dashed(s(v.x, v.y, 0), s(v), ink.ground, THIN);
 }
 
 /* Draws a scene back to front: what is behind, the axes, what is in front. */
@@ -461,13 +513,30 @@ void layered(Canvas& c, const Scene& s, const V3& v, const std::vector<V3>* trai
     }
 }
 
+/* Draws one body per point back to front, each with its foot and drop line, the axes
+   between the points behind and the points in front. */
+template <class Body>
+void back_to_front(Canvas& c, const Scene& s, const std::vector<V3>& at, Body body)
+{
+    std::vector<size_t> order(at.size());
+    for (size_t i = 0; i < order.size(); i++) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return s.depth(at[a]) < s.depth(at[b]); });
+    bool axes_drawn = false;
+    for (const size_t i : order) {
+        if (!axes_drawn && s.front(at[i])) { axes(c, s); axes_drawn = true; }
+        shadow(c, s, at[i], nullptr, s.front(at[i]));
+        body(i);
+    }
+    if (!axes_drawn) axes(c, s);
+}
+
 /* A rotation as three arrows along its turned axes. */
 void triad(Canvas& c, const Scene& s, const V3& at, const Quat& q, double len)
 {
     const V3 units[3] = { { len, 0, 0 }, { 0, len, 0 }, { 0, 0, len } };
     for (int i = 0; i < 3; i++) {
         const V3 d = rotate(q, units[i]);
-        c.arrow(s(at), s(at.x + d.x, at.y + d.y, at.z + d.z), axis_colour(i), 2.5f);
+        c.arrow(s(at), s(at.x + d.x, at.y + d.y, at.z + d.z), axis_colour(i), ARROW);
     }
 }
 
@@ -478,14 +547,15 @@ void curl(Canvas& c, const Scene& s, const V3& axis, double rho, double sweep, R
     const V3 up = std::fabs(axis.z) < 0.9 ? V3{ 0, 0, 1 } : V3{ 1, 0, 0 };
     const V3 side = cross(up, axis), a = side * (1 / length(side)), b = cross(axis, a);
     const int steps = 32;
-    Rml::Vector2f last = s(a * rho);
-    for (int i = 1; i <= steps; i++) {
+    std::vector<Rml::Vector2f> arc;
+    for (int i = 0; i <= steps; i++) {
         const double t = sweep * i / steps;
-        const Rml::Vector2f at = s((a * std::cos(t) + b * std::sin(t)) * rho);
-        if (i < steps) c.line(last, at, colour, 2);
-        else c.arrow(last, at, colour, 2);
-        last = at;
+        arc.push_back(s((a * std::cos(t) + b * std::sin(t)) * rho));
     }
+    const Rml::Vector2f tip = arc.back();
+    arc.pop_back();
+    c.polyline(arc, colour, STROKE);
+    c.arrow(arc.back(), tip, colour, STROKE);
 }
 
 /* ------------------------------------------------------------------ the element */
@@ -499,8 +569,8 @@ bool is_picture(Visual v)
 bool is_scene(Visual v)
 {
     switch (v) {
-    case Visual::Vec3: case Visual::Quat: case Visual::Transform: case Visual::Twist:
-    case Visual::Vec3s: case Visual::Transforms:
+    case Visual::Vec3: case Visual::Quat: case Visual::Pose: case Visual::Twist:
+    case Visual::Vec3s: case Visual::Poses:
         return true;
     default:
         return false;
@@ -521,7 +591,7 @@ bool is_html(Visual v)
 
 /* A table wants the box its columns and rows fill. Past TABLE_ROWS it asks for that
    height and scrolls inside. */
-constexpr double TABLE_COL = 90, TABLE_ROW = 20;
+constexpr double TABLE_COL = 100, TABLE_ROW = 24;
 constexpr size_t TABLE_ROWS = 12;
 
 Tile table_tile(size_t cols, size_t rows)
@@ -574,7 +644,8 @@ protected:
     {
         Rml::Element::OnUpdate();
         const std::string path = GetAttribute<Rml::String>("path", "");
-        topic_ = GetAttribute<Rml::String>("topic", "");
+        topic_   = GetAttribute<Rml::String>("topic", "");
+        history_ = GetAttribute<Rml::String>("history", "on") != "off";
         found_ = -2;
         Visual visual = Visual::None;
         const Capture::WatchView* watch = source ? source->view(topic_) : nullptr;
@@ -613,21 +684,19 @@ protected:
         case Visual::State:      state(c, node); break;
         case Visual::Image:      picture(c, nodes); break;
         case Visual::Video:      video(c); break;
-        case Visual::Bars:       bars(c, nodes, node); break;
+        case Visual::Bars:       bars(c, nodes); break;
         case Visual::Vec2:       vec2(c, nodes); break;
         case Visual::Vec3:       vec3(c, nodes); break;
         case Visual::Quat:       quaternion(c, nodes); break;
-        case Visual::Transform:  transform(c, nodes); break;
+        case Visual::Pose:       pose(c, nodes, node); break;
         case Visual::Twist:      twist(c, nodes); break;
         case Visual::Geo:        geo(c, nodes); break;
         case Visual::Color:      colour(c, nodes); break;
-        case Visual::Rect:       rects(c, nodes, false); break;
         case Visual::Joints:     joints(c, nodes); break;
         case Visual::Vec2s:      vec2s(c, nodes); break;
         case Visual::Vec3s:      vec3s(c, nodes); break;
-        case Visual::Transforms: transforms(c, nodes); break;
+        case Visual::Poses:      poses(c, nodes, node); break;
         case Visual::Geos:       geos(c, nodes); break;
-        case Visual::Rects:      rects(c, nodes, true); break;
         case Visual::Colors:     colours(c, nodes); break;
         default: break;
         }
@@ -657,7 +726,6 @@ private:
         reach_[0] = reach_[1] = Reach();
         cam_ = Camera();
         frame_ = FrameBounds();
-        rect_ = RectBounds();
         scale_[0] = scale_[1] = scale_[2] = Reach();
         texture_ = Rml::CallbackTexture();
         pixels_.reset();
@@ -858,9 +926,14 @@ private:
     /* ---------------------------------------------------------------- over time */
 
     /* The value over the last ten seconds against a grid of round steps. The range is
-       every value seen since the card opened plus a margin, eased so it never jumps. */
+       every value seen since the card opened plus a margin, eased so it never jumps.
+       Without history it is the value alone. */
     void plot(Canvas& c, const ValueNode& node)
     {
+        if (!history_) {
+            alone(c, c.all(), value_text(node));
+            return;
+        }
         const auto& points = trace(path_);
         const double now = Capture::now_s();
         for (const Capture::TracePoint& p : points) {
@@ -875,7 +948,7 @@ private:
         ease_range(lo, hi);
 
         const float top = c.dp(TOP), bottom = c.h() - c.dp(BOT);
-        const float x0 = c.dp(60), x1 = c.w() - c.dp(10);
+        const float x0 = c.dp(GUTTER), x1 = c.w() - c.dp(10);
         auto X = [&](double t) { return (float)(x0 + (x1 - x0) * (1 - (now - t) / PLOT_SECONDS)); };
         auto Y = [&](double v) { return (float)(top + (bottom - top) * (1 - (v - lo_) / (hi_ - lo_))); };
 
@@ -887,13 +960,20 @@ private:
         for (const Capture::TracePoint& p : points) columns.add({ X(p.t), Y(p.v) });
         if (!points.empty() && points.back().t < now) columns.add({ X(now), Y(points.back().v) });
         const std::vector<Rml::Vector2f>& line = columns.points();
+        std::vector<Rml::Vector2f> run;
         for (size_t i = 1; i < line.size(); i++) {
             float ax = line[i - 1].x, ay = line[i - 1].y, bx = line[i].x, by = line[i].y;
-            if (clip(ax, ay, bx, by, x0, top, x1, bottom)) c.line(ax, ay, bx, by, ink.accent, 1.5f);
+            if (!clip(ax, ay, bx, by, x0, top, x1, bottom)) continue;
+            if (run.empty() || run.back().x != ax || run.back().y != ay) {
+                c.polyline(run, ink.accent, STROKE);
+                run.assign(1, { ax, ay });
+            }
+            run.push_back({ bx, by });
         }
+        c.polyline(run, ink.accent, STROKE);
         if (!points.empty()) {
             const float y = Y(points.back().v);
-            if (y >= top && y <= bottom) c.dot(X(std::max(now, points.back().t)), y, ink.accent);
+            if (y >= top && y <= bottom) c.dot(X(std::max(now, points.back().t)), y, ink.accent, 4);
         }
         corner(c, c.all(), value_text(node));
     }
@@ -906,18 +986,24 @@ private:
     }
 
     /* A bool or an enum over ten seconds: a band per run of equal values on whole pixels.
-       A pixel shows the first run to reach it, so a fast toggle costs the width. */
+       A pixel shows the first run to reach it, so a fast toggle costs the width. Without
+       history it is the value alone, in its band's colour. */
     void state(Canvas& c, const ValueNode& node)
     {
+        auto colour = [&](double v) {
+            if (node.kind == ValueNode::Bool) return v != 0 ? ink.green : ink.border;
+            return palette((long long)v);
+        };
+        if (!history_) {
+            /* false reads on the dark card, where its band's colour would not */
+            alone(c, c.all(), value_text(node), node.kind == ValueNode::Bool && node.number == 0 ? ink.dim : colour(node.number));
+            return;
+        }
         const auto& points = trace(path_);
         const double now = Capture::now_s();
         const float  left = c.dp(10), right = c.w() - c.dp(10);
         auto X = [&](double t) {
             return std::max(left, (float)(left + (right - left) * (1 - (now - t) / PLOT_SECONDS)));
-        };
-        auto colour = [&](double v) {
-            if (node.kind == ValueNode::Bool) return v != 0 ? ink.green : ink.border;
-            return palette((long long)v);
         };
         const float top = c.dp(TOP) + c.dp(4), bottom = c.h() - c.dp(BOT);
         float drawn = -1;
@@ -939,7 +1025,7 @@ private:
     /* ---------------------------------------------------------------- arrays of numbers */
 
     /* Bars from zero, the range grown from every value seen, labelled while few. */
-    void bars(Canvas& c, const Nodes& nodes, const ValueNode& node)
+    void bars(Canvas& c, const Nodes& nodes)
     {
         const std::vector<int> items = children_of(nodes, found_);
         const size_t n = items.size();
@@ -950,7 +1036,7 @@ private:
         }
         ease_range(lo_seen_, hi_seen_);
         const double lo = lo_, hi = hi_ - lo_ > 1e-12 ? hi_ : lo_ + 1;
-        const float top = c.dp(TOP), bottom = c.h() - c.dp(BOT), x0 = c.dp(60), x1 = c.w() - c.dp(10);
+        const float top = c.dp(TOP), bottom = c.h() - c.dp(BOT), x0 = c.dp(GUTTER), x1 = c.w() - c.dp(10);
         auto Y = [&](double v) { return (float)(top + (bottom - top) * (1 - (v - lo) / (hi - lo))); };
         const bool is_float = n && nodes[items[0]].is_float;
         value_grid(c, x0, x1, lo, hi, Y, is_float);
@@ -970,15 +1056,15 @@ private:
                 right = std::floor(x0 + i * width + width * (1 - gap / 2));
             }
             c.rect(x, y_top, std::max(1.f, right - x), std::max(1.f, y_bot - y_top), ink.accent);
-            if (n <= LABELLED) c.text(std::to_string(first), x + width * (1 - gap) / 2, c.h() - c.dp(5), Canvas::Center, ink.faint);
+            if (n <= LABELLED) c.text(std::to_string(first), x + width * (1 - gap) / 2, c.h() - c.dp(6), Canvas::Center, ink.faint, LABEL);
         }
-        (void)node;
         foot(c, c.all(), {}, format_number((double)n) + " values");
     }
 
     /* ---------------------------------------------------------------- planes */
 
-    /* The box of a 2D scene fitted to an area, with the grid and both axes. */
+    /* The box of a 2D scene fitted to an area, with the grid and both axes, x right and
+       y up, each named at its end. */
     struct Plane {
         double k = 1, cx = 0, cy = 0;
         Rml::Vector2f operator()(double x, double y) const { return { (float)(cx + x * k), (float)(cy - y * k) }; }
@@ -995,8 +1081,11 @@ private:
             c.line(p(m, -r), p(m, r), ink.grid);
             c.line(p(-r, m), p(r, m), ink.grid);
         }
-        c.line(p(-r, 0), p(r, 0), axis_colour(0));
-        c.line(p(0, -r), p(0, r), axis_colour(1));
+        const double end = r * 0.92;
+        c.line(p(-r, 0), p(end, 0), axis_colour(0), THIN);
+        c.line(p(0, -r), p(0, end), axis_colour(1), THIN);
+        c.text("x", p(end, 0).x + c.dp(8), p(end, 0).y + c.dp(5), Canvas::Center, axis_colour(0), LABEL);
+        c.text("y", p(0, end).x, p(0, end).y - c.dp(6), Canvas::Center, axis_colour(1), LABEL);
         return p;
     }
 
@@ -1005,9 +1094,11 @@ private:
         const V3 v = vec(nodes, found_);
         const double r = reach_[0].grow({ v.x, v.y }, dt_);
         const Plane p = plane(c, c.all(), r);
-        Dots dots(c, ink.trail, 1.5f);
-        for (const V3& t : trail(child_path(path_, "x"), child_path(path_, "y"))) dots.add(p(t.x, t.y));
-        c.arrow(p(0, 0), p(v.x, v.y), ink.accent, 2.5f);
+        if (history_) {
+            Dots dots(c, ink.trail, 2);
+            for (const V3& t : trail(child_path(path_, "x"), child_path(path_, "y"))) dots.add(p(t.x, t.y));
+        }
+        c.arrow(p(0, 0), p(v.x, v.y), ink.accent, ARROW);
         foot(c, c.all(), "x " + f3(v.x) + "  y " + f3(v.y));
     }
 
@@ -1019,9 +1110,8 @@ private:
         for (const V3& e : v) reach_[0].seen = std::max({ reach_[0].seen, std::fabs(e.x), std::fabs(e.y) });
         const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_));
         for (size_t i = 0; i < v.size(); i++) {
-            c.arrow(p(0, 0), p(v[i].x, v[i].y), palette((long long)i), 2.5f);
-            const Rml::Vector2f tip = p(v[i].x, v[i].y);
-            c.text(std::to_string(i), tip.x + c.dp(6), tip.y - c.dp(4), Canvas::Left, ink.dim);
+            c.arrow(p(0, 0), p(v[i].x, v[i].y), palette((long long)i), ARROW);
+            index_label(c, p(v[i].x, v[i].y), i);
         }
         foot(c, c.all(), format_number((double)v.size()) + " vectors");
     }
@@ -1034,10 +1124,10 @@ private:
         const V3 v = vec(nodes, found_);
         const double r = reach_[0].grow({ v.x, v.y, v.z }, dt_);
         const Scene s = scene(c, c.all(), r, camera());
-        const std::vector<V3> t = trail(child_path(path_, "x"), child_path(path_, "y"), child_path(path_, "z"));
-        layered(c, s, v, &t, [&] { c.arrow(s(0, 0, 0), s(v), ink.accent, 2.5f); });
-        /* a narrow scene has no room for the components */
-        if (c.w() >= c.dp(260)) foot(c, c.all(), "x " + f3(v.x) + "  y " + f3(v.y) + "  z " + f3(v.z));
+        const std::vector<V3> t = history_ ? trail(child_path(path_, "x"), child_path(path_, "y"), child_path(path_, "z"))
+                                           : std::vector<V3>();
+        layered(c, s, v, &t, [&] { c.arrow(s(0, 0, 0), s(v), ink.accent, ARROW); });
+        foot(c, c.all(), "x " + f3(v.x) + "  y " + f3(v.y) + "  z " + f3(v.z));
     }
 
     void quaternion(Canvas& c, const Nodes& nodes)
@@ -1049,20 +1139,25 @@ private:
         foot(c, c.all(), euler(q));
     }
 
-    void transform(Canvas& c, const Nodes& nodes)
+    /* A Pose or a Transform: its triad at its position joined to the origin, and the
+       position's trail. The turn is at the top right, a Transform's parent frame at the
+       bottom right. */
+    void pose(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
-        const int ti = kid(nodes, found_, "translation"), ri = kid(nodes, found_, "rotation");
-        const V3 t = ti >= 0 ? vec(nodes, ti) : V3{};
-        const Quat q = ri >= 0 ? quat(nodes, ri) : Quat{};
-        const double r = reach_[0].grow({ t.x, t.y, t.z }, dt_);
+        const bool framed = node.std_name == "Transform";
+        const Placed p = placed(nodes, framed ? kid(nodes, found_, "pose") : found_);
+        const double r = reach_[0].grow({ p.at.x, p.at.y, p.at.z }, dt_);
         const Scene s = scene(c, c.all(), r, camera());
-        const std::string base = child_path(path_, "translation");
-        const std::vector<V3> tr = trail(base + ".x", base + ".y", base + ".z");
-        layered(c, s, t, &tr, [&] {
-            c.line(s(0, 0, 0), s(t), ink.faint);
-            triad(c, s, t, q, 2 * r * 0.15);
+        const std::string base = child_path(framed ? child_path(path_, "pose") : path_, "position");
+        const std::vector<V3> t = history_ ? trail(base + ".x", base + ".y", base + ".z") : std::vector<V3>();
+        layered(c, s, p.at, &t, [&] {
+            c.line(s(0, 0, 0), s(p.at), ink.faint, THIN);
+            triad(c, s, p.at, p.turn, 2 * r * 0.15);
         });
-        foot(c, c.all(), "x " + f3(t.x) + "  y " + f3(t.y) + "  z " + f3(t.z) + "  " + euler(q));
+        note(c, c.all(), euler(p.turn));
+        const int parent = framed ? kid(nodes, found_, "parent") : -2;
+        foot(c, c.all(), "x " + f3(p.at.x) + "  y " + f3(p.at.y) + "  z " + f3(p.at.z),
+             parent >= 0 && !nodes[parent].text.empty() ? "in " + nodes[parent].text : std::string());
     }
 
     /* A twist in the moving body's frame: velocity arrow, turn curl, the path while it
@@ -1098,70 +1193,54 @@ private:
             const V3 axis = w * (1 / spin);
             /* a turn centre this far out is a straight run, and its line would leave the view */
             if (length(centre) < 20 * r) {
-                c.dashed(s(centre - axis * r), s(centre + axis * r), ink.dim);
-                c.dot(s(centre), ink.dim, 3);
+                c.dashed(s(centre - axis * r), s(centre + axis * r), ink.dim, THIN);
+                c.dot(s(centre), ink.dim, 4);
             }
         }
         /* its own colour, since a forward run lies along the x axis */
-        for (size_t i = 1; i < path.size(); i++) c.line(s(path[i - 1]), s(path[i]), ink.purple, 1.5f);
-        c.dot(s(path.back()), ink.purple, 2.5f);
+        std::vector<Rml::Vector2f> drawn;
+        for (const V3& p : path) drawn.push_back(s(p));
+        c.polyline(drawn, ink.purple, STROKE);
+        c.dot(drawn.back(), ink.purple, 4);
         /* the curl sweeps most of a turn at the fastest turn seen */
         const double fastest = reach_[1].grow({ spin }, dt_, 1.0);
         if (turning) curl(c, s, w * (1 / spin), 0.15 * r, 5 * spin / fastest, ink.amber);
-        layered(c, s, v, nullptr, [&] { c.arrow(s(0, 0, 0), s(v), ink.accent, 2.5f); });
+        layered(c, s, v, nullptr, [&] { c.arrow(s(0, 0, 0), s(v), ink.accent, ARROW); });
         foot(c, c.all(), "v " + f3(length(v)) + " m/s  \xCF\x89 " + f3(spin) + " rad/s", "next " + print("%.1f", ahead) + " s");
     }
 
     void vec3s(Canvas& c, const Nodes& nodes)
     {
-        const std::vector<int> items = children_of(nodes, found_);
         std::vector<V3> v;
-        for (const int i : items) v.push_back(vec(nodes, i));
+        for (const int i : children_of(nodes, found_)) v.push_back(vec(nodes, i));
         for (const V3& e : v) reach_[0].seen = std::max({ reach_[0].seen, std::fabs(e.x), std::fabs(e.y), std::fabs(e.z) });
         const Scene s = scene(c, c.all(), reach_[0].grow({}, dt_), camera());
-        std::vector<size_t> order(v.size());
-        for (size_t i = 0; i < order.size(); i++) order[i] = i;
-        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return s.depth(v[a]) < s.depth(v[b]); });
-        bool axes_drawn = false;
-        for (const size_t i : order) {
-            if (!axes_drawn && s.front(v[i])) { axes(c, s); axes_drawn = true; }
-            shadow(c, s, v[i], nullptr, s.front(v[i]));
-            c.arrow(s(0, 0, 0), s(v[i]), palette((long long)i), 2.5f);
-            const Rml::Vector2f tip = s(v[i]);
-            c.text(std::to_string(i), tip.x + c.dp(6), tip.y - c.dp(4), Canvas::Left, ink.dim);
-        }
-        if (!axes_drawn) axes(c, s);
+        back_to_front(c, s, v, [&](size_t i) {
+            c.arrow(s(0, 0, 0), s(v[i]), palette((long long)i), ARROW);
+            index_label(c, s(v[i]), i);
+        });
         foot(c, c.all(), format_number((double)v.size()) + " vectors");
     }
 
-    /* A chain: consecutive transforms joined in the air, a small triad at each. */
-    void transforms(Canvas& c, const Nodes& nodes)
+    /* A chain of Poses or Transforms: consecutive ones joined in the air, a triad at each. */
+    void poses(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
-        const std::vector<int> items = children_of(nodes, found_);
-        std::vector<V3> t;
-        std::vector<Quat> q;
-        for (const int i : items) {
-            const int ti = kid(nodes, i, "translation"), ri = kid(nodes, i, "rotation");
-            t.push_back(ti >= 0 ? vec(nodes, ti) : V3{});
-            q.push_back(ri >= 0 ? quat(nodes, ri) : Quat{});
+        const bool framed = node.elem_std == "Transform";
+        std::vector<Placed> p;
+        std::vector<V3> at;
+        for (const int i : children_of(nodes, found_)) {
+            p.push_back(placed(nodes, framed ? kid(nodes, i, "pose") : i));
+            at.push_back(p.back().at);
         }
-        for (const V3& e : t) reach_[0].seen = std::max({ reach_[0].seen, std::fabs(e.x), std::fabs(e.y), std::fabs(e.z) });
+        for (const V3& e : at) reach_[0].seen = std::max({ reach_[0].seen, std::fabs(e.x), std::fabs(e.y), std::fabs(e.z) });
         const double r = reach_[0].grow({}, dt_);
         const Scene s = scene(c, c.all(), r, camera());
-        std::vector<size_t> order(t.size());
-        for (size_t i = 0; i < order.size(); i++) order[i] = i;
-        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return s.depth(t[a]) < s.depth(t[b]); });
-        bool axes_drawn = false;
-        for (const size_t i : order) {
-            if (!axes_drawn && s.front(t[i])) { axes(c, s); axes_drawn = true; }
-            shadow(c, s, t[i], nullptr, s.front(t[i]));
-            if (i) c.line(s(t[i - 1]), s(t[i]), ink.dim, 1.5f);
-            triad(c, s, t[i], q[i], 2 * r * 0.08);
-            const Rml::Vector2f at = s(t[i]);
-            c.text(std::to_string(i), at.x + c.dp(8), at.y - c.dp(6), Canvas::Left, ink.dim);
-        }
-        if (!axes_drawn) axes(c, s);
-        foot(c, c.all(), format_number((double)t.size()) + " transforms");
+        back_to_front(c, s, at, [&](size_t i) {
+            if (i) c.line(s(at[i - 1]), s(at[i]), ink.dim, THIN);
+            triad(c, s, at[i], p[i].turn, 2 * r * 0.08);
+            index_label(c, s(at[i]), i, ink.dim);
+        });
+        foot(c, c.all(), format_number((double)p.size()) + (framed ? " transforms" : " poses"));
     }
 
     /* ---------------------------------------------------------------- maps */
@@ -1203,26 +1282,33 @@ private:
             if (y >= top && y <= bottom) c.line(left, y, right, y, ink.grid);
         }
         draw(P, left, top, right, bottom);
-        c.text("N", c.w() - c.dp(14), top + c.dp(10), Canvas::Center, ink.dim);
-        c.arrow({ c.w() - c.dp(14), top + c.dp(30) }, { c.w() - c.dp(14), top + c.dp(15) }, ink.dim, 1);
+        c.text("N", c.w() - c.dp(16), top + c.dp(12), Canvas::Center, ink.dim, LABEL);
+        c.arrow({ c.w() - c.dp(16), top + c.dp(36) }, { c.w() - c.dp(16), top + c.dp(17) }, ink.dim, THIN);
     }
 
     void geo(Canvas& c, const Nodes& nodes)
     {
         const V3 now{ number(nodes, found_, "lat"), number(nodes, found_, "lon"), number(nodes, found_, "alt") };
-        std::vector<V3> points = trail(child_path(path_, "lat"), child_path(path_, "lon"));
+        std::vector<V3> points = history_ ? trail(child_path(path_, "lat"), child_path(path_, "lon")) : std::vector<V3>();
         if (points.empty()) points.push_back(now);
         map(c, points, [&](auto P, float left, float top, float right, float bottom) {
             /* a point within half a pixel of the last one drawn adds nothing to the path */
-            Rml::Vector2f from = points.empty() ? Rml::Vector2f() : P(points[0].x, points[0].y);
+            std::vector<Rml::Vector2f> run{ P(points[0].x, points[0].y) };
+            Rml::Vector2f from = run[0];
             for (size_t i = 1; i < points.size(); i++) {
                 Rml::Vector2f a = from, b = P(points[i].x, points[i].y);
                 if (i + 1 < points.size() && std::fabs(b.x - a.x) < 0.5f && std::fabs(b.y - a.y) < 0.5f) continue;
                 from = b;
-                if (clip(a.x, a.y, b.x, b.y, left, top, right, bottom)) c.line(a, b, ink.accent, 1.5f);
+                if (!clip(a.x, a.y, b.x, b.y, left, top, right, bottom)) continue;
+                if (run.back().x != a.x || run.back().y != a.y) {
+                    c.polyline(run, ink.accent, STROKE);
+                    run.assign(1, a);
+                }
+                run.push_back(b);
             }
+            c.polyline(run, ink.accent, STROKE);
             const Rml::Vector2f at = P(now.x, now.y);
-            if (inside(at, left, top, right, bottom)) c.dot(at, ink.accent, 4);
+            if (inside(at, left, top, right, bottom)) c.dot(at, ink.accent, 5);
         });
         foot(c, c.all(), "lat " + print("%.6f", now.x) + "  lon " + print("%.6f", now.y) + "  alt " + print("%.1f", now.z) + " m");
     }
@@ -1235,8 +1321,8 @@ private:
             for (size_t i = 0; i < points.size(); i++) {
                 const Rml::Vector2f at = P(points[i].x, points[i].y);
                 if (!inside(at, left, top, right, bottom)) continue;
-                c.dot(at, palette((long long)i), 4);
-                c.text(std::to_string(i), at.x + c.dp(7), at.y - c.dp(5), Canvas::Left, ink.dim);
+                c.dot(at, palette((long long)i), 5);
+                index_label(c, at, i);
             }
         });
         foot(c, c.all(), format_number((double)points.size()) + " points");
@@ -1263,53 +1349,13 @@ private:
     void colours(Canvas& c, const Nodes& nodes)
     {
         const std::vector<int> items = children_of(nodes, found_);
-        if (items.empty()) return;
-        const float width = (c.w() - c.dp(20)) / items.size();
+        const float width = items.empty() ? 0 : (c.w() - c.dp(20)) / items.size();
         for (size_t i = 0; i < items.size(); i++) {
-            c.rect(c.dp(10) + i * width + 1, c.dp(TOP), width - 2, c.h() - c.dp(TOP + BOT), rgba(nodes, items[i]));
-            c.text(std::to_string(i), c.dp(10) + i * width + width / 2, c.h() - c.dp(5), Canvas::Center, ink.faint);
+            c.rect(c.dp(10) + i * width + 1, c.dp(TOP), width - 2, c.h() - c.dp(TOP + BOT + 18), rgba(nodes, items[i]));
+            if (items.size() <= LABELLED)
+                c.text(std::to_string(i), c.dp(10) + i * width + width / 2, c.h() - c.dp(BOT + 4), Canvas::Center, ink.faint, LABEL);
         }
-    }
-
-    /* Rects inside a frame that grows to every corner seen and the origin. Only the scale
-       eases, so a rect never leaves the frame. The frame's size is at the bottom right. */
-    void rects(Canvas& c, const Nodes& nodes, bool many)
-    {
-        std::vector<int> items;
-        if (many) items = children_of(nodes, found_);
-        else items.push_back(found_);
-        struct R { double x, y, w, h; };
-        std::vector<R> list;
-        for (const int i : items)
-            list.push_back(R{ number(nodes, i, "x"), number(nodes, i, "y"), number(nodes, i, "w"), number(nodes, i, "h") });
-        for (const R& r : list) {
-            rect_.x0 = std::min({ rect_.x0, r.x, 0.0 });
-            rect_.y0 = std::min({ rect_.y0, r.y, 0.0 });
-            rect_.x1 = std::max({ rect_.x1, r.x + r.w, 0.0 });
-            rect_.y1 = std::max({ rect_.y1, r.y + r.h, 0.0 });
-        }
-        const double bw = std::max(rect_.x1 - rect_.x0, 1.0), bh = std::max(rect_.y1 - rect_.y0, 1.0);
-        const double target = std::min((c.w() - c.dp(20)) / bw, (c.h() - c.dp(TOP + BOT)) / bh);
-        rect_.k = rect_.eased ? ease(rect_.k, target, dt_) : target;
-        rect_.eased = true;
-        const double k = rect_.k;
-        const double ox = (c.w() - bw * k) / 2, oy = c.dp(TOP) + (c.h() - c.dp(TOP + BOT) - bh * k) / 2;
-        const double step = nice(std::max(bw, bh) / 5);
-        for (double m = step; m < bw; m += step) c.line((float)(ox + m * k), (float)oy, (float)(ox + m * k), (float)(oy + bh * k), ink.grid);
-        for (double m = step; m < bh; m += step) c.line((float)ox, (float)(oy + m * k), (float)(ox + bw * k), (float)(oy + m * k), ink.grid);
-        c.frame((float)ox, (float)oy, (float)(bw * k), (float)(bh * k), ink.faint);
-        for (size_t i = 0; i < list.size(); i++) {
-            const R& r = list[i];
-            const Rml::Colourb col = many ? palette((long long)i) : ink.accent;
-            const float x = (float)(ox + (r.x - rect_.x0) * k), y = (float)(oy + (r.y - rect_.y0) * k);
-            c.frame(x, y, (float)(r.w * k), (float)(r.h * k), col, 1.5f);
-            if (many) c.text(std::to_string(i), x + c.dp(4), y + c.dp(11), Canvas::Left, col);
-        }
-        const std::string size = print("%.0f", bw) + " x " + print("%.0f", bh);
-        if (many) foot(c, c.all(), format_number((double)list.size()) + " rects", size);
-        else if (!list.empty())
-            foot(c, c.all(), "x " + print("%.0f", list[0].x) + "  y " + print("%.0f", list[0].y) + "  w " +
-                             print("%.0f", list[0].w) + "  h " + print("%.0f", list[0].h), size);
+        foot(c, c.all(), {}, format_number((double)items.size()) + " colors");
     }
 
     /* One row per joint and a column each for position, velocity and effort: a bar from
@@ -1324,16 +1370,16 @@ private:
             if (k >= 0) columns[f] = children_of(nodes, k);
             rows = std::max(rows, columns[f].size());
         }
-        const float gutter = c.dp(24), gap = c.dp(10), top = c.dp(TOP) + c.dp(14), bottom = c.h() - c.dp(8);
+        const float gutter = c.dp(28), gap = c.dp(10), top = c.dp(TOP) + c.dp(16), bottom = c.h() - c.dp(8);
         const float col_w = (c.w() - gutter - c.dp(8) - 2 * gap) / 3;
-        const float row_h = rows ? std::min(c.dp(22), (bottom - top) / rows) : 0, bar_h = std::max(1.f, row_h - c.dp(4));
+        const float row_h = rows ? std::min(c.dp(26), (bottom - top) / rows) : 0, bar_h = std::max(1.f, row_h - c.dp(4));
         for (int f = 0; f < 3; f++) {
             double biggest = 0;
             for (const int i : columns[f]) biggest = std::max(biggest, std::fabs(nodes[i].number));
             scale_[f].seen = std::max(scale_[f].seen, biggest);
             const double m = scale_[f].grow({}, dt_, 1.0);
             const float x = gutter + f * (col_w + gap);
-            c.text(std::string(names[f]) + "  \xC2\xB1" + short_number(m), x, c.dp(TOP) + c.dp(6), Canvas::Left, ink.faint);
+            c.text(std::string(names[f]) + "  \xC2\xB1" + short_number(m), x, c.dp(TOP) + c.dp(6), Canvas::Left, ink.faint, LABEL);
             for (size_t r = 0; r < columns[f].size(); r++) {
                 const float y = top + r * row_h;
                 const double v = nodes[columns[f][r]].number;
@@ -1342,11 +1388,11 @@ private:
                 const float mid = x + col_w / 2, len = (float)(std::max(-1.0, std::min(1.0, v / m)) * col_w / 2);
                 c.rect(std::min(mid, mid + len), y, std::fabs(len), bar_h, ink.accent);
                 c.line(mid, y, mid, y + bar_h, ink.border);
-                c.text(f3(v), x + col_w - c.dp(5), y + bar_h / 2 + c.dp(3.5f), Canvas::Right, ink.text);
+                c.text(f3(v), x + col_w - c.dp(5), y + bar_h / 2 + c.dp(4), Canvas::Right, ink.text, LABEL);
             }
         }
         for (size_t r = 0; r < rows; r++)
-            c.text(std::to_string(r), gutter - c.dp(6), top + r * row_h + bar_h / 2 + c.dp(3.5f), Canvas::Right, ink.faint);
+            c.text(std::to_string(r), gutter - c.dp(6), top + r * row_h + bar_h / 2 + c.dp(4), Canvas::Right, ink.faint, LABEL);
     }
 
     /* ---------------------------------------------------------------- pictures */
@@ -1415,7 +1461,7 @@ private:
         const float x0 = c.dp(8), y0 = c.dp(24), w = c.w() - c.dp(16), h = bottom - y0;
         SetClass("zoomed", texture_ && zoom_ > 1);
         if (!texture_ || w < 1 || h < 1) {
-            c.text(why, c.w() / 2, c.h() / 2, Canvas::Center, ink.faint, 11);
+            c.text(why, c.w() / 2, c.h() / 2, Canvas::Center, ink.faint, LABEL);
             return;
         }
         const Rml::Vector2f frame((float)frame_size_.x, (float)frame_size_.y);
@@ -1462,10 +1508,10 @@ public:
             return Tile{ 3, 0.5 };
         case Visual::Color:
             return Tile{ 1.5, 0.5 };
-        case Visual::Vec3: case Visual::Quat: case Visual::Transform: case Visual::Twist:
-        case Visual::Vec3s: case Visual::Transforms:
+        case Visual::Vec3: case Visual::Quat: case Visual::Pose: case Visual::Twist:
+        case Visual::Vec3s: case Visual::Poses:
             return Tile{ 1, 1.5 };
-        case Visual::Vec2: case Visual::Vec2s: case Visual::Rect: case Visual::Rects:
+        case Visual::Vec2: case Visual::Vec2s:
             return Tile{ 1.3, 1 };
         case Visual::Geo: case Visual::Geos:
             return Tile{ 1.5, 1 };
@@ -1507,6 +1553,7 @@ private:
     Visual                     visual_ = Visual::None;
     bool                       built_ = false;
     int                        found_ = -2;      /* the node index, -1 the struct root, -2 none */
+    bool                       history_ = true;  /* draw what came before, else only the newest */
     ValueNode                  root_;
 
     std::string                html_key_;        /* what the children were built for */
@@ -1539,10 +1586,6 @@ private:
         bool   init = false, eased = false;
         double lat0 = 0, lat1 = 0, lon0 = 0, lon1 = 0, span = 0, clon = 0, clat = 0;
     } frame_;
-    struct RectBounds {
-        bool   eased = false;
-        double x0 = 0, y0 = 0, x1 = 0, y1 = 0, k = 1;
-    } rect_;
 
     /* a picture's texture, remade when a new message arrives, and its pixels */
     Rml::CallbackTexture texture_;
@@ -1569,21 +1612,39 @@ void viz_init(Capture& capture)
     Rml::Factory::RegisterElementInstancer("viz", &instancer);
 }
 
-VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>& shown)
+bool viz_history(Visual visual)
+{
+    switch (visual) {
+    case Visual::Plot: case Visual::State: case Visual::Vec2: case Visual::Vec3: case Visual::Pose:
+    case Visual::Geo:
+        return true;
+    default:
+        return false;
+    }
+}
+
+VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>& shown,
+                   const std::set<std::string>& still)
 {
     VizFeeds out;
     auto add = [&out](const std::string& path, std::initializer_list<const char*> names) {
         for (const char* name : names) out.traces.push_back(Capture::TraceSpec{ child_path(path, name), TRAIL_SECONDS });
     };
     for (const std::string& path : shown) {
-        switch (visual_at(watch, watch.nodes, find_node(watch.nodes, watch, path))) {
+        const int index = find_node(watch.nodes, watch, path);
+        const Visual visual = visual_at(watch, watch.nodes, index);
+        if (visual == Visual::Video) out.streams.push_back(path);
+        if (still.count(path) || !viz_history(visual)) continue;
+        const std::string std_name = index == -1 ? watch.root_std : index >= 0 ? watch.nodes[index].std_name : "";
+        switch (visual) {
         case Visual::Plot:
-        case Visual::State:     out.traces.push_back(Capture::TraceSpec{ path, PLOT_SECONDS }); break;
-        case Visual::Vec2:      add(path, { "x", "y" }); break;
-        case Visual::Vec3:      add(path, { "x", "y", "z" }); break;
-        case Visual::Transform: add(child_path(path, "translation"), { "x", "y", "z" }); break;
-        case Visual::Geo:       add(path, { "lat", "lon" }); break;
-        case Visual::Video:     out.streams.push_back(path); break;
+        case Visual::State: out.traces.push_back(Capture::TraceSpec{ path, PLOT_SECONDS }); break;
+        case Visual::Vec2:  add(path, { "x", "y" }); break;
+        case Visual::Vec3:  add(path, { "x", "y", "z" }); break;
+        case Visual::Pose:
+            add(child_path(std_name == "Transform" ? child_path(path, "pose") : path, "position"), { "x", "y", "z" });
+            break;
+        case Visual::Geo:   add(path, { "lat", "lon" }); break;
         default: break;
         }
     }

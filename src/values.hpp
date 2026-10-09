@@ -54,6 +54,7 @@ struct ValueView {
     bool                        seeded = false;   /* the shown set has had its default */
     std::set<std::string>       shown;            /* the paths whose visual is in the detail */
     std::set<std::string>       pinned;           /* of those, the ones kept while another topic shows */
+    std::set<std::string>       still;            /* of those, the ones drawn without history */
     std::map<std::string, bool> open;             /* the branches the user opened or closed */
     std::map<std::string, FieldEdit>   edits;     /* by path, until they are written or reset */
     std::map<std::string, std::string> writing;   /* by path, the text written until the echo */
@@ -74,8 +75,8 @@ struct ValueView {
    name, everything else by shape. Kv is the fallback, a plain list of the fields. */
 enum class Visual {
     None, Plot, State, Text, Time, Duration, Hex, Chips, Bars, Cells, Table, Matrix, Multi,
-    Vec2, Vec3, Quat, Transform, Twist, Geo, Color, Rect, Joints, Image, Video,
-    Vec2s, Vec3s, Transforms, Geos, Rects, Colors, Kv,
+    Vec2, Vec3, Quat, Pose, Twist, Geo, Color, Joints, Image, Video,
+    Vec2s, Vec3s, Poses, Geos, Colors, Kv,
 };
 Visual visual_for(const Capture::ValueNode& node);
 

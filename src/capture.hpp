@@ -177,7 +177,7 @@ public:
         enum Kind : uint8_t { Number, Bool, Enum, Text, Struct, Array, Blob, Map, Gap, Part };
         Kind        kind = Number;
         std::string name;          /* "x", "[3]", or "value" for a root that is not a struct */
-        std::string path;          /* "pose.translation.x", "points[3].id", "" for that root */
+        std::string path;          /* "pose.position.x", "points[3].id", "" for that root */
         std::string type;          /* the DSL spelling: "f64", "Double3", "f32[]", "string<16>" */
         std::string std_name;      /* the standard type's name, empty for any other type */
         int         depth = 0;

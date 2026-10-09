@@ -23,9 +23,8 @@ Visual struct_visual(const std::string& name)
     static const struct { const char* name; Visual visual; } table[] = {
         { "Float2", Visual::Vec2 }, { "Double2", Visual::Vec2 }, { "Int2", Visual::Vec2 },
         { "Float3", Visual::Vec3 }, { "Double3", Visual::Vec3 }, { "Int3", Visual::Vec3 },
-        { "Quaternion", Visual::Quat }, { "Transform", Visual::Transform },
+        { "Quaternion", Visual::Quat }, { "Pose", Visual::Pose }, { "Transform", Visual::Pose },
         { "Twist", Visual::Twist }, { "GeoPoint", Visual::Geo }, { "Color", Visual::Color },
-        { "Rect", Visual::Rect }, { "RectI", Visual::Rect },
         { "JointState", Visual::Joints }, { "Image", Visual::Image },
         { "VideoFrame", Visual::Video },
     };
@@ -41,8 +40,8 @@ Visual array_of_struct(const std::string& name)
     static const struct { const char* name; Visual visual; } table[] = {
         { "Float3", Visual::Vec3s }, { "Double3", Visual::Vec3s }, { "Int3", Visual::Vec3s },
         { "Float2", Visual::Vec2s }, { "Double2", Visual::Vec2s }, { "Int2", Visual::Vec2s },
-        { "Transform", Visual::Transforms }, { "GeoPoint", Visual::Geos },
-        { "Rect", Visual::Rects }, { "RectI", Visual::Rects }, { "Color", Visual::Colors },
+        { "Pose", Visual::Poses }, { "Transform", Visual::Poses }, { "GeoPoint", Visual::Geos },
+        { "Color", Visual::Colors },
     };
     for (const auto& entry : table)
         if (name == entry.name) return entry.visual;

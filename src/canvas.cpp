@@ -78,20 +78,30 @@ void Canvas::line(float x0, float y0, float x1, float y1, Rml::Colourb colour, f
     quad({ x0 + nx, y0 + ny }, { x1 + nx, y1 + ny }, { x1 - nx, y1 - ny }, { x0 - nx, y0 - ny }, colour);
 }
 
-void Canvas::dashed(Rml::Vector2f a, Rml::Vector2f b, Rml::Colourb colour)
+void Canvas::dashed(Rml::Vector2f a, Rml::Vector2f b, Rml::Colourb colour, float width_dp)
 {
     const float dx = b.x - a.x, dy = b.y - a.y, len = std::sqrt(dx * dx + dy * dy), dash = dp(3);
     for (float t = 0; t < len; t += 2 * dash) {
         const float e = std::min(len, t + dash);
-        line(a.x + dx * t / len, a.y + dy * t / len, a.x + dx * e / len, a.y + dy * e / len, colour);
+        line(a.x + dx * t / len, a.y + dy * t / len, a.x + dx * e / len, a.y + dy * e / len, colour, width_dp);
     }
+}
+
+void Canvas::polyline(const std::vector<Rml::Vector2f>& points, Rml::Colourb colour, float width_dp, bool closed)
+{
+    const size_t n = points.size();
+    for (size_t i = 1; i < n; i++) line(points[i - 1], points[i], colour, width_dp);
+    if (closed && n > 2) line(points[n - 1], points[0], colour, width_dp);
+    for (size_t i = closed ? 0 : 1; i + (closed ? 0 : 1) < n; i++) dot(points[i], colour, width_dp / 2);
 }
 
 void Canvas::arrow(Rml::Vector2f a, Rml::Vector2f b, Rml::Colourb colour, float width_dp)
 {
-    line(a, b, colour, width_dp);
-    const float angle = std::atan2(b.y - a.y, b.x - a.x), l = dp(7);
-    if (std::hypot(b.x - a.x, b.y - a.y) < 1e-3f) return;
+    const float angle = std::atan2(b.y - a.y, b.x - a.x), l = dp(3 + 2 * width_dp), len = std::hypot(b.x - a.x, b.y - a.y);
+    if (len < 1e-3f) return;
+    /* the shaft stops inside the head, so a thick one never shows past the point */
+    const float shaft = std::max(0.f, len - l * 0.8f) / len;
+    line(a, { a.x + (b.x - a.x) * shaft, a.y + (b.y - a.y) * shaft }, colour, width_dp);
     triangle(b, { b.x - l * std::cos(angle - 0.4f), b.y - l * std::sin(angle - 0.4f) },
              { b.x - l * std::cos(angle + 0.4f), b.y - l * std::sin(angle + 0.4f) }, colour);
 }

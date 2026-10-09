@@ -664,6 +664,9 @@ viz .big.text  { font-size: 18dp; white-space: pre-wrap; }
 viz .hex       { font-size: 13dp; line-height: 1.5; white-space: pre; }
 
 viz .chips { display: flex; flex-wrap: wrap; gap: 4dp; }
+
+/* A stream handed over by URL: the URL under its name, then its hints as chips. */
+viz .stream-url { font-size: 13dp; color: var(--accent); word-break: break-all; margin: 6dp 0dp 10dp 0dp; }
 viz .chip {
 	font-size: 13dp;
 	color: var(--text);

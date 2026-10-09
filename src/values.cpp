@@ -23,6 +23,7 @@ Visual struct_visual(const std::string& name)
     static const struct { const char* name; Visual visual; } table[] = {
         { "Float2", Visual::Vec2 }, { "Double2", Visual::Vec2 }, { "Int2", Visual::Vec2 },
         { "Float3", Visual::Vec3 }, { "Double3", Visual::Vec3 }, { "Int3", Visual::Vec3 },
+        { "Float4", Visual::Vec4 }, { "Double4", Visual::Vec4 }, { "Int4", Visual::Vec4 },
         { "Quaternion", Visual::Quat }, { "Pose", Visual::Pose }, { "Transform", Visual::Pose },
         { "Pose2D", Visual::Pose2D },
         { "Twist", Visual::Twist }, { "Wrench", Visual::Wrench },
@@ -33,7 +34,7 @@ Visual struct_visual(const std::string& name)
         { "Circle", Visual::Figure }, { "Polygon2D", Visual::Figure },
         { "GeoPoint", Visual::Geo }, { "Color", Visual::Color },
         { "JointState", Visual::Joints }, { "Image", Visual::Image },
-        { "VideoFrame", Visual::Video },
+        { "VideoFrame", Visual::Video }, { "ExternalVideoStream", Visual::Stream },
     };
     for (const auto& entry : table)
         if (name == entry.name) return entry.visual;
@@ -85,6 +86,7 @@ Visual visual_for(const ValueNode& node)
     case ValueNode::Struct: return struct_visual(node.std_name);
     case ValueNode::Array:
         if (node.std_name.compare(0, 6, "Matrix") == 0) return Visual::Matrix;
+        if (node.std_name == "Uuid") return Visual::Uuid;
         switch (node.elem) {
         case ValueNode::Number: return node.elem_std.empty() ? Visual::Bars : Visual::Chips;
         case ValueNode::Bool:   return Visual::Cells;
@@ -259,6 +261,7 @@ std::string preview_text(const Capture::WatchView& view)
         out += text;
     };
     const ValueNode& root = view.nodes[0];
+    if (!view.root_struct && root.std_name == "Uuid") return uuid_text(view.nodes, 0);
     if (!view.root_struct && root.kind == ValueNode::Array) {
         if (root.elem == ValueNode::Struct) return format_number(root.count) + " x " + view.type;
         for (size_t i = 1; i < view.nodes.size() && out.size() < LIMIT; i++)
@@ -549,6 +552,7 @@ std::string standard(const std::vector<ValueNode>& nodes, int index, const std::
         }
         return {};
     }
+    if (std_name == "Uuid") return uuid_text(nodes, index);
     std::map<std::string, const ValueNode*> field;
     for (const int k : children_of(nodes, index)) field[nodes[k].name] = &nodes[k];
     auto get = [&field](const char* name) { return field.count(name) ? field[name] : nullptr; };
@@ -564,6 +568,20 @@ std::string standard(const std::vector<ValueNode>& nodes, int index, const std::
 }
 
 } /* namespace */
+
+std::string uuid_text(const std::vector<ValueNode>& nodes, int index)
+{
+    const std::vector<int> bytes = children_of(nodes, index);
+    if (bytes.size() != 16) return {};
+    std::string out;
+    for (size_t i = 0; i < bytes.size(); i++) {
+        char hex[4];
+        std::snprintf(hex, sizeof hex, "%02x", (unsigned)(nodes[bytes[i]].integer & 0xFF));
+        if (i == 4 || i == 6 || i == 8 || i == 10) out += '-';
+        out += hex;
+    }
+    return out;
+}
 
 std::string copy_text(const std::vector<ValueNode>& nodes, const Capture::WatchView& view, const std::string& path)
 {

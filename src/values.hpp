@@ -74,8 +74,8 @@ struct ValueView {
 /* What a field is drawn as in its card, from the mock's table: the standard types by
    name, everything else by shape. Kv is the fallback, a plain list of the fields. */
 enum class Visual {
-    None, Plot, State, Text, Time, Duration, Hex, Chips, Bars, Cells, Table, Matrix, Multi,
-    Vec2, Vec3, Quat, Pose, Pose2D, Twist, Wrench, Solid, Figure, Geo, Color, Joints, Image, Video,
+    None, Plot, State, Text, Time, Duration, Uuid, Hex, Chips, Bars, Cells, Table, Matrix, Multi,
+    Vec2, Vec3, Vec4, Quat, Pose, Pose2D, Twist, Wrench, Solid, Figure, Geo, Color, Joints, Image, Video, Stream,
     Vec2s, Vec3s, Poses, Poses2D, Solids, Figures, Geos, Colors, Kv,
 };
 Visual visual_for(const Capture::ValueNode& node);
@@ -98,6 +98,9 @@ bool is_open(const Capture::ValueNode& node, const ValueView& view);
 
 /* What the value column shows for one node, empty for a branch. */
 std::string value_text(const Capture::ValueNode& node);
+
+/* The standard Uuid at index in its 8-4-4-4-12 hex form, empty when it is not 16 bytes. */
+std::string uuid_text(const std::vector<Capture::ValueNode>& nodes, int index);
 
 /* The newest value on one line for the topic tree: a bare root's value, a standard
    struct's fields, an image's or a video's size. A plain struct stays blank. */

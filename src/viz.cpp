@@ -36,6 +36,12 @@ Rml::Colourb axis_colour(int i)
     return i == 0 ? ink.red : i == 1 ? ink.green : ink.blue;
 }
 
+/* x, y, z and w. */
+Rml::Colourb component_colour(int i)
+{
+    return i < 3 ? axis_colour(i) : ink.amber;
+}
+
 Rml::Colourb palette(long long i)
 {
     const Rml::Colourb colours[] = { ink.accent, ink.amber, ink.green, ink.blue, ink.purple, ink.gray };
@@ -365,7 +371,7 @@ void value_grid(Canvas& c, float x0, float x1, double lo, double hi, Y y_of, boo
     const double step = nice((hi - lo) / 4);
     for (double v = std::ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
         c.line(x0, y_of(v), x1, y_of(v), ink.grid);
-        c.text(axis_label(v, is_float), x0 - c.dp(6), y_of(v) + c.dp(4), Canvas::Right, ink.faint, LABEL);
+        c.text(axis_label(std::fabs(v) < step * 1e-6 ? 0 : v, is_float), x0 - c.dp(6), y_of(v) + c.dp(4), Canvas::Right, ink.faint, LABEL);
     }
 }
 
@@ -386,6 +392,24 @@ void foot(Canvas& c, const Area& a, const std::string& left, const std::string& 
     if (!left.empty() && lw <= room) c.text(left, a.x + c.dp(8), a.y + a.h - c.dp(6), Canvas::Left, ink.dim, LABEL);
     if (!right.empty() && (left.empty() ? rw : lw + c.dp(16) + rw) <= room)
         c.text(right, a.x + a.w - c.dp(8), a.y + a.h - c.dp(6), Canvas::Right, ink.faint, LABEL);
+}
+
+/* Values side by side across an area, each named above in its colour, as large as the
+   widest lets them all be up to ALONE dp. */
+void side_by_side(Canvas& c, const Area& a, const std::vector<std::string>& names, const std::vector<std::string>& texts,
+                  const std::vector<Rml::Colourb>& colours)
+{
+    if (texts.empty()) return;
+    const float column = (a.w - c.dp(16)) / texts.size(), room = column - c.dp(16);
+    float wide = 0;
+    for (const std::string& s : texts) wide = std::max(wide, c.text_width(s, ALONE));
+    const float size = wide > room && wide > 0 ? std::max(LABEL, ALONE * room / wide) : ALONE;
+    const float base = a.y + c.dp(TOP / 2) + a.h / 2 + c.dp(size * 0.35f);
+    for (size_t i = 0; i < texts.size(); i++) {
+        const float x = a.x + c.dp(8) + column * (i + 0.5f);
+        c.text(names[i], x, base - c.dp(size + 6), Canvas::Center, colours[i], LABEL);
+        c.text(texts[i], x, base, Canvas::Center, ink.text, size);
+    }
 }
 
 /* A drawing's second reading, at the top right where a plot's value goes, while there is
@@ -978,9 +1002,9 @@ bool is_scene(Visual v)
 bool is_html(Visual v)
 {
     switch (v) {
-    case Visual::None: case Visual::Text: case Visual::Time: case Visual::Duration:
+    case Visual::None: case Visual::Text: case Visual::Time: case Visual::Duration: case Visual::Uuid:
     case Visual::Hex: case Visual::Chips: case Visual::Kv: case Visual::Cells:
-    case Visual::Table: case Visual::Matrix: case Visual::Multi:
+    case Visual::Table: case Visual::Matrix: case Visual::Multi: case Visual::Stream:
         return true;
     default:
         return false;
@@ -1079,6 +1103,7 @@ protected:
         const ValueNode& node = found_ < 0 ? root_ : nodes[found_];
         switch (visual_) {
         case Visual::Plot:       plot(c, node); break;
+        case Visual::Vec4:       vec4(c, nodes); break;
         case Visual::State:      state(c, node); break;
         case Visual::Image:      picture(c, nodes); break;
         case Visual::Video:      video(c); break;
@@ -1195,6 +1220,28 @@ private:
             html("big", "<div class=\"big mono slot\"></div>");
             put(0, visual_ == Visual::Time ? format_timestamp(node.integer) : format_span(node.integer));
             break;
+        case Visual::Uuid:
+            html("uuid", "<div class=\"big mono slot\"></div>");
+            put(0, uuid_text(nodes, found_), node.path);
+            break;
+        case Visual::Stream: {
+            /* a stream handed over by URL: its name, the URL, and the hints about it */
+            html("stream", "<div class=\"big text slot\"></div><div class=\"stream-url mono slot\"></div>"
+                           "<div class=\"chips\"><span class=\"chip mono slot\"></span>"
+                           "<span class=\"chip mono slot\"></span><span class=\"chip mono slot\"></span></div>");
+            auto field = [&](const char* name) -> const ValueNode* {
+                const int k = kid(nodes, found_, name);
+                return k >= 0 ? &nodes[k] : nullptr;
+            };
+            const ValueNode *name = field("name"), *url = field("url"), *kind = field("kind"), *codec = field("codec");
+            const int64_t width = field("width") ? field("width")->integer : 0, height = field("height") ? field("height")->integer : 0;
+            put(0, name && !name->text.empty() ? name->text : "unnamed stream");
+            if (url) put(1, url->text, url->path);
+            put(2, kind ? value_text(*kind) : "");
+            put(3, codec ? value_text(*codec) : "");
+            put(4, width > 0 ? std::to_string(width) + " x " + std::to_string(height) : "size unstated");
+            break;
+        }
         case Visual::Hex: {
             html("hex", "<div class=\"hex mono slot\"></div>");
             std::string out;
@@ -1330,23 +1377,20 @@ private:
 
     /* ---------------------------------------------------------------- over time */
 
-    /* The value over the last ten seconds against a grid of round steps. The range is
-       every value seen since the card opened plus a margin, eased so it never jumps.
-       Without history it is the value alone. */
-    void plot(Canvas& c, const ValueNode& node)
+    /* Lines over the last ten seconds against a grid of round steps, one per traced path.
+       The range is every value seen since the card opened plus a margin, eased so it never
+       jumps. Before any trace it is around the first value. */
+    void lines(Canvas& c, const std::vector<std::string>& paths, const std::vector<Rml::Colourb>& colours,
+               double first, bool is_float)
     {
-        if (!history_) {
-            alone(c, c.all(), value_text(node));
-            return;
-        }
-        const auto& points = trace(path_);
         const double now = Capture::now_s();
-        for (const Capture::TracePoint& p : points) {
-            if (!seen_) { lo_seen_ = hi_seen_ = p.v; seen_ = true; }
-            lo_seen_ = std::min(lo_seen_, p.v);
-            hi_seen_ = std::max(hi_seen_, p.v);
-        }
-        if (!seen_) { lo_seen_ = hi_seen_ = node.number; seen_ = true; }
+        for (const std::string& path : paths)
+            for (const Capture::TracePoint& p : trace(path)) {
+                if (!seen_) { lo_seen_ = hi_seen_ = p.v; seen_ = true; }
+                lo_seen_ = std::min(lo_seen_, p.v);
+                hi_seen_ = std::max(hi_seen_, p.v);
+            }
+        if (!seen_) { lo_seen_ = hi_seen_ = first; seen_ = true; }
         double lo = lo_seen_, hi = hi_seen_;
         if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
         else { const double m = (hi - lo) * 0.1; lo -= m; hi += m; }
@@ -1358,29 +1402,79 @@ private:
         auto Y = [&](double v) { return (float)(top + (bottom - top) * (1 - (v - lo_) / (hi_ - lo_))); };
 
         time_grid(c, X, now, top, bottom);
-        value_grid(c, x0, x1, lo_, hi_, Y, node.is_float);
-        /* The line, cut to the plot so the tail slides off the left edge and a new extreme
+        value_grid(c, x0, x1, lo_, hi_, Y, is_float);
+        /* Each line is cut to the plot so its tail slides off the left edge and a new extreme
            the range has not eased out to yet stays inside. The newest value holds until now. */
-        Columns columns;
-        for (const Capture::TracePoint& p : points) columns.add({ X(p.t), Y(p.v) });
-        if (!points.empty() && points.back().t < now) columns.add({ X(now), Y(points.back().v) });
-        const std::vector<Rml::Vector2f>& line = columns.points();
-        std::vector<Rml::Vector2f> run;
-        for (size_t i = 1; i < line.size(); i++) {
-            float ax = line[i - 1].x, ay = line[i - 1].y, bx = line[i].x, by = line[i].y;
-            if (!clip(ax, ay, bx, by, x0, top, x1, bottom)) continue;
-            if (run.empty() || run.back().x != ax || run.back().y != ay) {
-                c.polyline(run, ink.accent, STROKE);
-                run.assign(1, { ax, ay });
+        for (size_t k = 0; k < paths.size(); k++) {
+            const auto& points = trace(paths[k]);
+            Columns columns;
+            for (const Capture::TracePoint& p : points) columns.add({ X(p.t), Y(p.v) });
+            if (!points.empty() && points.back().t < now) columns.add({ X(now), Y(points.back().v) });
+            const std::vector<Rml::Vector2f>& line = columns.points();
+            std::vector<Rml::Vector2f> run;
+            for (size_t i = 1; i < line.size(); i++) {
+                float ax = line[i - 1].x, ay = line[i - 1].y, bx = line[i].x, by = line[i].y;
+                if (!clip(ax, ay, bx, by, x0, top, x1, bottom)) continue;
+                if (run.empty() || run.back().x != ax || run.back().y != ay) {
+                    c.polyline(run, colours[k], STROKE);
+                    run.assign(1, { ax, ay });
+                }
+                run.push_back({ bx, by });
             }
-            run.push_back({ bx, by });
+            c.polyline(run, colours[k], STROKE);
+            if (!points.empty()) {
+                const float y = Y(points.back().v);
+                if (y >= top && y <= bottom) c.dot(X(std::max(now, points.back().t)), y, colours[k], 4);
+            }
         }
-        c.polyline(run, ink.accent, STROKE);
-        if (!points.empty()) {
-            const float y = Y(points.back().v);
-            if (y >= top && y <= bottom) c.dot(X(std::max(now, points.back().t)), y, ink.accent, 4);
+    }
+
+    /* The value over time, or without history the value alone. */
+    void plot(Canvas& c, const ValueNode& node)
+    {
+        if (!history_) {
+            alone(c, c.all(), value_text(node));
+            return;
         }
+        lines(c, { path_ }, { ink.accent }, node.number, node.is_float);
         corner(c, c.all(), value_text(node));
+    }
+
+    /* A Float4, Double4 or Int4: a line per component in its own colour, named at the top
+       right, or without history the four values side by side. */
+    void vec4(Canvas& c, const Nodes& nodes)
+    {
+        const char* names[4] = { "x", "y", "z", "w" };
+        std::vector<std::string> paths, texts;
+        std::vector<Rml::Colourb> colours;
+        bool is_float = false;
+        for (int i = 0; i < 4; i++) {
+            const int k = kid(nodes, found_, names[i]);
+            paths.push_back(child_path(path_, names[i]));
+            texts.push_back(k >= 0 ? value_text(nodes[k]) : "");
+            colours.push_back(component_colour(i));
+            is_float = is_float || (k >= 0 && nodes[k].is_float);
+        }
+        if (!history_) {
+            side_by_side(c, c.all(), { "x", "y", "z", "w" }, texts, colours);
+            return;
+        }
+        const int x = kid(nodes, found_, "x");
+        lines(c, paths, colours, x >= 0 ? nodes[x].number : 0, is_float);
+        /* each component named in its colour at the top right, with its value while there is room */
+        std::vector<std::string> legend;
+        float wide = 0;
+        for (int i = 0; i < 4; i++) {
+            legend.push_back(std::string(names[i]) + " " + texts[i]);
+            wide += c.text_width(legend.back(), LABEL) + c.dp(12);
+        }
+        if (wide > c.w() - c.dp(54 + 120))
+            for (int i = 0; i < 4; i++) legend[i] = names[i];
+        float right = c.w() - c.dp(54);
+        for (int i = 3; i >= 0; i--) {
+            c.text(legend[i], right, c.dp(19), Canvas::Right, colours[i], LABEL);
+            right -= c.text_width(legend[i], LABEL) + c.dp(12);
+        }
     }
 
     void ease_range(double lo, double hi)
@@ -1995,11 +2089,13 @@ public:
         case Visual::Image:
         case Visual::Video:
             return Tile{ frame_size_.x > 0 && frame_size_.y > 0 ? (double)frame_size_.x / frame_size_.y : 4.0 / 3, 4 };
-        case Visual::Plot: case Visual::State: case Visual::Bars:
+        case Visual::Plot: case Visual::Vec4: case Visual::State: case Visual::Bars:
             return Tile{ 3, 1 };
-        case Visual::Text: case Visual::Time: case Visual::Duration: case Visual::Hex:
+        case Visual::Text: case Visual::Time: case Visual::Duration: case Visual::Uuid: case Visual::Hex:
         case Visual::Chips: case Visual::Cells: case Visual::Colors: case Visual::None:
             return Tile{ 3, 0.5 };
+        case Visual::Stream:
+            return Tile{ 2.5, 0.5 };
         case Visual::Color:
             return Tile{ 1.5, 0.5 };
         case Visual::Vec3: case Visual::Quat: case Visual::Pose: case Visual::Twist: case Visual::Wrench:
@@ -2110,7 +2206,7 @@ void viz_init(Capture& capture)
 bool viz_history(Visual visual)
 {
     switch (visual) {
-    case Visual::Plot: case Visual::State: case Visual::Vec2: case Visual::Vec3: case Visual::Pose:
+    case Visual::Plot: case Visual::Vec4: case Visual::State: case Visual::Vec2: case Visual::Vec3: case Visual::Pose:
     case Visual::Pose2D: case Visual::Wrench: case Visual::Geo:
         return true;
     default:
@@ -2134,6 +2230,10 @@ VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>&
         switch (visual) {
         case Visual::Plot:
         case Visual::State: out.traces.push_back(Capture::TraceSpec{ path, PLOT_SECONDS }); break;
+        case Visual::Vec4:
+            for (const char* name : { "x", "y", "z", "w" })
+                out.traces.push_back(Capture::TraceSpec{ child_path(path, name), PLOT_SECONDS });
+            break;
         case Visual::Vec2:  add(path, { "x", "y" }); break;
         case Visual::Vec3:  add(path, { "x", "y", "z" }); break;
         case Visual::Pose:

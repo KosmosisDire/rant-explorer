@@ -24,7 +24,11 @@ Visual struct_visual(const std::string& name)
         { "Float2", Visual::Vec2 }, { "Double2", Visual::Vec2 }, { "Int2", Visual::Vec2 },
         { "Float3", Visual::Vec3 }, { "Double3", Visual::Vec3 }, { "Int3", Visual::Vec3 },
         { "Quaternion", Visual::Quat }, { "Pose", Visual::Pose }, { "Transform", Visual::Pose },
-        { "Twist", Visual::Twist }, { "GeoPoint", Visual::Geo }, { "Color", Visual::Color },
+        { "Twist", Visual::Twist }, { "Wrench", Visual::Wrench },
+        { "AlignedBox", Visual::Solid }, { "OrientedBox", Visual::Solid }, { "Plane", Visual::Solid },
+        { "Segment", Visual::Solid }, { "Sphere", Visual::Solid }, { "Capsule", Visual::Solid },
+        { "Cylinder", Visual::Solid }, { "Cone", Visual::Solid }, { "Polygon", Visual::Solid },
+        { "GeoPoint", Visual::Geo }, { "Color", Visual::Color },
         { "JointState", Visual::Joints }, { "Image", Visual::Image },
         { "VideoFrame", Visual::Video },
     };
@@ -45,6 +49,7 @@ Visual array_of_struct(const std::string& name)
     };
     for (const auto& entry : table)
         if (name == entry.name) return entry.visual;
+    if (struct_visual(name) == Visual::Solid) return Visual::Solids;
     return struct_visual(name) == Visual::Kv ? Visual::Table : Visual::Multi;
 }
 

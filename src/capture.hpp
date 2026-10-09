@@ -215,7 +215,7 @@ public:
         std::string key;           /* see key(), empty while nothing is watched */
         std::string name;
         Kind        kind = Kind::Topic;
-        std::string status;        /* why no value shows yet, empty once one has arrived */
+        std::string status;        /* why no value shows: none yet, or a message with no fields */
         std::string type;          /* the root type as the DSL spells it */
         std::string root_std;      /* the root's standard type name, empty for any other */
         bool        root_struct = false;   /* the root is a struct, so the tree lists its fields */

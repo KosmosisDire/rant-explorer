@@ -816,6 +816,7 @@ struct Capture::Impl {
         std::shared_ptr<Inbox> inbox;
         uint32_t               reliable_epoch = 0xFFFFFFFFu;
         bool                   want_reliable = false;
+        bool                   provided = false;   /* a publisher of it is on the mesh */
         /* The node stamps arrival on its own monotonic clock. The smallest gap to ours seen
            maps a stamp onto our clock, so a batch drained at once keeps its spacing. */
         int64_t                clock_offset_us = INT64_MAX;
@@ -974,19 +975,25 @@ struct Capture::Impl {
 
     /* Reliable only if every publisher of the name offers it, else best effort, since a
        reliable reader refuses a best effort writer. */
-    bool every_publisher_reliable(const std::string& name) const
+    /* The publishers of a topic the mesh knows: whether there is one, and whether every
+       one is reliable. */
+    struct Providers {
+        bool any = false, reliable = true;
+    };
+
+    Providers providers(const std::string& name) const
     {
-        bool any = false, all = true;
+        Providers out;
         rant::Reflection mesh = node.reflection();
         for (const rant::Peer& p : mesh.peers()) {
             if (!p.active) continue;
             for (const rant::Entity& e : mesh.entities(p.id)) {
                 if (e.kind != rant::EntityKind::Topic || !e.provides || e.name != name) continue;
-                any = true;
-                all = all && e.reliable;
+                out.any      = true;
+                out.reliable = out.reliable && e.reliable;
             }
         }
-        return any && all;
+        return out;
     }
 
     /* Stop delivering from the live handle and hand it to the retire retries. */
@@ -1232,8 +1239,10 @@ struct Capture::Impl {
         const bool     writable = variable && e && e->writable;
         const uint64_t typed    = variable ? 0 : s.compose_hash;
         if (!variable && s.reliable_epoch != epoch) {
+            const Providers found = providers(name);
             s.reliable_epoch = epoch;
-            s.want_reliable  = every_publisher_reliable(name);
+            s.want_reliable  = found.any && found.reliable;
+            s.provided       = found.any;
         }
         const bool reliable = !variable && s.want_reliable;
         if (s.live.valid() && (s.live.variable.valid() != variable || s.live.reliable != reliable ||
@@ -1253,10 +1262,11 @@ struct Capture::Impl {
         }
         std::deque<Sample> drained;
         drain(*s.inbox, drained);
+        /* A topic's match count is of subscribers, so its publishers come from the mesh. */
         if (drained.empty()) {
-            if (v.nodes.empty())
-                v.status = s.live.matches() > 0 ? "waiting for a value"
-                         : variable ? "no owner matched yet" : "no publisher matched yet";
+            if (v.seq == 0)
+                v.status = variable ? (s.live.matches() > 0 ? "waiting for a value" : "no owner matched yet")
+                         : s.provided ? "waiting for a value" : "no publisher matched yet";
             return;
         }
         v.seq += drained.size();
@@ -1286,6 +1296,8 @@ struct Capture::Impl {
         add_trace_points(s, v.nodes, v.last_s);
         add_packets(s, v.nodes, v.message);
         trim_traces(s);
+        /* an Empty is a signal, so its arrivals are all there is to show */
+        if (v.nodes.empty()) v.status = std::to_string(v.seq) + " received, no fields";
     }
 
     /* A function or task: its handle, what came back from the last call, and the form. */

@@ -31,6 +31,10 @@ constexpr float ZOOM_MIN = 0.2f, ZOOM_MAX = 2.5f, FIT_MAX = 1.2f;
 /* The layout cools by this share each tick and stops below COLD. */
 constexpr float COOLING = 0.0228f, COLD = 0.002f;
 
+/* Dots move at most this many dp a second and sit at least this far apart, so a frame
+   moves one well under half a gap and it never seems to run backward. */
+constexpr float DOT_SPEED_MAX = 80, DOT_GAP_MIN = 16;
+
 struct Body {
     Rml::Vector2f p{ 0, 0 }, v{ 0, 0 };
     float w = 0;            /* the box width in dp, 0 until measured */
@@ -50,6 +54,13 @@ struct Edge {
     Kind             kind = Kind::Topic;
 };
 
+/* The dots on one arrow: the rate they show, eased so a new reading never makes them
+   jump, and where the first one is, as a share of the gap between two. */
+struct Flow {
+    float lg    = -1;   /* log10(1 + hz), below 0 until first drawn */
+    float phase = 0;
+};
+
 struct State {
     MeshFilter filter;
     MeshPick   pick;
@@ -63,8 +74,10 @@ struct State {
     std::vector<int>         loose;   /* the shown without, parked in rows under the rest */
     std::vector<char>        lit;     /* per mesh node: near the selection, or all while none */
     std::vector<Edge>        edges;
+    std::map<std::string, Flow> flows;   /* by edge key */
     std::string              shape;   /* what is shown, so a change warms the layout */
     int                      links = 0;
+    double                   drawn_s = 0;
 
     float         heat = 1;
     Rml::Vector2f centre{ 0, 0 };
@@ -78,6 +91,11 @@ int index_of(const std::string& key)
     if (key.empty()) return -1;
     const auto it = std::find(st.keys.begin(), st.keys.end(), key);
     return it == st.keys.end() ? -1 : (int)(it - st.keys.begin());
+}
+
+std::string edge_key(const Edge& e)
+{
+    return st.keys[e.a] + ">" + st.keys[e.b];
 }
 
 bool kind_kept(unsigned cats, Kind kind)
@@ -193,6 +211,7 @@ void rebuild()
         st.edges.push_back(std::move(e));
     }
 
+    std::map<std::string, Flow> flows;
     st.shown.clear();
     std::string shape;
     for (size_t i = 0; i < n; i++)
@@ -201,7 +220,12 @@ void rebuild()
             shape += st.keys[i] + ",";
         }
     shape += "|";
-    for (const Edge& e : st.edges) shape += st.keys[e.a] + ">" + st.keys[e.b] + ",";
+    for (const Edge& e : st.edges) {
+        const std::string key = edge_key(e);
+        flows[key] = st.flows[key];
+        shape += key + ",";
+    }
+    st.flows.swap(flows);
     if (shape != st.shape) {
         st.shape = shape;
         st.heat  = std::max(st.heat, 0.5f);
@@ -654,7 +678,9 @@ private:
         paths_.assign(st.edges.size(), {});
         const int    node = index_of(st.pick.node);
         const double now  = Capture::now_s();
+        const float  dt   = (float)std::max(0.0, std::min(0.1, now - st.drawn_s));
         const float  z    = std::max(0.6f, std::min(1.3f, st.zoom));
+        st.drawn_s = now;
         struct Tag {
             Rml::Vector2f at;
             std::string   text;
@@ -696,8 +722,8 @@ private:
                 }
             }
 
-            /* Dots run along an arrow while traffic flows, closer and quicker as it grows. */
-            /* A lost arrow carries a cross at its middle instead of dots. */
+            /* Dots run along an arrow while traffic flows, closer and quicker as it grows.
+               A lost arrow carries a cross at its middle instead. */
             if (e.lost) {
                 const Rml::Vector2f m = along(path, total / 2);
                 const float r = c.dp(5) * z, k = r * 0.45f;
@@ -705,11 +731,14 @@ private:
                 c.line(m.x - k, m.y - k, m.x + k, m.y + k, faded(ink.panel, fade), 1.4f * z);
                 c.line(m.x - k, m.y + k, m.x + k, m.y - k, faded(ink.panel, fade), 1.4f * z);
             } else if (e.active && e.hz > 0) {
-                const float lg      = (float)std::log10(1 + e.hz);
-                const float spacing = std::max(16.f, std::min(150.f, 150.f / (1 + lg))) * view_.s;
-                const float speed   = (40.f + 30.f * lg) * view_.s;
+                Flow& flow = st.flows[edge_key(e)];
+                const float lg = (float)std::log10(1 + e.hz);
+                flow.lg = flow.lg < 0 ? lg : flow.lg + (lg - flow.lg) * std::min(1.f, dt * 2);
+                const float speed = std::min(DOT_SPEED_MAX, 30 + 15 * flow.lg);
+                const float gap   = std::max(DOT_GAP_MIN, 110 / (1 + flow.lg));
+                flow.phase = std::fmod(flow.phase + speed * dt / gap, 1.f);
                 const Rml::Colourb dot = faded(e.kind == Kind::Topic || e.mixed ? ink.text : colour, fade);
-                for (float t = std::fmod((float)now * speed, spacing); t < total - head; t += spacing)
+                for (float t = flow.phase * gap * view_.s; t < total - head; t += gap * view_.s)
                     c.dot(along(path, t), dot, 2.2f * z);
             }
 

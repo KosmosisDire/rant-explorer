@@ -659,7 +659,7 @@ struct Capture::Impl {
                 for (const rant::MapItem& item : topics->second.as_array()) {
                     if (!item.is_map()) continue;
                     const rant::MapDict& d = item.as_map();
-                    reply.counts.emplace_back(dict_string(d, "name"), dict_uint(d, "txMsgs"), dict_uint(d, "rxMsgs"));
+                    reply.counts.emplace_back(dict_string(d, "name"), dict_uint(d, "tx_msgs"), dict_uint(d, "rx_msgs"));
                 }
             std::lock_guard<std::mutex> lock(mutex);
             traffic_inbox.push_back(std::move(reply));
@@ -2190,13 +2190,13 @@ void Capture::poll()
                 MetaPeerRow row;
                 row.name         = dict_string(d, "name");
                 row.active       = dict_bool(d, "active");
-                row.publish_to   = (int)dict_uint(d, "publishTo");
-                row.receive_from = (int)dict_uint(d, "receiveFrom");
-                row.samples      = (int)dict_uint(d, "rttSamples");
+                row.publish_to   = (int)dict_uint(d, "publish_to");
+                row.receive_from = (int)dict_uint(d, "receive_from");
+                row.samples      = (int)dict_uint(d, "rtt_samples");
                 if (row.samples) {
-                    row.rtt_ms     = dict_uint(d, "rttUs") / 1e3;
-                    row.jitter_ms  = dict_uint(d, "rttJitterUs") / 1e3;
-                    row.rtt_min_ms = dict_uint(d, "rttMinUs") / 1e3;
+                    row.rtt_ms     = dict_uint(d, "rtt_us") / 1e3;
+                    row.jitter_ms  = dict_uint(d, "rtt_jitter_us") / 1e3;
+                    row.rtt_min_ms = dict_uint(d, "rtt_min_us") / 1e3;
                 }
                 meta_.peer_rows.push_back(std::move(row));
             }

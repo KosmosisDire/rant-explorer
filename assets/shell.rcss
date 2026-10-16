@@ -410,6 +410,7 @@ body.compact .sidebar.right, body.compact.right-closed .sidebar.right {
 	width: auto;
 	height: var(--sheet);
 	border-radius: 16dp 16dp 0dp 0dp;
+	box-shadow: none;   /* RmlUi draws a stretched box's fill too wide under its shadow */
 	transition: height 0.22s cubic-out;
 	z-index: 500;
 }

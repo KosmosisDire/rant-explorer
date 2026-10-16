@@ -221,6 +221,9 @@ body.left-over .sidebar.left {
 
 .detail > .pane-head { background-color: transparent; border-bottom-width: 0dp; }
 
+/* A finger's head pads both ends alike, so a framed button at the end clears the edge. */
+body.touch .pane-head { padding: 0dp var(--pad); }
+
 .pane-head .section {
 	margin: 0dp;
 	margin-right: auto;

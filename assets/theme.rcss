@@ -106,7 +106,7 @@ body.touch {
 	--field: 42dp;
 	--list:  48dp;
 	--item:  44dp;
-	--bar:   52dp;
+	--bar:   56dp;
 }
 
 body.light {

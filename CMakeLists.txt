@@ -194,6 +194,7 @@ add_executable(rant_explorer
   src/mesh.cpp
   src/reload.cpp
   src/tiling.cpp
+  src/touch.cpp
   src/tree.cpp
   src/values.cpp
   src/video.cpp

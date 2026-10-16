@@ -16,6 +16,7 @@
 #include "tree.hpp"
 #include "values.hpp"
 #include "tiling.hpp"
+#include "touch.hpp"
 #include "viz.hpp"
 
 #include <RmlUi/Core.h>
@@ -2176,10 +2177,12 @@ int main(int argc, char** argv)
     AssetWatcher watcher(assets_dir());
     bool         reload_now = false;
 
-    bool running = true;
+    bool  running = true;
+    Touch touch;
     auto frame = [&]() {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
+            if (touch.before(event, context)) continue;
             switch (event.type) {
             case SDL_EVENT_QUIT:
                 running = false;
@@ -2229,20 +2232,13 @@ int main(int argc, char** argv)
                 }
                 RmlSDL::InputEventHandler(context, window, event);
                 break;
-            case SDL_EVENT_FINGER_CANCELED: {
-                /* The backend skips a finger the system took over, which RmlUi must still let go. */
-                const Rml::Vector2f at{ event.tfinger.x * context->GetDimensions().x, event.tfinger.y * context->GetDimensions().y };
-                context->ProcessTouchCancel(Rml::TouchList{ Rml::Touch{ (Rml::TouchId)event.tfinger.fingerID, at } });
-                context->ProcessMouseLeave();
-                break;
-            }
             default:
                 RmlSDL::InputEventHandler(context, window, event);
-                /* A lifted finger points at nothing, so nothing stays hovered. */
-                if (event.type == SDL_EVENT_FINGER_UP) context->ProcessMouseLeave();
+                touch.after(event, context);
                 break;
             }
         }
+        touch.tick(context);
 
         if (watcher.changed()) reload_now = true;
         if (reload_now) {

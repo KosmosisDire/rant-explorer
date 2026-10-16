@@ -1217,7 +1217,6 @@ int main(int argc, char** argv)
             card.RegisterMember("name",   &CardRow::name);
             card.RegisterMember("history", &CardRow::history);
             card.RegisterMember("pinned", &CardRow::pinned);
-            card.RegisterMember("other",  &CardRow::other);
         }
         ctor.RegisterArray<Rml::Vector<CardRow>>();
 
@@ -2520,7 +2519,7 @@ int main(int argc, char** argv)
                 row.topic      = key;
                 row.topic_name = Capture::name_of(key);
                 row.path       = path;
-                row.name       = path.empty() ? "value" : path;
+                row.name       = path.empty() ? row.topic_name : path;
                 row.history    = of.still.count(path) ? "off" : "on";
                 row.pinned     = of.pinned.count(path) > 0;
                 row.other      = key != watch.key;

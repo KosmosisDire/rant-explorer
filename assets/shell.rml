@@ -153,7 +153,7 @@
 							<div class="viz-card" data-for="c : cards" data-attr-topic="c.topic"
 								data-attr-path="c.path">
 								<span class="viz-name mono"><span class="viz-topic"
-										data-if="c.other">{{c.topic_name}}</span><span>{{c.name}}</span></span>
+										data-if="c.path != ''">{{c.topic_name}}</span><span>{{c.name}}</span></span>
 								<span class="viz-pin" data-class-on="c.pinned"
 									data-event-click="pin_card(c.topic, c.path)">
 									<icon name="pin" />

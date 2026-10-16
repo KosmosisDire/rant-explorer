@@ -633,7 +633,7 @@ select.pill-edit selectbox option:checked { color: var(--text); }
 body.touch .viz-pin,
 body.touch .viz-close         { opacity: 1; }   /* a finger never hovers */
 
-/* A card pinned from another topic names that topic before its field. */
+/* A field's card names its topic before the field. */
 .viz-topic { color: var(--faint); margin-right: 6dp; }
 
 /* A task's progress rides the head's bottom border, so it takes no room. */

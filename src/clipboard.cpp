@@ -132,6 +132,10 @@ bool clipboard_set_table(SDL_Window* window, const Table& table)
 
 #else
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 namespace {
 
 /* The data behind each type, held until the clipboard is replaced, since an app asks for
@@ -141,8 +145,54 @@ struct Offer {
     std::vector<Bytes>       data;
 };
 
+#ifdef __EMSCRIPTEN__
+/* SDL's web build keeps its clipboard to itself, so a copy goes on to the browser's too:
+   every type through the clipboard API where the page may use it, else the text alone
+   through the old copy command, which a plain http page still allows within a tap. The
+   text box it copies from is read only, so no phone raises its keyboard for it. */
+EM_JS_DEPS(clipboard, "$UTF8ToString");
+EM_JS(void, browser_copy, (const char* text, const char* html, const uint8_t* png, int png_size), {
+    const plain = UTF8ToString(text), rich = UTF8ToString(html);
+    const picture = png_size ? HEAPU8.slice(png, png + png_size) : null;
+    const fallback = () => {
+        if (!plain) return;
+        const focused = document.activeElement;
+        const area = document.createElement("textarea");
+        area.value = plain;
+        area.readOnly = true;
+        area.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;opacity:0";
+        document.body.appendChild(area);
+        area.select();
+        try { document.execCommand("copy"); } catch (e) {}
+        area.remove();
+        if (focused && focused.focus) focused.focus();
+    };
+    if (!navigator.clipboard || typeof ClipboardItem === "undefined") { fallback(); return; }
+    const items = {};
+    if (plain) items["text/plain"] = new Blob([plain], { type: "text/plain" });
+    if (rich) items["text/html"] = new Blob([rich], { type: "text/html" });
+    if (picture) items["image/png"] = new Blob([picture], { type: "image/png" });
+    navigator.clipboard.write([new ClipboardItem(items)]).catch(fallback);
+});
+
+void share(const Offer& offer)
+{
+    std::string text, html;
+    const Bytes* png = nullptr;
+    for (size_t i = 0; i < offer.types.size(); i++) {
+        if (offer.types[i] == "text/plain") text.assign(offer.data[i].begin(), offer.data[i].end());
+        if (offer.types[i] == "text/html") html.assign(offer.data[i].begin(), offer.data[i].end());
+        if (offer.types[i] == "image/png") png = &offer.data[i];
+    }
+    browser_copy(text.c_str(), html.c_str(), png ? png->data() : nullptr, png ? (int)png->size() : 0);
+}
+#endif
+
 bool set_types(Offer* offer)
 {
+#ifdef __EMSCRIPTEN__
+    share(*offer);
+#endif
     std::vector<const char*> types;
     for (const std::string& type : offer->types) types.push_back(type.c_str());
     return SDL_SetClipboardData(
@@ -176,3 +226,11 @@ bool clipboard_set_table(SDL_Window*, const Table& table)
 }
 
 #endif
+
+bool clipboard_set_text(const std::string& text)
+{
+#ifdef __EMSCRIPTEN__
+    browser_copy(text.c_str(), "", nullptr, 0);
+#endif
+    return SDL_SetClipboardText(text.c_str());
+}

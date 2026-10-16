@@ -112,6 +112,9 @@ public:
     using SystemInterface_SDL::SystemInterface_SDL;
     ~ExplorerSystemInterface() { SDL_DestroyCursor(col_resize); }
 
+    /* Plain text from a copy or from a text field, through the one place every copy goes. */
+    void SetClipboardText(const Rml::String& text) override { clipboard_set_text(text); }
+
     /* The SDL layer's one resize cursor is the diagonal one. A splitter wants horizontal. */
     void SetMouseCursor(const Rml::String& cursor_name) override
     {

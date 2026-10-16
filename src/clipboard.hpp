@@ -1,10 +1,12 @@
 /* What goes on the system clipboard in more than one format at once, so each app pastes
-   the one it reads. Plain text goes through RmlUi's system interface and needs nothing here. */
+   the one it reads, and plain text, which RmlUi's system interface hands here. */
 #ifndef CLIPBOARD_HPP
 #define CLIPBOARD_HPP
 
 #include "image.hpp"
 #include "values.hpp"
+
+#include <string>
 
 struct SDL_Window;
 
@@ -15,5 +17,8 @@ bool clipboard_set_image(SDL_Window* window, const Image& image);
 /* A table as tab separated text, which a spreadsheet pastes as cells, and as an HTML table,
    which Word, PowerPoint and note apps paste as a table. */
 bool clipboard_set_table(SDL_Window* window, const Table& table);
+
+/* Plain text. */
+bool clipboard_set_text(const std::string& text);
 
 #endif /* CLIPBOARD_HPP */

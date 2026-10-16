@@ -11,6 +11,7 @@
 #include "frame.hpp"
 #include "icons.hpp"
 #include "image.hpp"
+#include "keyboard.hpp"
 #include "mesh.hpp"
 #include "reload.hpp"
 #include "tree.hpp"
@@ -2140,10 +2141,12 @@ int main(int argc, char** argv)
         if (input && input == double_field && Capture::now_s() - double_at < 0.5) input->Select();
         double_field = nullptr;
     });
-    auto listen = [&right_click, &triple_click](Rml::ElementDocument* document) {
+    Keyboard keyboard(context, ui.touch);
+    auto listen = [&right_click, &triple_click, &keyboard](Rml::ElementDocument* document) {
         document->AddEventListener(Rml::EventId::Mousedown, &right_click);
         document->AddEventListener(Rml::EventId::Mousedown, &triple_click);
         document->AddEventListener(Rml::EventId::Dblclick, &triple_click);
+        keyboard.listen(document);
     };
 
     const Rml::String document_path = "shell.rml";

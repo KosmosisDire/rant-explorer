@@ -191,6 +191,7 @@ add_executable(rant_explorer
   src/frame.cpp
   src/icons.cpp
   src/image.cpp
+  src/keyboard.cpp
   src/mesh.cpp
   src/reload.cpp
   src/tiling.cpp

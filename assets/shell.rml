@@ -197,7 +197,7 @@
 						</span>
 						<span class="icon-button flag" data-if="value_composing" data-class-on="value_repeat"
 							data-class-locked="value_repeating" data-event-click="toggle_repeat">
-							<icon name="repeat" /><input type="text" class="rate mono" size="3"
+							<icon name="repeat" /><input type="text" class="rate mono" size="3" inputmode="decimal"
 								data-value="value_hz" /><span>Hz</span>
 						</span>
 						<span class="icon-button" data-if="value_composing" data-event-click="compose(false)">

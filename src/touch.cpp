@@ -9,7 +9,7 @@ namespace {
 
 constexpr float    TAP_DP   = 8.f;     /* further than this is a scroll or a drag, not a tap */
 constexpr uint64_t HOLD_MS  = 500;     /* held still this long is a right click */
-constexpr float    PINCH    = 1.15f;   /* the spread changes this much for each wheel step */
+constexpr float    NOTCH    = 1.15f;   /* the zoom one wheel notch makes in every visual */
 
 Rml::Vector2f where(const SDL_Event& event, const Rml::Context* context)
 {
@@ -73,12 +73,12 @@ bool Touch::before(const SDL_Event& event, Rml::Context* context)
         if (down_ >= 2 && span_ > 0) {
             const Rml::Vector2f middle = (first_.at + second_.at) * 0.5f;
             if (!pinchable(context->GetElementAtPoint(middle))) return true;
+            /* A share of a notch for each move, so the zoom follows the fingers' spread exactly. */
+            const float spread = apart(first_.at, second_.at);
             context->ProcessMouseMove((int)middle.x, (int)middle.y, 0);
-            for (float spread = apart(first_.at, second_.at); spread > span_ * PINCH; span_ *= PINCH)
-                context->ProcessMouseWheel(-1.f, 0);
-            for (float spread = apart(first_.at, second_.at); spread < span_ / PINCH; span_ /= PINCH)
-                context->ProcessMouseWheel(1.f, 0);
+            if (spread > 0) context->ProcessMouseWheel(-std::log(spread / span_) / std::log(NOTCH), 0);
             context->ProcessMouseLeave();
+            span_ = spread;
             return true;
         }
         if (taken_) return true;

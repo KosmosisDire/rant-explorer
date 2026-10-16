@@ -29,7 +29,7 @@ private:
     bool     moved_ = false;    /* the first went further than a tap */
     bool     armed_ = false;    /* it may still turn into a long press */
     bool     taken_ = false;    /* a long press or a pinch took it, so the backend sees no more of it */
-    float    span_ = 0;         /* the pinch's spread at its last wheel step */
+    float    span_ = 0;         /* the pinch's spread at its last move */
 };
 
 #endif /* TOUCH_HPP */

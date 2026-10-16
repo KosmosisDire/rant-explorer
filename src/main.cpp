@@ -2285,7 +2285,8 @@ int main(int argc, char** argv)
         if (ui.tab == "mesh") sync(model, "mesh", ui.mesh, mesh_details());
 
         /* note, sel and meta are marked every frame at the end: sel and meta count live
-           seconds, and note is written from everywhere. The rest move only when changed. */
+           seconds, so only while the Nodes tab shows them, and note is written from everywhere.
+           The rest move only when changed. */
         sync(model, "peer_count", ui.peer_count, capture.node_count());
         ui.machines = capture.machines();
         sync(model, "machines", machines_sig, machines_signature(ui.machines));
@@ -2578,8 +2579,10 @@ int main(int argc, char** argv)
         }
 
         model.DirtyVariable("note");
-        model.DirtyVariable("sel");
-        model.DirtyVariable("meta");
+        if (ui.tab == "nodes") {
+            model.DirtyVariable("sel");
+            model.DirtyVariable("meta");
+        }
 
         context->Update();
         /* New cards exist only after the update, so a moved tiling lays out once more before

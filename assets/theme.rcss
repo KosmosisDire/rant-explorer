@@ -100,12 +100,12 @@ body {
 }
 
 body.touch {
-	--row:   44dp;
+	--row:   38dp;
 	--head:  28dp;
 	--hit:   40dp;
-	--field: 42dp;
-	--list:  48dp;
-	--item:  44dp;
+	--field: 38dp;
+	--list:  44dp;
+	--item:  40dp;
 	--bar:   56dp;
 }
 

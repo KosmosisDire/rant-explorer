@@ -13,6 +13,10 @@
   html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
                font: 14px system-ui, sans-serif; }
   canvas { display: block; outline: none; }
+  /* A finger on the explorer never flashes, selects or calls up the browser's own menus. */
+  html, body, canvas { -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none;
+                       -webkit-user-select: none; user-select: none; }
+  form input { -webkit-user-select: text; user-select: text; }
   form { position: fixed; inset: 0; margin: auto; width: min(360px, calc(100% - 32px)); height: fit-content;
          display: grid; gap: 12px; padding: 24px; background: var(--panel); border: 1px solid var(--border);
          border-radius: 8px; z-index: 2; }

@@ -1,5 +1,6 @@
-# Builds the explorer on Windows, Linux and macOS for every push to main and every pull
-# request. A pushed tag v<VERSION> also attaches the exe of each platform to a GitHub Release.
+# Builds the web page, then the explorer on Windows, Linux and macOS with the page embedded,
+# for every push to main and every pull request. A pushed tag v<VERSION> also attaches the
+# exe of each platform and a zip of the page to a GitHub Release.
 name: ci
 
 on:
@@ -12,9 +13,46 @@ permissions:
   contents: write
 
 jobs:
+  # The page every exe serves with --web-server. The zip is for hosting it elsewhere.
+  web:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Emscripten
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$HOME/emsdk"
+          "$HOME/emsdk/emsdk" install 3.1.56
+          "$HOME/emsdk/emsdk" activate 3.1.56
+          echo "EMSDK=$HOME/emsdk" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          cmake --preset web
+          cmake --build --preset web
+
+      - name: Zip the page
+        run: |
+          mkdir out
+          (cd bin/web && zip -r "../../out/rant-explorer-$(cat ../../VERSION)-web.zip" .)
+          ls -l out
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: page
+          path: bin/web
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rant-explorer-web
+          path: out/*
+
   # Linux builds on ubuntu-22.04 so the binary runs on glibc 2.35 and newer.
   build:
     name: ${{ matrix.name }}
+    needs: [web]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -45,12 +83,17 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ninja
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: page
+          path: page
+
       - name: Build
         run: |
-          cmake --preset ${{ matrix.preset }}
+          cmake --preset ${{ matrix.preset }} -DEXPLORER_WEB_DIR=page
           cmake --build --preset ${{ matrix.preset }}
 
-      # The assets are embedded, so the exe is the whole program.
+      # The assets and the page are embedded, so the exe is the whole program.
       - name: Name the exe
         shell: bash
         run: |
@@ -66,7 +109,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build]
+    needs: [web, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8

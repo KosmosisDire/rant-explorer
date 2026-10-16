@@ -136,6 +136,8 @@
 									data-event-click="show_card(i)"><span></span></span>
 							</span>
 							<span class="head-card" data-if="cards.size > 0">
+								<span class="icon-button rec-stop" data-if="recording != ''"
+									data-event-click="stop_recording"><icon name="square" /></span>
 								<span class="icon-button" data-class-on="shown_card.pinned"
 									data-event-click="pin_card(shown_card.topic, shown_card.path)"><icon name="pin" /></span>
 								<span class="icon-button"
@@ -653,6 +655,8 @@
 		</div>
 
 		<div id="statusbar">
+			<span class="rec" data-if="recording != ''"><span class="rec-dot"></span><span
+					class="mono">{{recording}}</span><span class="rec-stop" data-event-click="stop_recording">Stop</span></span>
 			<span class="mono" copy="" data-if="status != ''" data-class-bad="status_level == 0"
 				data-class-warn="status_level == 1">{{status}}</span>
 			<span id="note" data-if="note != ''">{{note}}</span>

@@ -1,30 +1,59 @@
-# The video decoders behind a VideoFrame card, all static and C only, no assembler needed.
-# openh264 and dav1d build with Meson upstream, so their decoder halves are compiled here
-# from the fetched trees. libde265 has a CMake build of its own.
+# The video codecs behind a VideoFrame card and a recorded card, all static and C only, no
+# assembler needed. openh264 and dav1d build with Meson upstream, so the halves used are
+# compiled here from the fetched trees. libde265 has a CMake build of its own.
 
-# H.264, BSD 2 clause. The decoder and the common code it shares with the encoder.
+# H.264, BSD 2 clause. The decoder, the encoder and its picture processing, each with its own
+# include path as upstream has it, since some of their headers share a name.
 CPMAddPackage(NAME openh264
   GITHUB_REPOSITORY cisco/openh264
   GIT_TAG v2.6.0
   VERSION 2.6.0
   DOWNLOAD_ONLY YES)
-file(GLOB OPENH264_SOURCES
-     "${openh264_SOURCE_DIR}/codec/common/src/*.cpp"
-     "${openh264_SOURCE_DIR}/codec/decoder/core/src/*.cpp"
-     "${openh264_SOURCE_DIR}/codec/decoder/plus/src/*.cpp")
-add_library(openh264_decoder STATIC ${OPENH264_SOURCES})
-target_include_directories(openh264_decoder
-  PUBLIC  "${openh264_SOURCE_DIR}/codec/api/wels"
-  PRIVATE "${openh264_SOURCE_DIR}/codec/common/inc"
-          "${openh264_SOURCE_DIR}/codec/decoder/core/inc"
-          "${openh264_SOURCE_DIR}/codec/decoder/plus/inc")
-if(MSVC)
-  target_compile_options(openh264_decoder PRIVATE /W0)
-else()
-  target_compile_options(openh264_decoder PRIVATE -w)
+set(_h "${openh264_SOURCE_DIR}/codec")
+file(GLOB OPENH264_COMMON "${_h}/common/src/*.cpp")
+file(GLOB OPENH264_DECODER "${_h}/decoder/core/src/*.cpp" "${_h}/decoder/plus/src/*.cpp")
+file(GLOB OPENH264_ENCODER "${_h}/encoder/core/src/*.cpp" "${_h}/encoder/plus/src/welsEncoderExt.cpp")
+file(GLOB OPENH264_PROCESSING "${_h}/processing/src/*/*.cpp")
+list(FILTER OPENH264_PROCESSING EXCLUDE REGEX "/(arm|arm64|loongarch|mips|x86)/")
+set(OPENH264_PROCESSING_INC "${_h}/processing/interface" "${_h}/processing/src/common"
+    "${_h}/processing/src/adaptivequantization" "${_h}/processing/src/downsample"
+    "${_h}/processing/src/scrolldetection" "${_h}/processing/src/vaacalc")
+add_library(openh264_common STATIC ${OPENH264_COMMON})
+target_include_directories(openh264_common PUBLIC "${_h}/api/wels" "${_h}/common/inc")
+add_library(openh264_decoder STATIC ${OPENH264_DECODER})
+target_include_directories(openh264_decoder PRIVATE "${_h}/decoder/core/inc" "${_h}/decoder/plus/inc")
+add_library(openh264_processing STATIC ${OPENH264_PROCESSING})
+target_include_directories(openh264_processing PRIVATE ${OPENH264_PROCESSING_INC})
+add_library(openh264_encoder STATIC ${OPENH264_ENCODER})
+target_include_directories(openh264_encoder PRIVATE ${OPENH264_PROCESSING_INC}
+                           "${_h}/encoder/core/inc" "${_h}/encoder/plus/inc")
+foreach(_t openh264_decoder openh264_processing openh264_encoder)
+  target_link_libraries(${_t} PUBLIC openh264_common)
+endforeach()
+target_link_libraries(openh264_encoder PUBLIC openh264_processing)
+foreach(_t openh264_common openh264_decoder openh264_processing openh264_encoder)
+  if(MSVC)
+    target_compile_options(${_t} PRIVATE /W0)
+  else()
+    target_compile_options(${_t} PRIVATE -w)
+  endif()
+endforeach()
+if(NOT MSVC)
   find_package(Threads REQUIRED)
-  target_link_libraries(openh264_decoder PRIVATE Threads::Threads)
+  target_link_libraries(openh264_common PUBLIC Threads::Threads)
 endif()
+
+# A recorded card's file formats: GIF frames, and the MP4 box around the encoder's H.264.
+# Each is one header. msf_gif is MIT, minimp4 CC0, and it has no release tags.
+CPMAddPackage(NAME msf_gif
+  GITHUB_REPOSITORY notnullnotvoid/msf_gif
+  GIT_TAG v2.4
+  VERSION 2.4
+  DOWNLOAD_ONLY YES)
+CPMAddPackage(NAME minimp4
+  GITHUB_REPOSITORY lieff/minimp4
+  GIT_TAG 2a3014a7753cfcba4442adeb469431967238fe6a
+  DOWNLOAD_ONLY YES)
 
 # AV1, BSD 2 clause. The template sources compile once per bit depth. config.h is what
 # Meson would write for a build with no assembler: every ARCH_ flag off.

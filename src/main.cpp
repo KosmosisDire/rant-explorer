@@ -13,6 +13,7 @@
 #include "image.hpp"
 #include "keyboard.hpp"
 #include "mesh.hpp"
+#include "record.hpp"
 #include "reload.hpp"
 #include "tree.hpp"
 #include "values.hpp"
@@ -42,6 +43,7 @@
 #include <SDL3/SDL_main.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -404,6 +406,7 @@ struct Ui {
     /* The status bar's note: a reload, a copy or what RmlUi complained about, for a while. */
     Rml::String note;
     unsigned    note_frames = 0;
+    Rml::String recording;   /* how long a card has recorded, empty while none does */
 
     /* Sidebar widths in dp once a splitter has been dragged, zero while the theme default
        stands. The drag_ fields hold one drag: where it began and how wide it may go. */
@@ -701,6 +704,32 @@ void fit_head(Rml::ElementDocument* document, const char* pane_id)
     const float pull = bar - top->GetBox().GetEdge(Rml::BoxArea::Padding, Rml::BoxEdge::Right);
     if (std::abs(toggle->GetBox().GetEdge(Rml::BoxArea::Margin, Rml::BoxEdge::Right) - pull) > 0.5f)
         toggle->SetProperty(Rml::PropertyId::MarginRight, Rml::Property(pull, Rml::Unit::PX));
+}
+
+/* The card of a topic's field, or null while it is not shown. */
+Rml::Element* find_card(Rml::Context* context, const std::string& topic, const std::string& path)
+{
+    for (int i = 0; i < context->GetNumDocuments(); i++) {
+        Rml::ElementList cards;
+        context->GetDocument(i)->QuerySelectorAll(cards, ".viz-card");
+        for (Rml::Element* card : cards)
+            if (card->GetAttribute<Rml::String>("topic", "") == topic && card->GetAttribute<Rml::String>("path", "") == path)
+                return card;
+    }
+    return nullptr;
+}
+
+/* A file name for a card: its topic and field, then the local time. */
+std::string shot_name(const std::string& topic, const std::string& path)
+{
+    std::string name = Capture::name_of(topic) + (path.empty() ? "" : "_" + path);
+    for (char& c : name)
+        if (!std::isalnum((unsigned char)c) && c != '-') c = '_';
+    name.erase(0, name.find_first_not_of('_'));
+    char when[32];
+    const std::time_t now = std::time(nullptr);
+    std::strftime(when, sizeof when, "%Y-%m-%d_%H-%M-%S", std::localtime(&now));
+    return (name.empty() ? "" : name + "_") + when;
 }
 
 /* The cards tiled into the area under the topic head, or with a page, side by side with
@@ -1048,6 +1077,44 @@ int main(int argc, char** argv)
         ui.note        = Rml::CreateString("copied a table of %d rows", (int)table.rows.size());
         ui.note_frames = 150;
     };
+    /* The one card being saved or recorded. Its first read waits for the menu to close and
+       the card's buttons to hide, and a recording starts its encoder there, at the card's size.
+       Its clock stops while it is paused. */
+    struct Shot {
+        std::string topic, path, name;
+        FileKind    kind = FileKind::Png;
+        int         settle = 2;
+        double      clock = 0;
+        std::unique_ptr<Recording> recording;
+    };
+    std::unique_ptr<Shot> shot;
+    auto start_shot = [&shot](const std::string& topic, const std::string& path, FileKind kind) {
+        if (shot) return;
+        shot.reset(new Shot);
+        shot->topic = topic;
+        shot->path  = path;
+        shot->name  = shot_name(topic, path);
+        shot->kind  = kind;
+    };
+    auto end_shot = [&ui, &shot, &model, context, window]() {
+        if (!shot) return;
+        if (Rml::Element* card = find_card(context, shot->topic, shot->path)) {
+            card->SetClass("capturing", false);
+            card->SetClass("recording", false);
+        }
+        if (shot->recording) {
+            std::vector<uint8_t> file = shot->recording->finish(shot->clock);
+            if (file.empty()) {
+                ui.note        = "the recording failed";
+                ui.note_frames = 300;
+            } else {
+                save_file(window, std::move(file), shot->kind, shot->name);
+            }
+        }
+        shot.reset();
+        ui.recording.clear();
+        model.DirtyVariable("recording");
+    };
     if (Rml::DataModelConstructor ctor = context->CreateDataModel("shell")) {
         ctor.RegisterTransformFunc("dur", [](const Rml::VariantList& a) -> Rml::Variant {
             return a.empty() ? Rml::Variant() : Rml::Variant(format_duration(a[0].Get<double>()));
@@ -1294,6 +1361,7 @@ int main(int argc, char** argv)
         ctor.Bind("log_warn",        &ui.log_warn);
         ctor.Bind("log_info",        &ui.log_info);
         ctor.Bind("note",            &ui.note);
+        ctor.Bind("recording",       &ui.recording);
         ctor.Bind("topic_filter",    &ui.topic_filter);
         ctor.Bind("topic_cats",      &ui.topic_cats);
         ctor.Bind("topic_funnel",    &ui.topic_funnel);
@@ -1369,6 +1437,8 @@ int main(int argc, char** argv)
                 capture.select(args[0].Get<Rml::String>());
                 picked(handle, event);
             });
+        ctor.BindEventCallback("stop_recording",
+            [end_shot](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) { end_shot(); });
         ctor.BindEventCallback("toggle_theme",
             [&ui](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList&) {
                 ui.light = !ui.light;
@@ -1731,8 +1801,8 @@ int main(int argc, char** argv)
             });
         /* A checkbox flips and leaves the checklist open, every other line acts and closes. */
         ctor.BindEventCallback("menu_pick",
-            [&ui, &capture, &editor, &tree_dirty, &value_dirty, set_sub, close_menu, copy, copy_image, copy_table, value_of](
-                Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList& args) {
+            [&ui, &capture, &editor, &tree_dirty, &value_dirty, set_sub, close_menu, copy, copy_image, copy_table, value_of,
+             start_shot, end_shot](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList& args) {
                 if (args.empty()) return;
                 const int at = args[0].Get<int>();
                 if (at < 0 || at >= (int)ui.menu_items.size()) return;
@@ -1749,6 +1819,17 @@ int main(int argc, char** argv)
                 }
                 const std::string action = picked.action;
                 if (action.empty()) return;
+                if (action == "shot_png" || action == "shot_mp4" || action == "shot_gif") {
+                    start_shot(ui.menu_topic, picked.path, action == "shot_png" ? FileKind::Png
+                                                         : action == "shot_mp4" ? FileKind::Mp4 : FileKind::Gif);
+                    close_menu();
+                    return;
+                }
+                if (action == "shot_stop") {
+                    end_shot();
+                    close_menu();
+                    return;
+                }
                 if (action == "history") {
                     ValueView& view = editor.view(ui.menu_topic);
                     if (!view.still.erase(picked.path)) view.still.insert(picked.path);
@@ -2019,7 +2100,7 @@ int main(int argc, char** argv)
               return topic_table(capture, branch, ui.topic_filter, (unsigned)ui.topic_cats);
           } },
     };
-    Listener right_click([&ui, &capture, &editor, context, open_menu, value_of, &table_sources](Rml::Event& event) {
+    Listener right_click([&ui, &capture, &editor, &shot, context, open_menu, value_of, &table_sources](Rml::Event& event) {
         if (event.GetParameter<int>("button", 0) != 1) return;
         std::vector<MenuItem> lines;
 
@@ -2171,7 +2252,8 @@ int main(int argc, char** argv)
                 if (tree->HasAttribute("path")) paste_line("Paste value", tree->GetAttribute<Rml::String>("path", ""));
             }
         }
-        /* A card that draws what came before offers to draw only the newest value. */
+        /* A card that draws what came before offers to draw only the newest value. Every card
+           saves as a picture or records, one card at a time. */
         Rml::Element* card = event.GetTargetElement();
         while (card && !card->IsClassSet("viz-card")) card = card->GetParentNode();
         if (card && !head) {
@@ -2179,16 +2261,28 @@ int main(int argc, char** argv)
             const std::string topic = card->GetAttribute<Rml::String>("topic", "");
             const std::string path  = card->GetAttribute<Rml::String>("path", "");
             const Capture::WatchView* view = value_of(topic, nodes);
+            std::vector<MenuItem> own;
+            auto item = [&own, &path](const char* label, const char* action) {
+                MenuItem m;
+                m.label  = label;
+                m.action = action;
+                m.path   = path;
+                own.push_back(m);
+            };
             if (view && viz_history(visual_at(*view, *nodes, find_node(*nodes, *view, path)))) {
                 const auto mine = editor.views().find(topic);
-                MenuItem history;
-                history.label  = "History";
-                history.action = "history";
-                history.path   = path;
-                history.check  = mine != editor.views().end() && mine->second.still.count(path) ? 1 : 2;
-                ui.menu_topic  = topic;
-                lines.insert(lines.begin(), history);
+                item("History", "history");
+                own.back().check = mine != editor.views().end() && mine->second.still.count(path) ? 1 : 2;
             }
+            if (shot && shot->kind != FileKind::Png && shot->topic == topic && shot->path == path) {
+                item("Stop recording", "shot_stop");
+            } else if (!shot) {
+                item("Save image", "shot_png");
+                item("Record video", "shot_mp4");
+                item("Record GIF", "shot_gif");
+            }
+            ui.menu_topic = topic;
+            lines.insert(lines.begin(), own.begin(), own.end());
         }
         ui.menu_pending.insert(ui.menu_pending.end(), lines.begin(), lines.end());
 
@@ -2343,6 +2437,11 @@ int main(int argc, char** argv)
             std::fputc(10, stderr);
             std::fflush(stderr);
             model.DirtyAllVariables();
+        }
+        std::string saved;
+        if (save_note(saved)) {
+            ui.note        = saved;
+            ui.note_frames = 300;
         }
         if (ui.note_frames && --ui.note_frames == 0) ui.note.clear();
 
@@ -2696,6 +2795,39 @@ int main(int argc, char** argv)
         render_interface.BeginFrame();
         context->Render();
         render_interface.EndFrame();
+
+        /* A card being saved or recorded is read back once drawn, inside its border. Its corners
+           go square and its buttons hide meanwhile, and an open menu pauses it. */
+        if (shot) {
+            Rml::Element* card = find_card(context, shot->topic, shot->path);
+            if (!card) {
+                end_shot();
+            } else if (shot->settle > 0) {
+                card->SetClass("capturing", true);
+                card->SetClass("recording", shot->kind != FileKind::Png);
+                shot->settle--;
+            } else if (!ui.menu_open) {
+                const Rml::Vector2f at   = card->GetAbsoluteOffset(Rml::BoxArea::Padding);
+                const Rml::Vector2f size = card->GetBox().GetSize(Rml::BoxArea::Padding);
+                const int x0 = std::max(0, (int)std::ceil(at.x)), y0 = std::max(0, (int)std::ceil(at.y));
+                const int x1 = std::min(width, (int)std::floor(at.x + size.x)), y1 = std::min(height, (int)std::floor(at.y + size.y));
+                if (x1 - x0 < 16 || y1 - y0 < 16) {
+                    end_shot();
+                    ui.note        = "the card is too small to save";
+                    ui.note_frames = 300;
+                } else if (shot->kind == FileKind::Png) {
+                    save_file(window, image_png(read_window(x0, y0, x1 - x0, y1 - y0, height)), FileKind::Png, shot->name);
+                    end_shot();
+                } else {
+                    if (!shot->recording) shot->recording.reset(new Recording(shot->kind, x1 - x0, y1 - y0));
+                    else shot->clock += dt / 1000.0;
+                    if (shot->recording->due(shot->clock))
+                        shot->recording->push(read_window(x0, y0, x1 - x0, y1 - y0, height), shot->clock);
+                    const int seconds = (int)shot->clock;
+                    sync(model, "recording", ui.recording, Rml::CreateString("%d:%02d", seconds / 60, seconds % 60));
+                }
+            }
+        }
         SDL_GL_SwapWindow(window);
     };
 #ifdef __EMSCRIPTEN__

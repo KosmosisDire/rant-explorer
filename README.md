@@ -15,6 +15,9 @@ out the UI from RML and RCSS.
 Rant bridge, which it looks for on port 7480 of the same host. `rant explore web enable`
 runs the server as a service.
 
+A card's right click menu saves it as a PNG or records it as an MP4 or a GIF. On Linux the
+save dialog needs `xdg-desktop-portal` or `zenity`.
+
 `F12` toggles the RmlUi debugger and `F5` reloads the assets. `RANT_UI_ZOOM` scales the
 whole UI. The exe carries its `assets/` embedded, so a copy runs on its own. An exe built
 here reads the RML and RCSS from this tree's `assets/` instead, so an edit shows in the
@@ -37,8 +40,9 @@ cmake --build --preset windows
 ```
 
 Use `linux` on Linux and `macos` on macOS. The executable lands in `bin/`. CPM fetches the
-Rant release pinned in `CMakeLists.txt` plus FreeType, SDL3, RmlUi and the video decoders
-(openh264, dav1d, libde265), all built static from source. libde265 is LGPL 3. The
+Rant release pinned in `CMakeLists.txt` plus FreeType, SDL3, RmlUi, the video decoders
+(openh264, dav1d, libde265) and what records a card (the openh264 encoder, minimp4,
+msf_gif), all built static from source. libde265 is LGPL 3. The
 `-local` presets build against the `../rant` working tree instead. Set `CPM_SOURCE_CACHE`
 to share the downloads between build trees.
 

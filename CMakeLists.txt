@@ -84,7 +84,7 @@ CPMAddPackage(NAME RmlUi
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/video.cmake")
 
 # stb_image decodes Logo.png: RmlUi's OpenGL 3 renderer only reads TGA, and SDL needs raw
-# pixels for the window icon. stb_image_write encodes a copied image as PNG.
+# pixels for the window icon. stb_image_write encodes a copied or saved image as PNG.
 set(DEPS "${CMAKE_BINARY_DIR}/deps")
 file(MAKE_DIRECTORY "${DEPS}/include")
 foreach(_stb stb_image.h stb_image_write.h)
@@ -195,6 +195,7 @@ add_executable(rant_explorer
   src/image.cpp
   src/keyboard.cpp
   src/mesh.cpp
+  src/record.cpp
   src/reload.cpp
   src/tiling.cpp
   src/touch.cpp
@@ -206,7 +207,8 @@ add_executable(rant_explorer
   "${RMLUI_BACKENDS}/RmlUi_Platform_SDL.cpp"
   "${RMLUI_BACKENDS}/RmlUi_Renderer_GL3.cpp")
 
-target_include_directories(rant_explorer PRIVATE "${RMLUI_BACKENDS}" "${DEPS}/include" src)
+target_include_directories(rant_explorer PRIVATE "${RMLUI_BACKENDS}" "${DEPS}/include" src
+                           "${msf_gif_SOURCE_DIR}" "${minimp4_SOURCE_DIR}")
 
 # The assets this tree was built from. A build here reads them directly so an edited RCSS
 # reloads in the running window. A copied exe elsewhere will not find the path and uses
@@ -219,7 +221,7 @@ target_compile_definitions(rant_explorer PRIVATE
 target_compile_definitions(rant_explorer PRIVATE RMLUI_SDL_VERSION_MAJOR=3)
 
 target_link_libraries(rant_explorer PRIVATE
-  RmlUi::Core RmlUi::Debugger SDL3::SDL3 rant::rant openh264_decoder dav1d de265)
+  RmlUi::Core RmlUi::Debugger SDL3::SDL3 rant::rant openh264_decoder openh264_encoder dav1d de265)
 
 if(EMSCRIPTEN)
   web_target(rant_explorer)

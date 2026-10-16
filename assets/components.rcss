@@ -636,6 +636,17 @@ body.touch .viz-close         { opacity: 1; }   /* a finger never hovers */
 /* A field's card names its topic before the field. */
 .viz-topic { color: var(--faint); margin-right: 6dp; }
 
+/* A card being saved or recorded is read inside its border, so its corners go square and its
+   buttons hide. A recording's border turns red, which the file leaves out. */
+.viz-card.capturing { border-radius: 0dp; }
+.viz-card.capturing .viz-pin, .viz-card.capturing .viz-close { display: none; }
+.viz-card.recording { border-color: var(--red); }
+
+/* A recording's time and its stop. */
+.rec { display: flex; align-items: center; color: var(--text); }
+.rec-dot { background-color: var(--red); }
+.rec-stop, .icon-button.rec-stop { color: var(--red); cursor: pointer; }
+
 /* A task's progress rides the head's bottom border, so it takes no room. */
 .sidebar.right > .pane-head { position: relative; }
 .head-bar {

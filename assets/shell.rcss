@@ -127,6 +127,10 @@ body {
 /* What hot reload or a copy just did, or what RmlUi complained about while parsing. */
 #note { color: var(--accent); }
 
+.rec { gap: 6dp; }
+.rec-dot { width: 8dp; height: 8dp; border-radius: 4dp; }
+.rec-stop { font-weight: 600; }
+
 /* ------------------------------------------------------------------- tab slots */
 
 /* The height the two bars leave. A zero basis keeps this off the content, which would

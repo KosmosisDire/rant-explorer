@@ -2167,6 +2167,9 @@ int main(int argc, char** argv)
                 break;
             default:
                 RmlSDL::InputEventHandler(context, window, event);
+                /* A lifted finger points at nothing, so nothing stays hovered. */
+                if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.which == SDL_TOUCH_MOUSEID)
+                    context->ProcessMouseLeave();
                 break;
             }
         }

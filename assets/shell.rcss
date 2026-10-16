@@ -485,6 +485,12 @@ body.compact .pager { display: flex; height: 100%; }
 .pager-dot.on { width: 26dp; }
 .pager-dot.on > span { width: 18dp; background-color: var(--accent); }
 
+/* The one card on show sits bare on the ground, and its pin and close move to the head. */
+body.compact .viz-card { background-color: transparent; border-width: 0dp; border-radius: 0dp; }
+body.compact .viz-card > .viz-pin, body.compact .viz-card > .viz-close { display: none; }
+.head-card { display: none; }
+body.compact .head-card { display: flex; }
+
 /* ------------------------------------------------------------------------ menu */
 
 /* The open menu sits on a layer over the whole window, which a press outside it closes.

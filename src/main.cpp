@@ -149,6 +149,12 @@ struct CardRow {
     Rml::String history = "on";  /* "off" while the card draws only the newest value */
     bool        pinned = false;
     bool        other = false;   /* from a topic that is not the selected one */
+
+    bool operator==(const CardRow& o) const
+    {
+        return topic == o.topic && topic_name == o.topic_name && path == o.path && name == o.name &&
+               history == o.history && pinned == o.pinned && other == o.other;
+    }
 };
 
 /* What one topic tree row shows beside its name this frame, parallel to the rows. */
@@ -364,6 +370,7 @@ struct Ui {
     /* A phone shows one card at a time: its index, how far a swipe or the slide after has the
        row of cards moved in dp, and one swipe. */
     int      card_page = 0;
+    CardRow  shown_card;   /* the card on the page, which the head pins and closes */
     float    card_shift = 0;
     bool     card_swiping = false;
     float    card_grab = 0;
@@ -1271,6 +1278,7 @@ int main(int argc, char** argv)
         ctor.Bind("value_root_on",   &ui.value_root_on);
         ctor.Bind("cards",           &ui.cards);
         ctor.Bind("card_page",       &ui.card_page);
+        ctor.Bind("shown_card",      &ui.shown_card);
         ctor.Bind("light",           &ui.light);
         ctor.Bind("mesh_filter",     &ui.mesh_filter);
         ctor.Bind("mesh_cats",       &ui.mesh_cats);
@@ -2585,6 +2593,8 @@ int main(int argc, char** argv)
             model.DirtyVariable("meta");
         }
 
+        sync(model, "shown_card", ui.shown_card,
+             ui.card_page < (int)ui.cards.size() ? ui.cards[ui.card_page] : CardRow());
         context->Update();
         /* New cards exist only after the update, so a moved tiling lays out once more before
            it draws, and no card shows a frame in the wrong place. */

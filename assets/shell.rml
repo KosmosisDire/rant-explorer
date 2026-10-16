@@ -134,6 +134,10 @@
 								<span class="pager-dot" data-for="c, i : cards" data-class-on="i == card_page"
 									data-event-click="show_card(i)"><span></span></span>
 							</span>
+							<span class="icon-button head-card" data-if="cards.size > 0" data-class-on="shown_card.pinned"
+								data-event-click="pin_card(shown_card.topic, shown_card.path)"><icon name="pin" /></span>
+							<span class="icon-button head-card" data-if="cards.size > 0"
+								data-event-click="close_card(shown_card.topic, shown_card.path)"><icon name="x" /></span>
 						</div>
 						<div class="issues" data-if="has_topic &amp;&amp; topic.issues.size > 0">
 							<div class="issue" data-for="s : topic.issues">

@@ -24,7 +24,12 @@
 
 #include <RmlUi_Platform_SDL.h>
 #include <RmlUi_Renderer_GL3.h>
+#ifdef __EMSCRIPTEN__
+#include <GLES3/gl3.h>           /* WebGL 2, linked rather than loaded */
+#include <emscripten.h>
+#else
 #include <RmlUi_Include_GL3.h>   /* the GL entry points the renderer loaded */
+#endif
 
 #define SDL_MAIN_HANDLED
 #include <SDL3/SDL.h>
@@ -57,7 +62,14 @@ float read_zoom()
    one stylesheet across platforms, the way ui_fonts.h picks its files by path. */
 bool load_fonts()
 {
-#ifdef _WIN32
+#if defined(__EMSCRIPTEN__)
+    /* A page reads no system fonts, so the web build embeds these with the assets. */
+    const char* sans_regular = "DejaVuSans.ttf";
+    const char* sans_semi    = "DejaVuSans-Bold.ttf";
+    const char* sans_bold    = "DejaVuSans-Bold.ttf";
+    const char* mono_regular = "DejaVuSansMono.ttf";
+    const char* mono_bold    = "DejaVuSansMono-Bold.ttf";
+#elif defined(_WIN32)
     const char* sans_regular = "C:/Windows/Fonts/segoeui.ttf";
     const char* sans_semi    = "C:/Windows/Fonts/seguisb.ttf";
     const char* sans_bold    = "C:/Windows/Fonts/segoeuib.ttf";
@@ -409,6 +421,11 @@ struct Ui {
 
     bool light     = false;   /* the light palette, a class on body */
     bool maximized = false;   /* picks the maximize or restore glyph */
+#ifdef __EMSCRIPTEN__
+    bool web       = true;    /* the browser owns the window, so no window buttons */
+#else
+    bool web       = false;
+#endif
 };
 
 /* What the ui keeps on body: the theme class, a dragged width inline where the sidebar
@@ -755,13 +772,22 @@ int main(int argc, char** argv)
         return 1;
     }
 
+#ifdef __EMSCRIPTEN__
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+#else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
-    const SDL_WindowFlags flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE |
-                                  SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_BORDERLESS;
+    SDL_WindowFlags flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE |
+                            SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_BORDERLESS;
+#ifdef __EMSCRIPTEN__
+    flags |= SDL_WINDOW_FILL_DOCUMENT;   /* the canvas takes the page and follows its size */
+#endif
     SDL_Window* window = SDL_CreateWindow("Rant Explorer", 1400, 900, flags);
     if (!window) {
         std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
@@ -1209,6 +1235,7 @@ int main(int argc, char** argv)
         ctor.Bind("mesh_focus",      &ui.mesh_focus);
         ctor.Bind("mesh",            &ui.mesh);
         ctor.Bind("maximized",       &ui.maximized);
+        ctor.Bind("web",             &ui.web);
 
         ctor.BindEventCallback("select_node",
             [&capture](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
@@ -1979,7 +2006,7 @@ int main(int argc, char** argv)
     bool         reload_now = false;
 
     bool running = true;
-    while (running) {
+    auto frame = [&]() {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             switch (event.type) {
@@ -2328,7 +2355,16 @@ int main(int argc, char** argv)
         context->Render();
         render_interface.EndFrame();
         SDL_GL_SwapWindow(window);
-    }
+    };
+#ifdef __EMSCRIPTEN__
+    /* A page draws when the browser asks, one frame a call. main never returns, so all the
+       state above stays alive. */
+    static std::function<void()> step;
+    step = frame;
+    emscripten_set_main_loop([] { step(); }, 0, true);
+#else
+    while (running) frame();
+#endif
 
     Rml::Debugger::Shutdown();
     Rml::Shutdown();

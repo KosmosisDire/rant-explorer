@@ -48,6 +48,9 @@ if(WIN32)
   string(APPEND DAV1D_CONFIG "#define _WIN32_WINNT 0x0601\n#define UNICODE 1\n#define _UNICODE 1\n"
          "#define _CRT_DECLARE_NONSTDC_NAMES 1\n#define HAVE_UNISTD_H 0\n"
          "#define HAVE_POSIX_MEMALIGN 0\n#define HAVE_PTHREAD_SETNAME_NP 0\n")
+elseif(EMSCRIPTEN)
+  string(APPEND DAV1D_CONFIG "#define HAVE_UNISTD_H 1\n#define HAVE_POSIX_MEMALIGN 1\n"
+         "#define HAVE_PTHREAD_SETNAME_NP 0\n")
 else()
   string(APPEND DAV1D_CONFIG "#define HAVE_UNISTD_H 1\n#define HAVE_POSIX_MEMALIGN 1\n"
          "#define HAVE_PTHREAD_SETNAME_NP 1\n")

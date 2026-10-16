@@ -1,6 +1,5 @@
-/* A VideoFrame stream decoded to pictures on a thread of its own, so a slow frame never
-   holds the UI. MJPEG through stb_image, H.264 through openh264, H.265 through libde265
-   and AV1 through dav1d. A frame whose codec is unstated is told by its bitstream. */
+/* A VideoFrame stream decoded to pictures off the UI thread, or as pushed in a page without
+   threads. MJPEG, H.264, H.265 and AV1, and a codec left unstated is told by its bitstream. */
 #ifndef VIDEO_HPP
 #define VIDEO_HPP
 

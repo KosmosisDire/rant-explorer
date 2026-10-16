@@ -13,6 +13,17 @@
 #include <mutex>
 #include <thread>
 
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+#include <semaphore.h>
+/* openh264's thread layer names this, and a page's libc lacks it without threads. Only a
+   threaded decode waits on it, and the explorer never asks for one. */
+extern "C" int sem_timedwait(sem_t*, const struct timespec*)
+{
+    errno = ENOSYS;
+    return -1;
+}
+#endif
+
 namespace {
 
 using Packet = Capture::Packet;
@@ -30,6 +41,13 @@ const char* codec_name(int codec)
     default:    return "unknown codec";
     }
 }
+
+/* A page without threads decodes on the UI thread, as frames are pushed. */
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+constexpr bool THREADS = false;
+#else
+constexpr bool THREADS = true;
+#endif
 
 /* A decoder holding more frames than this skips ahead to the newest keyframe among them. */
 constexpr size_t BEHIND = 8;
@@ -307,7 +325,7 @@ public:
     {
         ctx_ = de265_new_decoder();
         const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
-        if (ctx_) de265_start_worker_threads(ctx_, (int)std::min(4u, cores));
+        if (ctx_ && THREADS) de265_start_worker_threads(ctx_, (int)std::min(4u, cores));
     }
 
     ~H265Decoder() override
@@ -374,6 +392,7 @@ public:
         Dav1dSettings settings;
         dav1d_default_settings(&settings);
         settings.max_frame_delay = 1;   /* a picture per frame in, as a live view wants */
+        if (!THREADS) settings.n_threads = 1;
         if (dav1d_open(&ctx_, &settings) < 0) ctx_ = nullptr;
     }
 
@@ -581,11 +600,12 @@ struct VideoDecoder::Impl {
 VideoDecoder::VideoDecoder() : impl_(std::make_unique<Impl>())
 {
     impl_->info.problem = "waiting for a frame";
-    impl_->worker = std::thread([impl = impl_.get()] { impl->run(); });
+    if (THREADS) impl_->worker = std::thread([impl = impl_.get()] { impl->run(); });
 }
 
 VideoDecoder::~VideoDecoder()
 {
+    if (!impl_->worker.joinable()) return;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->quit = true;
@@ -596,17 +616,28 @@ VideoDecoder::~VideoDecoder()
 
 void VideoDecoder::push(std::vector<Packet> packets, bool lost)
 {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    if (lost) {
-        impl_->queue.clear();
-        impl_->lost = true;
+    std::deque<Packet> batch;
+    bool restart = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (lost) {
+            impl_->queue.clear();
+            impl_->lost = true;
+        }
+        for (Packet& p : packets) impl_->queue.push_back(std::move(p));
+        if (impl_->queue.size() > OVERRUN) {
+            impl_->queue.clear();
+            impl_->lost = true;
+        }
+        if (THREADS) {
+            impl_->wake.notify_one();
+            return;
+        }
+        batch.swap(impl_->queue);
+        restart = impl_->lost;
+        impl_->lost = false;
     }
-    for (Packet& p : packets) impl_->queue.push_back(std::move(p));
-    if (impl_->queue.size() > OVERRUN) {
-        impl_->queue.clear();
-        impl_->lost = true;
-    }
-    impl_->wake.notify_one();
+    impl_->decode(batch, restart);   /* decode takes the lock itself to publish */
 }
 
 bool VideoDecoder::picture(Image& out, uint64_t& seq)

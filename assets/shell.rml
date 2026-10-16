@@ -25,7 +25,7 @@
 			<div id="theme-toggle" data-event-click="toggle_theme">
 				<icon data-attr-name="light ? 'moon' : 'sun'" />
 			</div>
-			<div id="window-buttons">
+			<div id="window-buttons" data-if="!web">
 				<div class="window-button minimize" data-event-click="minimize_window"><icon name="minus" /></div>
 				<div class="window-button maximize" data-event-click="maximize_window">
 					<icon data-attr-name="maximized ? 'copy' : 'square'" />

@@ -31,8 +31,10 @@ CPMAddPackage(NAME rant
   EXCLUDE_FROM_ALL YES)
 
 # Static CRT: a copied exe must run with no VC++ redistributable. Before every dependency,
-# so they all build against the same runtime.
-include("${rant_SOURCE_DIR}/tools/static_runtime.cmake")
+# so they all build against the same runtime. A web build has no runtime to pick.
+if(NOT EMSCRIPTEN)
+  include("${rant_SOURCE_DIR}/tools/static_runtime.cmake")
+endif()
 
 # FreeType is RmlUi's font engine. Its CMake spells Freetype::Freetype as an export name
 # only, so a subdirectory build has to make the alias by hand.
@@ -127,6 +129,9 @@ set(RMLUI_BACKENDS "${RmlUi_SOURCE_DIR}/Backends")
 # Every file in assets/ as a byte array, so a release is the exe alone. Regenerated when an
 # asset changes, a new asset needs a reconfigure.
 file(GLOB ASSET_FILES CONFIGURE_DEPENDS "${ASSETS}/*")
+if(EMSCRIPTEN)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/web.cmake")   # adds the fonts a page lacks
+endif()
 set(ASSETS_EMBEDDED "${CMAKE_BINARY_DIR}/assets_embedded.cpp")
 string(REPLACE ";" "$<SEMICOLON>" _asset_list "${ASSET_FILES}")
 add_custom_command(OUTPUT "${ASSETS_EMBEDDED}"
@@ -156,7 +161,6 @@ add_executable(rant_explorer
   src/video.cpp
   src/viz.cpp
   "${ASSETS_EMBEDDED}"
-  "${rant_SOURCE_DIR}/dist/rant.cpp"              # the one RANT_IMPLEMENTATION anchor
   "${RMLUI_BACKENDS}/RmlUi_Platform_SDL.cpp"
   "${RMLUI_BACKENDS}/RmlUi_Renderer_GL3.cpp")
 
@@ -172,8 +176,15 @@ target_compile_definitions(rant_explorer PRIVATE
 target_compile_definitions(rant_explorer PRIVATE RMLUI_SDL_VERSION_MAJOR=3)
 
 target_link_libraries(rant_explorer PRIVATE
-  RmlUi::Core RmlUi::Debugger SDL3::SDL3 rant::rant rant::rant_platform
-  openh264_decoder dav1d de265)
+  RmlUi::Core RmlUi::Debugger SDL3::SDL3 rant::rant openh264_decoder dav1d de265)
+
+if(EMSCRIPTEN)
+  web_target(rant_explorer)
+  return()
+endif()
+
+target_sources(rant_explorer PRIVATE "${rant_SOURCE_DIR}/dist/rant.cpp")   # the one RANT_IMPLEMENTATION anchor
+target_link_libraries(rant_explorer PRIVATE rant::rant_platform)
 
 if(WIN32)
   target_sources(rant_explorer PRIVATE rant_explorer.rc)   # the exe file icon, Logo.ico

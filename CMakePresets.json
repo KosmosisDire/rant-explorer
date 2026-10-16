@@ -48,6 +48,25 @@
       "description": "Rant from the ../rant working tree",
       "cacheVariables": { "CPM_rant_SOURCE": "${sourceDir}/../rant" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+    },
+    {
+      "name": "web",
+      "displayName": "Web (Emscripten)",
+      "description": "Ninja and the emsdk in EMSDK, Rant and rant-client from the pinned releases",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "web-local",
+      "inherits": "web",
+      "displayName": "Web (Emscripten), local Rant and client",
+      "description": "Rant from ../rant, rant-client from ../bridge-rant/client/dist",
+      "cacheVariables": {
+        "CPM_rant_SOURCE": "${sourceDir}/../rant",
+        "RANT_CLIENT_DIR": "${sourceDir}/../bridge-rant/client/dist"
+      }
     }
   ],
   "buildPresets": [
@@ -56,6 +75,8 @@
     { "name": "macos", "configurePreset": "macos", "configuration": "Release" },
     { "name": "windows-local", "configurePreset": "windows-local", "configuration": "Release" },
     { "name": "linux-local", "configurePreset": "linux-local", "configuration": "Release" },
-    { "name": "macos-local", "configurePreset": "macos-local", "configuration": "Release" }
+    { "name": "macos-local", "configurePreset": "macos-local", "configuration": "Release" },
+    { "name": "web", "configurePreset": "web" },
+    { "name": "web-local", "configurePreset": "web-local" }
   ]
 }

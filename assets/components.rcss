@@ -277,32 +277,37 @@ td.held, th.held, .kv.held, [cell].held, viz [cell-path].held { background-color
 }
 .tt-row.namespace .name { color: var(--dim); }
 
-/* The narrow column of a topic's subscription dot or a field's visual toggle. */
-.tt-cell.sub, .tt-cell.toggle {
+/* The narrow column of a topic's subscription dot or a field's visual toggle. A dot is a
+   hit box as wide as the column and as tall as a row, and its ring the child inside, so a
+   finger need not land on the ring. */
+.tt-cell.sub, .tt-cell.toggle, .sub-dot, .viz-toggle {
+	flex: 0 0 auto;
 	display: flex;
 	align-items: center;
 	justify-content: center;
 	width: 24dp;
 	padding: 0dp;
 }
+.sub-dot, .viz-toggle { height: var(--row); cursor: pointer; }
+body.touch .tt-cell.sub, body.touch .tt-cell.toggle, body.touch .sub-dot, body.touch .viz-toggle { width: 44dp; }
 
 /* Hollow while not subscribed, dim while quiet, lit while messages arrive. A preview's ring
    is dashed by decorators.cpp in its text colour, since RCSS borders are solid only. */
-.sub-dot {
+.sub-dot > span {
 	width: 12dp;
 	height: 12dp;
 	border: 1dp var(--faint);
 	border-radius: 10dp;
 	color: var(--green);
-	cursor: pointer;
 }
-.sub-dot:hover           { border-color: var(--text); }
-.sub-dot.on              { border-color: var(--green); background-color: var(--green-bg); }
-.sub-dot.on.active       { border-color: var(--green-hi); background-color: var(--green); color: var(--green-hi); }
+body.touch .sub-dot > span      { width: 16dp; height: 16dp; }
+.sub-dot:hover > span           { border-color: var(--text); }
+.sub-dot.on > span              { border-color: var(--green); background-color: var(--green-bg); }
+.sub-dot.on.active > span       { border-color: var(--green-hi); background-color: var(--green); color: var(--green-hi); }
 /* Three classes, so a preview's lack of border beats the active one's. Its dashes lie
    inside the edge, over a fill that reaches it. */
-.sub-dot.on.preview       { border-width: 0dp; decorator: dashed-ring(8 1dp); }
-.sub-dot.on.preview:hover { color: var(--text); }
+.sub-dot.on.preview > span       { border-width: 0dp; decorator: dashed-ring(8 1dp); }
+.sub-dot.on.preview:hover > span { color: var(--text); }
 
 /* ------------------------------------------------------------------- value tree */
 
@@ -401,18 +406,18 @@ body.touch .stepper {
 .head-type.pair { display: flex; align-items: center; gap: 6dp; }
 
 /* The toggle for a field's visual: an outline, filled while the visual shows. */
-.viz-toggle {
-	flex: 0 0 auto;
+.viz-toggle > span {
 	width: 12dp;
 	height: 12dp;
 	border: 1dp var(--border2);
 	border-radius: 6dp;
 	transition: background-color 0.1s, border-color 0.1s;
 }
+body.touch .viz-toggle > span { width: 16dp; height: 16dp; border-radius: 8dp; }
 
-.value-row:hover .viz-toggle,
-.viz-toggle:hover  { border-color: var(--dim); }
-.viz-toggle.on     { background-color: var(--accent); border-color: var(--accent); }
+.value-row:hover .viz-toggle > span,
+.viz-toggle:hover > span  { border-color: var(--dim); }
+.viz-toggle.on > span     { background-color: var(--accent); border-color: var(--accent); }
 
 /* ------------------------------------------------------------------------ editors */
 

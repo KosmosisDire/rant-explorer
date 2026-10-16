@@ -85,7 +85,7 @@
 								<span class="tt-cell sub">
 									<span class="sub-dot" data-if="tree_cells[i].dot" data-class-on="tree_cells[i].sub"
 										data-class-active="tree_cells[i].active" data-class-preview="tree_cells[i].preview"
-										data-event-click="toggle_sub(r.key)"></span>
+										data-event-click="toggle_sub(r.key)"><span></span></span>
 								</span>
 								<span class="tt-cell share c-topic tt-tree" data-attr-cell="r.topic_name">
 									<span class="indent" data-style-width="r.indent"></span>
@@ -218,7 +218,7 @@
 							<div data-style-width="value_progress != '' ? value_progress : '0%'"></div>
 						</div>
 						<span class="viz-toggle" data-if="value_root_toggle" data-class-on="value_root_on"
-							data-event-click="toggle_value('')"></span>
+							data-event-click="toggle_value('')"><span></span></span>
 					</div>
 					<div class="tt-head">
 						<span class="tt-cell share c-field section" col="field" keep="">Field</span>
@@ -290,7 +290,7 @@
 								</span>
 								<span class="tt-cell toggle">
 									<span class="viz-toggle" data-if="!r.gap &amp;&amp; !r.part &amp;&amp; !r.add" data-class-on="r.on"
-										data-event-click="toggle_value(r.path)"></span>
+										data-event-click="toggle_value(r.path)"><span></span></span>
 								</span>
 							</div>
 						</div>

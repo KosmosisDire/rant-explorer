@@ -761,7 +761,7 @@ viz .pair-value    { margin-left: auto; min-width: 0; color: var(--text); text-a
 	background-color: var(--panel2);
 	border: 1dp var(--border);
 	border-radius: 6dp;
-	filter: drop-shadow(var(--shadow-color) 0dp 0dp 5dp);
+	box-shadow: var(--shadow-color) 0dp 0dp 5dp;
 }
 
 /* One line of a panel: one or two cells, divided by the border between them. */
@@ -945,7 +945,7 @@ scrollbarvertical sliderarrowinc {
 	background-color: var(--panel2);
 	border: 1dp var(--border2);
 	border-radius: 6dp;
-	filter: drop-shadow(var(--shadow-color) 0dp 0dp 10dp);
+	box-shadow: var(--shadow-color) 0dp 0dp 10dp;
 }
 
 .menu-item {

@@ -24,7 +24,7 @@ body {
 	padding: 0dp 10dp;
 	background-color: var(--panel);
 	border-bottom: 1dp var(--border);
-	filter: drop-shadow(var(--shadow-color) 0dp 0dp 10dp);
+	box-shadow: var(--shadow-color) 0dp 0dp 10dp;
 	z-index: 1000;
 }
 
@@ -166,7 +166,7 @@ body {
 	display: flex;
 	flex-direction: column;
 	background-color: var(--surface);
-	filter: drop-shadow(var(--shadow-color) 0dp 0dp 15dp);
+	box-shadow: var(--shadow-color) 0dp 0dp 15dp;
 }
 
 /* A sidebar with no head starts its list a little down. */
@@ -333,7 +333,7 @@ body.compact #topbar {
 	height: 0dp;
 	padding: 0dp;
 	border-width: 0dp;
-	filter: none;
+	box-shadow: none;
 }
 
 body.compact #logo, body.compact #topbar .bar-button, body.compact #window-buttons,

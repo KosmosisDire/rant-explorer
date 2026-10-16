@@ -401,8 +401,8 @@ struct Ui {
     bool light     = false;   /* the light palette, a class on body */
     bool maximized = false;   /* picks the maximize or restore glyph */
 
-    /* The layout, as classes on body: a size from the window width, touch from the last
-       input, and whether each sidebar shows. A medium window docks one sidebar at a time, a
+    /* The layout, as classes on body: a size from the window width, touch from the main
+       pointer, and whether each sidebar shows. A medium window docks one sidebar at a time, a
        compact one opens the left sidebar over the detail. */
     Rml::String size = "wide";
     bool touch      = false;
@@ -422,6 +422,17 @@ struct Ui {
     bool web       = false;
 #endif
 };
+
+/* Whether the device's main pointer is a finger. The page knows before any input, so the
+   first tap never resizes the layout. A desktop's is a mouse. */
+#ifdef __EMSCRIPTEN__
+EM_JS(int, touch_primary, (), {
+    Module.coarse = Module.coarse || matchMedia('(pointer: coarse)');
+    return Module.coarse.matches ? 1 : 0;
+});
+#else
+static int touch_primary() { return 0; }
+#endif
 
 /* What the ui keeps on body: the theme class, a dragged width inline where the sidebar
    and column rules read their token, and a hide class per hidden column. */
@@ -2102,12 +2113,9 @@ int main(int argc, char** argv)
     bool         reload_now = false;
 
     bool running = true;
-    bool touch_input = false;   /* the last input was a finger, not a mouse */
     auto frame = [&]() {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_EVENT_FINGER_DOWN) touch_input = true;
-            else if (event.type == SDL_EVENT_MOUSE_MOTION && event.motion.which != SDL_TOUCH_MOUSEID) touch_input = false;
             switch (event.type) {
             case SDL_EVENT_QUIT:
                 running = false;
@@ -2187,13 +2195,14 @@ int main(int argc, char** argv)
         {
             const float dp = context->GetDimensions().x / context->GetDensityIndependentPixelRatio();
             const Rml::String size = dp < 600.f ? "compact" : dp < 1000.f ? "medium" : "wide";
-            if (size != ui.size || touch_input != ui.touch) {
+            const bool touch = touch_primary() != 0;
+            if (size != ui.size || touch != ui.touch) {
                 if (size != ui.size) {
                     ui.left_open  = true;
                     ui.right_open = size == "wide";
                 }
                 ui.size  = size;
-                ui.touch = touch_input;
+                ui.touch = touch;
                 ui.scrim = ui.left_open && ui.size == "compact";
                 model.DirtyVariable("layout");
                 model.DirtyVariable("left_open");

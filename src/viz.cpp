@@ -1757,7 +1757,7 @@ private:
         const double fastest = reach_[1].grow({ spin }, dt_, 1.0);
         if (turning) curl(c, s, w * (1 / spin), 0.15 * r, 5 * spin / fastest, ink.amber);
         layered(c, s, v, nullptr, [&] { c.arrow(s(0, 0, 0), s(v), ink.accent, ARROW); });
-        foot(c, c.all(), "v " + f3(length(v)) + " m/s  \xCF\x89 " + f3(spin) + " rad/s", "next " + print("%.1f", ahead) + " s");
+        foot(c, c.all(), "speed " + f3(length(v)) + " m/s  turn " + f3(spin) + " rad/s", "next " + print("%.1f", ahead) + " s");
     }
 
     void vec3s(Canvas& c, const Nodes& nodes)
@@ -1811,7 +1811,7 @@ private:
         const std::string base = child_path(path_, "force");
         const std::vector<V3> tail = history_ ? trail(base + ".x", base + ".y", base + ".z") : std::vector<V3>();
         layered(c, s, f, &tail, [&] { c.arrow(s(0, 0, 0), s(f), ink.accent, ARROW); });
-        foot(c, c.all(), "F " + f3(length(f)) + " N  \xCF\x84 " + f3(torque) + " N m");
+        foot(c, c.all(), "force " + f3(length(f)) + " N  torque " + f3(torque) + " N m");
     }
 
     /* One standard shape in a scene that grows to hold it, with its drop line. */

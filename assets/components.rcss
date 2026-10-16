@@ -529,6 +529,7 @@ select.pill-edit selectbox option:checked { color: var(--text); }
 }
 
 .icon-button {
+	min-width: var(--hit);
 	padding: 0dp 7dp;
 	color: var(--dim);
 }

@@ -180,7 +180,7 @@
 							data-event-click="send">
 							<icon name="repeat" data-if="value_repeat" /><span>Set</span>
 						</span>
-						<span class="button" data-if="value_can_compose &amp;&amp; !value_composing"
+						<span class="button iconic" data-if="value_can_compose &amp;&amp; !value_composing"
 							data-event-click="compose(true)">
 							<icon name="pencil" /><span>Compose</span>
 						</span>

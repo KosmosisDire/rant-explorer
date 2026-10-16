@@ -406,6 +406,11 @@ body.compact .sidebar.right > * { width: 100%; }
 body.compact .sidebar.right > .tt-head { display: none; }
 body.compact .c-topic-value, body.compact .c-topic-jitter, body.compact .c-type { display: none; }
 
+/* An iconic button drops its label and frame, a plain glyph like an icon button. */
+body.compact .button.iconic { min-width: var(--hit); padding: 0dp 7dp; color: var(--dim); background-color: transparent; border-width: 0dp; }
+body.compact .button.iconic span { display: none; }
+body.compact .button.iconic icon { margin-right: 0dp; }
+
 /* The grip heads the sheet, wide enough to tap, and is all a closed sheet shows. The
    sheet's head drags it too. */
 body.compact .sidebar.right > .sheet-grip {

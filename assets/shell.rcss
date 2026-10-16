@@ -510,5 +510,22 @@ body.compact .head-card > .icon-button { min-width: 26dp; height: 100%; padding:
 	width: 200dp;
 }
 
+/* A phone's menu is a sheet along the bottom over a dimmed screen. It sits in the layer's
+   flow, so the point it was opened at does not place it. */
+body.compact #menu-layer {
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-end;
+	padding: 8dp;
+	background-color: rgba(0, 0, 0, 115);
+}
+body.compact #menu-layer .menu {
+	position: static;
+	width: auto;
+	padding: 6dp;
+	border-radius: 14dp;
+	box-shadow: none;   /* RmlUi draws a stretched box's fill too wide under its shadow */
+}
+
 /* A sidebar's error line sits between its head and its body and takes what its text needs. */
 .sidebar > .error-text { flex: 0 0 auto; }

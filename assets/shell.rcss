@@ -36,14 +36,10 @@ body {
 
 /* The auto margin pushes everything after the tabs to the right edge. */
 #tabs {
-	flex: 1;
 	display: flex;
 	height: 100%;
+	margin-right: auto;
 }
-
-/* The theme toggle ends the tabs at the bar's right, and on a phone rides them to the
-   drawer's bottom right corner. */
-#tabs .theme-toggle { margin-left: auto; align-self: center; }
 
 /* The active tab is told by colour and an accent underline, never by weight or a fill.
    The underline is always there, transparent while off, so nothing moves. */
@@ -239,6 +235,8 @@ body.touch .pane-head { padding: 0dp var(--pad); }
 
 .pane-foot {
 	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
 	padding: var(--pad);
 	border-top: 1dp var(--border);
 }
@@ -343,12 +341,21 @@ body.compact #topbar {
 body.compact #logo, body.compact #topbar .bar-button, body.compact #window-buttons,
 body.compact #statusbar, body.compact .splitter { display: none; }
 
+/* With the top bar folded away, the theme toggle moves to the foot of a phone's sidebar,
+   which is as tall as a head so the button fits. The Nodes sidebar has that foot only here. */
+.foot-theme, .pane-foot.phone-only { display: none; }
+body.compact .foot-theme { display: flex; margin-left: auto; }
+body.compact .pane-foot.phone-only { display: flex; }
+body.compact .pane-foot { height: var(--bar); padding: 0dp 6dp 0dp var(--pad); }
+
 body.compact .tab-content { position: relative; }
 body.compact .viz-area { margin: 68dp 0dp 12dp 0dp; overflow: hidden; }   /* clear of the floating head and the grip alike */
 
-body.compact #topbar .bar-button.left-toggle, body.compact #topbar .bar-button.theme-toggle {
+body.compact #topbar .bar-button.left-toggle {
 	display: flex;
 	position: absolute;
+	left: 12dp;
+	top: 12dp;
 	width: 44dp;
 	height: 44dp;
 	background-color: var(--float);
@@ -356,8 +363,6 @@ body.compact #topbar .bar-button.left-toggle, body.compact #topbar .bar-button.t
 	border-radius: 10dp;
 	color: var(--text);
 }
-body.compact #topbar .bar-button.left-toggle  { left: 12dp; top: 12dp; }
-body.compact #topbar .bar-button.theme-toggle { right: 12dp; top: 100vh; margin-top: -56dp; }
 
 body.compact.left-over #topbar .bar-button.left-toggle { display: none; }
 

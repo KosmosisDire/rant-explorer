@@ -24,9 +24,9 @@
 				<div class="tab" data-class-on="tab == 'mesh'" data-event-click="set_tab('mesh')">
 					<icon name="waypoints" /><span>Mesh</span>
 				</div>
-				<div class="bar-button theme-toggle" data-event-click="toggle_theme">
-					<icon data-attr-name="light ? 'moon' : 'sun'" />
-				</div>
+			</div>
+			<div class="bar-button" data-event-click="toggle_theme">
+				<icon data-attr-name="light ? 'moon' : 'sun'" />
 			</div>
 			<div class="bar-button right-toggle" data-class-on="right_open" data-event-click="toggle_sidebar('right')">
 				<icon name="panel-right" />
@@ -111,6 +111,7 @@
 					<div class="pane-foot">
 						<span class="section" data-if="!filtering">{{topic_count}} topics</span>
 						<span class="section" data-if="filtering">{{topic_matched}} / {{topic_count}} topics</span>
+						<span class="icon-button foot-theme" data-event-click="toggle_theme"><icon data-attr-name="light ? 'moon' : 'sun'" /></span>
 					</div>
 				</div>
 
@@ -320,6 +321,10 @@
 								</div>
 							</div>
 						</div>
+					</div>
+					<div class="pane-foot phone-only">
+						<span class="section">{{peer_count}} nodes</span>
+						<span class="icon-button foot-theme" data-event-click="toggle_theme"><icon data-attr-name="light ? 'moon' : 'sun'" /></span>
 					</div>
 				</div>
 

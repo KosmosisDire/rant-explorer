@@ -165,10 +165,12 @@ body {
 	height: 100%;
 	display: flex;
 	flex-direction: column;
-	background-color: var(--panel);
+	background-color: var(--surface);
 	filter: drop-shadow(var(--shadow-color) 0dp 0dp 15dp);
-	padding-top: var(--pad);
 }
+
+/* A sidebar with no head starts its list a little down. */
+.sidebar > .pane-body:first-child { padding-top: var(--pad); }
 
 .sidebar.left  { width: var(--sidebar-left); }
 .sidebar.right { width: var(--sidebar-right); }
@@ -202,18 +204,22 @@ body.left-over .sidebar.left {
 .detail {
 	flex: 1;
 	height: 100%;
-	padding-top: var(--pad);
+	background-color: var(--ground);
 }
 
+/* A head is a panel band, except the detail's own, which stays on the ground. */
 .pane-head {
 	flex: 0 0 auto;
 	display: flex;
 	align-items: center;
 	gap: 6dp;
-	height: 40dp;
+	height: var(--bar);
 	padding: 0dp 10dp 0dp var(--pad);
+	background-color: var(--panel);
 	border-bottom: 1dp var(--border);
 }
+
+.detail > .pane-head { background-color: transparent; border-bottom-width: 0dp; }
 
 .pane-head .section {
 	margin: 0dp;

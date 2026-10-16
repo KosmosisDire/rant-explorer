@@ -22,6 +22,10 @@ tr     { display: table-row; }
 td, th { display: table-cell; }
 
 body {
+	/* Three grounds, darkest to lightest: the detail pane, a sidebar's rows, and every bar
+	   and head. The detail is darkest so the sidebars beside it stand apart. */
+	--ground:  rgba(10, 10, 10, 255);
+	--surface: rgba(20, 20, 20, 255);
 	--bg:      rgba(20, 20, 20, 255);
 	--panel:   rgba(27, 27, 27, 255);
 	--panel2:  rgba(33, 33, 33, 255);
@@ -52,9 +56,9 @@ body {
 	--stripe: rgba(0,0,0,20);
 	--cell-hover: rgba(255, 255, 255, 10);
 
-	/* A visual's card, a shade under the pane so the drawing has contrast. The grid is
-	   translucent so a line across a filled run tints it instead of cutting through it. */
-	--viz-bg:     rgba(15, 15, 15, 255);
+	/* A visual's card, a shade above the ground it sits on. The grid is translucent so a
+	   line across a filled run tints it instead of cutting through it. */
+	--viz-bg:     rgba(16, 16, 16, 255);
 	--viz-grid:   rgba(255, 255, 255, 18);
 	--viz-trail:  rgba(122, 53, 65, 255);
 	--viz-ground: rgba(74, 74, 74, 255);
@@ -68,6 +72,13 @@ body {
 	--row:    28dp;   /* a tree table row, measured at runtime by the windowing */
 	--head:   24dp;   /* a tree table header */
 	--scrollbar: 8dp;
+
+	/* What a finger needs more room for, swapped by body.touch. */
+	--hit:   24dp;   /* a button or an icon button */
+	--field: 30dp;   /* a text filter */
+	--list:  36dp;   /* a node list row */
+	--item:  26dp;   /* a menu line */
+	--bar:   40dp;   /* a pane head */
 
 	/* The shell slots, so a tab never hard codes a width. A splitter drag overrides them
 	   inline on body. */
@@ -85,7 +96,19 @@ body {
 	--c-value:        104;
 }
 
+body.touch {
+	--row:   44dp;
+	--head:  28dp;
+	--hit:   40dp;
+	--field: 42dp;
+	--list:  48dp;
+	--item:  44dp;
+	--bar:   52dp;
+}
+
 body.light {
+	--ground:  rgba(236, 236, 236, 255);
+	--surface: rgba(248, 248, 248, 255);
 	--bg:      rgba(244, 244, 244, 255);
 	--panel:   rgba(255, 255, 255, 255);
 	--panel2:  rgba(244, 244, 244, 255);
@@ -122,8 +145,8 @@ body.light {
 	--purple:     rgba(120, 78, 190, 255);
 }
 
-/* The type scale, in the mockup's CSS px. main.cpp registers the OS fonts under these
-   two family names, so one stylesheet serves every platform. */
+/* The type scale, in the mockup's CSS px. main.cpp registers IBM Plex under these two
+   family names. */
 body {
 	font-family: ui-sans;
 	font-size: 13dp;

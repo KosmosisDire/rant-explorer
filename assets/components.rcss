@@ -100,7 +100,7 @@ icon.kind.task     { color: var(--green); }
 	display: flex;
 	align-items: center;
 	gap: 7dp;
-	height: 30dp;
+	height: var(--field);
 	padding: 0dp 9dp;
 	color: var(--faint);
 	background-color: var(--panel2);
@@ -138,7 +138,7 @@ td.held, th.held, .kv.held, [cell].held, viz [cell-path].held { background-color
 	display: flex;
 	align-items: center;
 	gap: 9dp;
-	height: 36dp;
+	height: var(--list);
 	margin: 0dp 6dp;
 	padding: 0dp var(--gap);
 	border-radius: var(--radius);
@@ -523,7 +523,7 @@ select.pill-edit selectbox option:checked { color: var(--text); }
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	height: 24dp;
+	height: var(--hit);
 	border-radius: 4dp;
 	cursor: pointer;
 }
@@ -949,7 +949,7 @@ scrollbarvertical sliderarrowinc {
 	display: flex;
 	align-items: center;
 	gap: 8dp;
-	height: 26dp;
+	height: var(--item);
 	padding: 0dp 8dp;
 	font-size: 12dp;
 	color: var(--text);

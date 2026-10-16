@@ -10,7 +10,8 @@
 	<body data-model="shell">
 
 		<div id="topbar" window-drag="">
-			<div class="bar-button" data-class-on="left_open" data-class-off="tab == 'mesh'"
+			<div class="bar-button left-toggle" data-class-on="left_open"
+				data-class-off="tab == 'mesh' &amp;&amp; layout != 'compact'"
 				data-event-click="toggle_sidebar('left')"><icon name="panel-left" /></div>
 			<img id="logo" src="Logo.png" window-drag="" />
 			<div id="tabs" window-drag="">
@@ -27,7 +28,7 @@
 			<div class="bar-button" data-event-click="toggle_theme">
 				<icon data-attr-name="light ? 'moon' : 'sun'" />
 			</div>
-			<div class="bar-button" data-class-on="right_open" data-event-click="toggle_sidebar('right')">
+			<div class="bar-button right-toggle" data-class-on="right_open" data-event-click="toggle_sidebar('right')">
 				<icon name="panel-right" />
 			</div>
 			<div id="window-buttons" data-if="!web">
@@ -160,6 +161,7 @@
 				</div>
 
 				<div class="sidebar right">
+					<div class="sheet-grip"></div>
 					<div class="pane-head" data-attr-topic="topic.key" path="" paste="">
 						<span class="section" data-if="value_type == ''">Value</span>
 						<span class="head-type mono" copy="type" data-if="value_type != ''">{{value_type}}</span>
@@ -505,6 +507,7 @@
 				</div>
 
 				<div class="sidebar right">
+					<div class="sheet-grip"></div>
 					<div class="pane-head">
 						<span class="section">Node log</span>
 						<span class="pill bad" data-class-on="log_error" data-event-click="toggle_log(0)">ERR</span>
@@ -562,6 +565,7 @@
 				</div>
 
 				<div class="sidebar right">
+					<div class="sheet-grip"></div>
 					<div class="pane-head">
 						<span class="section" data-if="mesh.mode == 0">Mesh</span>
 						<span class="head-type" copy="" data-if="mesh.mode == 1">{{mesh.title}}</span>

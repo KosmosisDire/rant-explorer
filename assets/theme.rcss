@@ -28,6 +28,7 @@ body {
 	--surface: rgba(20, 20, 20, 255);
 	--bg:      rgba(20, 20, 20, 255);
 	--panel:   rgba(27, 27, 27, 255);
+	--float:   rgba(27, 27, 27, 240);   /* a control floating over a visual */
 	--panel2:  rgba(33, 33, 33, 255);
 	--panel3:  rgba(40, 40, 40, 255);
 	--border:  rgba(42, 42, 42, 255);
@@ -84,6 +85,7 @@ body {
 	   inline on body. */
 	--sidebar-left:  470dp;
 	--sidebar-right: 340dp;
+	--sheet:         220dp;   /* a phone's sheet, moved inline as it is dragged */
 
 	/* The tree table columns' weights, each column's share of its table's width, overridden
 	   the same way when a header edge is dragged. */
@@ -111,6 +113,7 @@ body.light {
 	--surface: rgba(248, 248, 248, 255);
 	--bg:      rgba(244, 244, 244, 255);
 	--panel:   rgba(255, 255, 255, 255);
+	--float:   rgba(255, 255, 255, 240);
 	--panel2:  rgba(244, 244, 244, 255);
 	--panel3:  rgba(236, 236, 236, 255);
 	--border:  rgba(225, 220, 220, 255);

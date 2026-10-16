@@ -305,7 +305,139 @@ body.hide-value .c-value { display: none; }
 	min-height: 0;
 }
 
-.mesh-info { padding: 0dp var(--pad) var(--pad) var(--pad); }
+.mesh-info { padding: var(--pad); }
+
+/* --------------------------------------------------------------------- compact */
+
+/* A phone shows the detail whole. The top bar folds away: its left toggle floats as the
+   drawer button and its tabs head the drawer. The left sidebar is that drawer, the right
+   one a sheet along the bottom. */
+.sheet-grip { display: none; }
+
+body.compact #topbar {
+	position: absolute;
+	left: 0dp;
+	top: 0dp;
+	right: 0dp;
+	height: 0dp;
+	padding: 0dp;
+	border-width: 0dp;
+	filter: none;
+}
+
+body.compact #logo, body.compact #topbar .bar-button, body.compact #window-buttons,
+body.compact #statusbar, body.compact .splitter { display: none; }
+
+body.compact .tab-content { position: relative; }
+body.compact .viz-area { margin-top: 68dp; }
+
+body.compact #topbar .bar-button.left-toggle {
+	display: flex;
+	position: absolute;
+	left: 12dp;
+	top: 12dp;
+	width: 44dp;
+	height: 44dp;
+	background-color: var(--float);
+	border: 1dp var(--border2);
+	border-radius: 10dp;
+	color: var(--text);
+}
+
+body.compact.left-over #topbar .bar-button.left-toggle { display: none; }
+
+/* The drawer and its tabs slide together, so both sit at the same width. */
+body.compact #tabs, body.compact .sidebar.left {
+	width: 86%;
+	max-width: 340dp;
+	transform: translateX(-100%);
+	transition: transform 0.22s cubic-out;
+}
+
+body.compact.left-over #tabs, body.compact.left-over .sidebar.left { transform: translateX(0%); }
+
+body.compact #tabs {
+	position: absolute;
+	left: 0dp;
+	top: 0dp;
+	height: var(--bar);
+	margin: 0dp;
+	background-color: var(--panel);
+	border-bottom: 1dp var(--border);
+}
+
+body.compact .tab { flex: 1; justify-content: center; }
+
+body.compact .sidebar.left, body.compact.left-closed .sidebar.left {
+	position: absolute;
+	left: 0dp;
+	top: 0dp;
+	bottom: 0dp;
+	height: auto;
+	padding-top: var(--bar);
+	z-index: 600;
+}
+
+body.compact .sidebar.left > * { width: 100%; }
+
+/* The drawer floats, so its inner corners round, the tabs on its top edge with it. */
+body.compact .sidebar.left { border-radius: 0dp 16dp 16dp 0dp; }
+body.compact #tabs { border-radius: 0dp 16dp 0dp 0dp; }
+
+/* The sheet: the right sidebar along the bottom, at the height main.cpp sets. */
+body.compact .sidebar.right, body.compact.right-closed .sidebar.right {
+	position: absolute;
+	left: 0dp;
+	right: 0dp;
+	bottom: 0dp;
+	width: auto;
+	height: var(--sheet);
+	border-top: 1dp var(--border2);
+	border-radius: 16dp 16dp 0dp 0dp;
+	transition: height 0.22s cubic-out;
+	z-index: 500;
+}
+
+body.compact.right-closed .sidebar.right { height: 0dp; border-top-width: 0dp; }
+body.compact .sidebar.right > * { width: 100%; }
+body.compact .sidebar.right > .pane-head { border-radius: 16dp 16dp 0dp 0dp; padding-top: 10dp; height: auto; min-height: var(--bar); }
+body.compact .sidebar.right > .tt-head { display: none; }
+body.compact .c-topic-jitter { display: none; }
+
+body.compact .sidebar.right > .sheet-grip {
+	display: block;
+	position: absolute;
+	left: 50%;
+	top: 6dp;
+	width: 40dp;
+	height: 5dp;
+	margin-left: -20dp;
+	border-radius: 3dp;
+	background-color: var(--border2);
+	z-index: 1;
+}
+
+/* The detail fills the screen under the drawer button. The topic's head floats beside it. */
+body.compact .detail > .pane-body { padding: 68dp 16dp 16dp 16dp; }
+body.compact .detail > .pane-body.feed { padding: 0dp; }
+body.compact .detail.graph > .pane-head { padding-left: 68dp; height: 68dp; }
+
+body.compact .feed .detail-head {
+	position: absolute;
+	left: 68dp;
+	right: 12dp;
+	top: 12dp;
+	height: 44dp;
+	padding: 0dp 14dp;
+	z-index: 10;
+	overflow: hidden;
+	background-color: var(--float);
+	border: 1dp var(--border2);
+	border-radius: 10dp;
+}
+
+body.compact .feed .detail-head .hero { font-size: 15dp; }
+body.compact .feed .detail-head .tag { display: none; }
 
 /* ------------------------------------------------------------------------ menu */
 

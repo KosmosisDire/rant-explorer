@@ -1228,13 +1228,27 @@ int main(int argc, char** argv)
         ctor.Bind("mesh",            &ui.mesh);
         ctor.Bind("maximized",       &ui.maximized);
         ctor.Bind("web",             &ui.web);
+        ctor.Bind("layout",          &ui.size);
         ctor.Bind("left_open",       &ui.left_open);
         ctor.Bind("right_open",      &ui.right_open);
         ctor.Bind("scrim",           &ui.scrim);
 
+        /* On a phone a pick closes the drawer and opens the sheet on what was picked. */
+        auto picked = [&ui](Rml::DataModelHandle handle, Rml::Event& event) {
+            if (ui.size != "compact") return;
+            ui.left_open  = false;
+            ui.right_open = true;
+            ui.scrim      = false;
+            handle.DirtyVariable("left_open");
+            handle.DirtyVariable("right_open");
+            handle.DirtyVariable("scrim");
+            apply_body(event.GetTargetElement()->GetOwnerDocument(), ui);
+        };
         ctor.BindEventCallback("select_node",
-            [&capture](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
-                if (!args.empty()) capture.select(args[0].Get<Rml::String>());
+            [&capture, picked](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList& args) {
+                if (args.empty()) return;
+                capture.select(args[0].Get<Rml::String>());
+                picked(handle, event);
             });
         ctor.BindEventCallback("toggle_theme",
             [&ui](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList&) {
@@ -1269,7 +1283,7 @@ int main(int argc, char** argv)
                 const bool left = args[0].Get<Rml::String>() == "left";
                 bool& open = left ? ui.left_open : ui.right_open;
                 open = !open;
-                if (open && ui.size != "wide") (left ? ui.right_open : ui.left_open) = false;
+                if (open && ui.size == "medium") (left ? ui.right_open : ui.left_open) = false;
                 ui.scrim = ui.left_open && ui.size == "compact";
                 handle.DirtyVariable("left_open");
                 handle.DirtyVariable("right_open");
@@ -1357,8 +1371,8 @@ int main(int argc, char** argv)
                 event.StopPropagation();   /* the row under the caret must not also select */
             });
         ctor.BindEventCallback("click_row",
-            [&ui, &capture, &editor, toggle_branch](Rml::DataModelHandle handle, Rml::Event&,
-                                                    const Rml::VariantList& args) {
+            [&ui, &capture, &editor, toggle_branch, picked](Rml::DataModelHandle handle, Rml::Event& event,
+                                                            const Rml::VariantList& args) {
                 if (args.size() < 2) return;
                 const Rml::String key = args[1].Get<Rml::String>();
                 if (key.empty()) {
@@ -1371,6 +1385,7 @@ int main(int argc, char** argv)
                 /* Selecting only previews: the watch lets go when another row is picked,
                    unless a subscribe or a pinned card keeps it. */
                 capture.watch(key);
+                picked(handle, event);
             });
         /* Letting a topic go drops its pinned cards, which would have nothing to show, and
            ends its watch, so a preview lets go too. Keeping the selected one watches it again. */
@@ -2109,6 +2124,7 @@ int main(int argc, char** argv)
                 ui.size  = size;
                 ui.touch = touch_input;
                 ui.scrim = ui.left_open && ui.size == "compact";
+                model.DirtyVariable("layout");
                 model.DirtyVariable("left_open");
                 model.DirtyVariable("right_open");
                 model.DirtyVariable("scrim");

@@ -319,15 +319,16 @@ td.held, th.held, .kv.held, [cell].held, viz [cell-path].held { background-color
 	line-height: 1.2;
 }
 
-/* The value clips, never wraps. */
+/* The value clips, never wraps. Its text clips, not the round box, which would clip
+   through a stencil mask every frame. */
 .value-row .val {
 	flex: 0 1 auto;
 	min-width: 0;
 	padding: 1dp 6dp;
 	white-space: nowrap;
-	overflow: hidden;
 	color: var(--text);
 }
+.value-row .val > span { display: block; overflow: hidden; }
 
 .value-row.branch .name { color: var(--dim); }
 .value-row.gap          { cursor: pointer; }

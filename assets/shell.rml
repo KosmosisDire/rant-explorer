@@ -256,7 +256,7 @@
 									<span class="val mono" data-if="r.editor == ''"
 										data-class-ok="value_cells[i].tone == 1"
 										data-class-bad="value_cells[i].tone == 2"
-										data-class-busy="value_cells[i].tone == 3">{{value_cells[i].text}}</span>
+										data-class-busy="value_cells[i].tone == 3"><span>{{value_cells[i].text}}</span></span>
 									<input type="text" class="pill-edit mono" data-if="r.editor == 'text'"
 										data-attr-value="value_cells[i].text" data-attr-size="value_cells[i].size"
 										data-class-bad="value_cells[i].bad" data-class-writing="value_cells[i].writing"

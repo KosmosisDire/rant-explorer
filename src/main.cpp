@@ -111,6 +111,25 @@ public:
     }
 };
 
+#ifdef __EMSCRIPTEN__
+/* A page hands the browser every key the explorer has no use for, so F11, reload, zoom and
+   the tab keys still work. SDL leaves a key to the browser when no event is queued for it. */
+bool SDLCALL page_keys(void* userdata, SDL_Event* event)
+{
+    if (event->type != SDL_EVENT_KEY_DOWN && event->type != SDL_EVENT_KEY_UP) return true;
+    const SDL_Scancode code = event->key.scancode;
+    if ((code >= SDL_SCANCODE_F1 && code <= SDL_SCANCODE_F12) || (code >= SDL_SCANCODE_F13 && code <= SDL_SCANCODE_F24))
+        return false;
+    const Rml::Element* focus = static_cast<Rml::Context*>(userdata)->GetFocusElement();
+    const Rml::String   tag   = focus ? focus->GetTagName() : Rml::String();
+    const bool typing = tag == "input" || tag == "textarea" || tag == "select";
+    const SDL_Keycode key = event->key.key;
+    if (event->key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI))
+        return key == SDLK_C || (typing && (key == SDLK_A || key == SDLK_V || key == SDLK_X || key == SDLK_Z || key == SDLK_Y));
+    return typing || key == SDLK_ESCAPE;
+}
+#endif
+
 /* RmlUi reports a bad selector or a missing file through the log, which a windowed build
    has nowhere to show, so the newest complaint goes in the status bar. */
 class ExplorerSystemInterface : public SystemInterface_SDL {
@@ -995,6 +1014,9 @@ int main(int argc, char** argv)
     context->SetDensityIndependentPixelRatio(SDL_GetWindowPixelDensity(window) * zoom);
     Rml::Debugger::Initialise(context);
     frame_init(window, context);
+#ifdef __EMSCRIPTEN__
+    SDL_SetEventFilter(page_keys, context);
+#endif
 
     Capture capture(cap_opts);
     ink_init();

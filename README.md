@@ -19,7 +19,8 @@ a service.
 A card's right click menu saves it as a PNG or records it as an MP4 or a GIF. On Linux the
 save dialog needs `xdg-desktop-portal` or `zenity`.
 
-`F12` toggles the RmlUi debugger and `F5` reloads the assets. `RANT_UI_ZOOM` scales the
+`F12` toggles the RmlUi debugger and `F5` reloads the assets. A page leaves both to the
+browser, with every other key it has no use for. `RANT_UI_ZOOM` scales the
 whole UI. The exe carries its `assets/` embedded, so a copy runs on its own. An exe built
 here reads the RML and RCSS from this tree's `assets/` instead, so an edit shows in the
 running window. `RANT_UI_ASSETS` points at any other directory.

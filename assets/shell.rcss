@@ -402,7 +402,7 @@ body.compact.right-closed .sidebar.right { height: 0dp; border-top-width: 0dp; }
 body.compact .sidebar.right > * { width: 100%; }
 body.compact .sidebar.right > .pane-head { border-radius: 16dp 16dp 0dp 0dp; padding-top: 10dp; height: auto; min-height: var(--bar); }
 body.compact .sidebar.right > .tt-head { display: none; }
-body.compact .c-topic-jitter { display: none; }
+body.compact .c-topic-value, body.compact .c-topic-jitter, body.compact .c-type { display: none; }
 
 /* The grip is a strip along the sheet's top edge, wide enough to tap, holding the pill. The
    sheet's head drags it too. */

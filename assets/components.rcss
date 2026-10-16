@@ -606,7 +606,9 @@ select.pill-edit selectbox option:checked { color: var(--text); }
 .viz-pin, .viz-close          { opacity: 0; transition: opacity 0.1s; }
 .viz-card:hover .viz-pin,
 .viz-card:hover .viz-close,
-.viz-pin.on                   { opacity: 1; }
+.viz-pin.on,
+body.touch .viz-pin,
+body.touch .viz-close         { opacity: 1; }   /* a finger never hovers */
 
 /* A card pinned from another topic names that topic before its field. */
 .viz-topic { color: var(--faint); margin-right: 6dp; }

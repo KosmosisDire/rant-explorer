@@ -864,9 +864,6 @@ int main(int argc, char** argv)
 
     SDL_WindowFlags flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE |
                             SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_BORDERLESS;
-#ifdef __EMSCRIPTEN__
-    flags |= SDL_WINDOW_FILL_DOCUMENT;   /* the canvas takes the page and follows its size */
-#endif
     SDL_Window* window = SDL_CreateWindow("Rant Explorer", 1400, 900, flags);
     if (!window) {
         std::fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());

@@ -10,6 +10,8 @@
 	<body data-model="shell">
 
 		<div id="topbar" window-drag="">
+			<div class="bar-button" data-class-on="left_open" data-class-off="tab == 'mesh'"
+				data-event-click="toggle_sidebar('left')"><icon name="panel-left" /></div>
 			<img id="logo" src="Logo.png" window-drag="" />
 			<div id="tabs" window-drag="">
 				<div class="tab" data-class-on="tab == 'topics'" data-event-click="set_tab('topics')">
@@ -22,8 +24,11 @@
 					<icon name="waypoints" /><span>Mesh</span>
 				</div>
 			</div>
-			<div id="theme-toggle" data-event-click="toggle_theme">
+			<div class="bar-button" data-event-click="toggle_theme">
 				<icon data-attr-name="light ? 'moon' : 'sun'" />
+			</div>
+			<div class="bar-button" data-class-on="right_open" data-event-click="toggle_sidebar('right')">
+				<icon name="panel-right" />
 			</div>
 			<div id="window-buttons" data-if="!web">
 				<div class="window-button minimize" data-event-click="minimize_window"><icon name="minus" /></div>
@@ -108,7 +113,7 @@
 					</div>
 				</div>
 
-				<div class="edge splitter">
+				<div class="edge splitter left">
 					<div class="grip" data-event-dragstart="drag_sidebar('left')"
 						data-event-drag="drag_sidebar('left')"></div>
 				</div>
@@ -149,7 +154,7 @@
 					</div>
 				</div>
 
-				<div class="edge splitter">
+				<div class="edge splitter right">
 					<div class="grip" data-event-dragstart="drag_sidebar('right')"
 						data-event-drag="drag_sidebar('right')"></div>
 				</div>
@@ -299,7 +304,7 @@
 					</div>
 				</div>
 
-				<div class="edge splitter">
+				<div class="edge splitter left">
 					<div class="grip" data-event-dragstart="drag_sidebar('left')"
 						data-event-drag="drag_sidebar('left')"></div>
 				</div>
@@ -494,7 +499,7 @@
 					</div>
 				</div>
 
-				<div class="edge splitter">
+				<div class="edge splitter right">
 					<div class="grip" data-event-dragstart="drag_sidebar('right')"
 						data-event-drag="drag_sidebar('right')"></div>
 				</div>
@@ -551,7 +556,7 @@
 					<mesh-graph></mesh-graph>
 				</div>
 
-				<div class="edge splitter">
+				<div class="edge splitter right">
 					<div class="grip" data-event-dragstart="drag_sidebar('right')"
 						data-event-drag="drag_sidebar('right')"></div>
 				</div>
@@ -616,6 +621,8 @@
 				</div>
 
 			</div>
+
+			<div id="scrim" data-if="scrim" data-event-click="toggle_sidebar('left')"></div>
 
 		</div>
 

@@ -421,6 +421,14 @@ struct Ui {
 
     bool light     = false;   /* the light palette, a class on body */
     bool maximized = false;   /* picks the maximize or restore glyph */
+
+    /* The layout, as classes on body: a size from the window width, touch from the last
+       input, and whether each sidebar shows. A medium window docks one sidebar at a time, a
+       compact one opens the left sidebar over the detail. */
+    Rml::String size = "wide";
+    bool touch      = false;
+    bool left_open  = true, right_open = true;
+    bool scrim      = false;   /* the left sidebar is over, so a tap beside it closes it */
 #ifdef __EMSCRIPTEN__
     bool web       = true;    /* the browser owns the window, so no window buttons */
 #else
@@ -434,6 +442,11 @@ void apply_body(Rml::ElementDocument* document, const Ui& ui)
 {
     if (!document) return;
     document->SetClass("light", ui.light);
+    for (const char* size : { "wide", "medium", "compact" }) document->SetClass(size, ui.size == size);
+    document->SetClass("touch", ui.touch);
+    document->SetClass("left-closed", !ui.left_open);
+    document->SetClass("left-over", ui.left_open && ui.size == "compact");
+    document->SetClass("right-closed", !ui.right_open);
     if (ui.sidebar_left > 0)
         document->SetProperty("--sidebar-left", Rml::CreateString("%.0fdp", ui.sidebar_left));
     if (ui.sidebar_right > 0)
@@ -1236,6 +1249,9 @@ int main(int argc, char** argv)
         ctor.Bind("mesh",            &ui.mesh);
         ctor.Bind("maximized",       &ui.maximized);
         ctor.Bind("web",             &ui.web);
+        ctor.Bind("left_open",       &ui.left_open);
+        ctor.Bind("right_open",      &ui.right_open);
+        ctor.Bind("scrim",           &ui.scrim);
 
         ctor.BindEventCallback("select_node",
             [&capture](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
@@ -1265,6 +1281,21 @@ int main(int argc, char** argv)
                 if (args.empty()) return;
                 ui.tab = args[0].Get<Rml::String>();
                 handle.DirtyVariable("tab");
+            });
+        /* A top bar toggle shows or hides its sidebar, and a tap beside one that is over
+           closes it. */
+        ctor.BindEventCallback("toggle_sidebar",
+            [&ui](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList& args) {
+                if (args.empty()) return;
+                const bool left = args[0].Get<Rml::String>() == "left";
+                bool& open = left ? ui.left_open : ui.right_open;
+                open = !open;
+                if (open && ui.size != "wide") (left ? ui.right_open : ui.left_open) = false;
+                ui.scrim = ui.left_open && ui.size == "compact";
+                handle.DirtyVariable("left_open");
+                handle.DirtyVariable("right_open");
+                handle.DirtyVariable("scrim");
+                apply_body(event.GetTargetElement()->GetOwnerDocument(), ui);
             });
         /* One splitter's grip: dragstart measures, every drag event after it sets the width.
            The sidebar is the splitter's neighbour, since every tab has its own. */
@@ -2006,9 +2037,12 @@ int main(int argc, char** argv)
     bool         reload_now = false;
 
     bool running = true;
+    bool touch_input = false;   /* the last input was a finger, not a mouse */
     auto frame = [&]() {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_FINGER_DOWN) touch_input = true;
+            else if (event.type == SDL_EVENT_MOUSE_MOTION && event.motion.which != SDL_TOUCH_MOUSEID) touch_input = false;
             switch (event.type) {
             case SDL_EVENT_QUIT:
                 running = false;
@@ -2082,6 +2116,26 @@ int main(int argc, char** argv)
             model.DirtyAllVariables();
         }
         if (ui.note_frames && --ui.note_frames == 0) ui.note.clear();
+
+        /* The size follows the window in dp, so the zoom counts. Every size starts with the
+           left sidebar open, to pick from, and a narrower one with the right closed. */
+        {
+            const float dp = context->GetDimensions().x / context->GetDensityIndependentPixelRatio();
+            const Rml::String size = dp < 600.f ? "compact" : dp < 1000.f ? "medium" : "wide";
+            if (size != ui.size || touch_input != ui.touch) {
+                if (size != ui.size) {
+                    ui.left_open  = true;
+                    ui.right_open = size == "wide";
+                }
+                ui.size  = size;
+                ui.touch = touch_input;
+                ui.scrim = ui.left_open && ui.size == "compact";
+                model.DirtyVariable("left_open");
+                model.DirtyVariable("right_open");
+                model.DirtyVariable("scrim");
+                apply_body(document, ui);
+            }
+        }
 
         /* The traffic counters feed the topic tree's rates and the mesh graph. */
         capture.set_traffic(ui.tab == "topics" || ui.tab == "mesh");

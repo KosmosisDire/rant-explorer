@@ -21,7 +21,7 @@ body {
 	align-items: center;
 	gap: 10dp;
 	height: 42dp;
-	padding-left: 10dp;
+	padding: 0dp 10dp;
 	background-color: var(--panel);
 	border-bottom: 1dp var(--border);
 	filter: drop-shadow(var(--shadow-color) 0dp 0dp 10dp);
@@ -66,7 +66,10 @@ body {
 .tab icon   { font-size: 15dp; }
 .tab .count { font-size: 10dp; font-weight: normal; color: var(--faint); }
 
-#theme-toggle {
+/* The theme and the sidebar toggles. A toggle is lit while its sidebar shows and dims where
+   the tab has no such sidebar, so nothing beside it moves. */
+.bar-button {
+	flex: 0 0 auto;
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -77,13 +80,16 @@ body {
 	color: var(--dim);
 }
 
-#theme-toggle:hover { color: var(--text); background-color: var(--panel3); }
+.bar-button:hover { color: var(--text); background-color: var(--panel3); }
+.bar-button.on    { color: var(--text); }
+.bar-button.off   { opacity: 0.35; pointer-events: none; }
 
 /* The window's own buttons, the topbar being its title bar. They run the full height to
    the right edge, where a flung pointer lands on close. */
 #window-buttons {
 	display: flex;
 	height: 100%;
+	margin-right: -10dp;   /* past the bar's padding, so close meets the corner */
 	border-left: 1dp var(--border);
 }
 
@@ -132,6 +138,18 @@ body {
 	   status bar off. This opts out, handing the overflow to the pane that scrolls. */
 	min-height: 0;
 	display: flex;
+	position: relative;
+}
+
+/* Under a sidebar that is over the detail, so a tap beside the sidebar closes it. */
+#scrim {
+	position: absolute;
+	left: 0dp;
+	top: 0dp;
+	right: 0dp;
+	bottom: 0dp;
+	z-index: 550;
+	background-color: rgba(0, 0, 0, 115);
 }
 
 /* One tab: a row of sidebars, splitters and the detail pane. A tab may leave any out. */
@@ -154,6 +172,28 @@ body {
 
 .sidebar.left  { width: var(--sidebar-left); }
 .sidebar.right { width: var(--sidebar-right); }
+
+/* A sidebar opens and closes by its width. Its contents keep their full width, held to the
+   edge that moves, so they slide rather than reflow. */
+.sidebar { overflow: hidden; transition: width 0.2s cubic-out; }
+.sidebar.left  { align-items: flex-end; }
+.sidebar.left > *  { flex-shrink: 0; width: var(--sidebar-left); }
+.sidebar.right > * { flex-shrink: 0; width: var(--sidebar-right); }
+
+/* Where each sidebar sits, from classes main.cpp puts on body: docked unless closed, or over
+   the detail pane on a phone. */
+body.left-closed .sidebar.left, body.right-closed .sidebar.right { width: 0dp; }
+body.left-closed .splitter.left, body.right-closed .splitter.right { display: none; }
+
+body.left-over .tab-content { position: relative; }
+body.left-over .splitter.left { display: none; }
+body.left-over .sidebar.left {
+	position: absolute;
+	left: 0dp;
+	top: 0dp;
+	bottom: 0dp;
+	z-index: 600;
+}
 
 /* The edge between a sidebar and the detail pane, over both so its grip reaches past it. */
 .splitter { z-index: 500; }

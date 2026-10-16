@@ -41,7 +41,10 @@ function(web_target target)
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createExplorer -sENVIRONMENT=web
     "-sEXPORTED_FUNCTIONS=_main,_malloc,_free"
     "-sEXPORTED_RUNTIME_METHODS=HEAPU8")
-  add_custom_command(TARGET ${target} POST_BUILD
+  # The page and the client copy on every build, not only when the wasm links, so an edit to
+  # the page alone still lands.
+  add_custom_target(${target}_page ALL
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${_out}"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_web}/index.html" "${_web}/explorer.js"
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/Logo.png" "${_out}/"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory "${WEB_CLIENT}" "${_out}/rant-client"

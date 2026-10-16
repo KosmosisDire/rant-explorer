@@ -458,7 +458,7 @@ body.compact .feed .detail-head {
 	right: 12dp;
 	top: 12dp;
 	height: 44dp;
-	padding: 0dp 14dp;
+	padding: 0dp 6dp 0dp 14dp;
 	z-index: 10;
 	background-color: var(--float);
 	border: 1dp var(--border2);
@@ -489,7 +489,8 @@ body.compact .pager { display: flex; height: 100%; }
 body.compact .viz-card { background-color: transparent; border-width: 0dp; border-radius: 0dp; }
 body.compact .viz-card > .viz-pin, body.compact .viz-card > .viz-close { display: none; }
 .head-card { display: none; }
-body.compact .head-card { display: flex; }
+body.compact .head-card { display: flex; height: 100%; }
+body.compact .head-card > .icon-button { min-width: 26dp; height: 100%; padding: 0dp; }   /* the head's height is the tap room */
 
 /* ------------------------------------------------------------------------ menu */
 

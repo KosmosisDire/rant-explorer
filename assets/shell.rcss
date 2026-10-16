@@ -393,6 +393,11 @@ body.compact .sidebar.left > * { width: 100%; }
 
 /* The drawer floats, so its inner corners round, the tabs on its top edge with it. */
 body.compact .sidebar.left { border-radius: 0dp 16dp 16dp 0dp; }
+
+/* Neither the drawer nor the sheet clips: a round box that clips makes every clip inside it
+   a stencil mask, redrawn per cell. The drawer slides whole, and the sheet stands on the
+   screen's bottom edge, which cuts what it does not show. */
+body.compact .sidebar { overflow: visible; }
 body.compact #tabs { border-radius: 0dp 16dp 0dp 0dp; }
 
 /* The sheet: the right sidebar along the bottom, at the height main.cpp sets. No border,
@@ -455,7 +460,6 @@ body.compact .feed .detail-head {
 	height: 44dp;
 	padding: 0dp 14dp;
 	z-index: 10;
-	overflow: hidden;
 	background-color: var(--float);
 	border: 1dp var(--border2);
 	border-radius: 10dp;

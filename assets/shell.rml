@@ -161,8 +161,8 @@
 				</div>
 
 				<div class="sidebar right">
-					<div class="sheet-grip"></div>
-					<div class="pane-head" data-attr-topic="topic.key" path="" paste="">
+					<div class="sheet-grip" data-event-click="step_sheet" data-event-dragstart="drag_sheet" data-event-drag="drag_sheet" data-event-dragend="drag_sheet"><div></div></div>
+					<div class="pane-head" data-attr-topic="topic.key" path="" paste="" data-event-dragstart="drag_sheet" data-event-drag="drag_sheet" data-event-dragend="drag_sheet">
 						<span class="section" data-if="value_type == ''">Value</span>
 						<span class="head-type mono" copy="type" data-if="value_type != ''">{{value_type}}</span>
 						<span class="head-note"
@@ -507,8 +507,8 @@
 				</div>
 
 				<div class="sidebar right">
-					<div class="sheet-grip"></div>
-					<div class="pane-head">
+					<div class="sheet-grip" data-event-click="step_sheet" data-event-dragstart="drag_sheet" data-event-drag="drag_sheet" data-event-dragend="drag_sheet"><div></div></div>
+					<div class="pane-head" data-event-dragstart="drag_sheet" data-event-drag="drag_sheet" data-event-dragend="drag_sheet">
 						<span class="section">Node log</span>
 						<span class="pill bad" data-class-on="log_error" data-event-click="toggle_log(0)">ERR</span>
 						<span class="pill warn" data-class-on="log_warn" data-event-click="toggle_log(1)">WARN</span>
@@ -565,8 +565,8 @@
 				</div>
 
 				<div class="sidebar right">
-					<div class="sheet-grip"></div>
-					<div class="pane-head">
+					<div class="sheet-grip" data-event-click="step_sheet" data-event-dragstart="drag_sheet" data-event-drag="drag_sheet" data-event-dragend="drag_sheet"><div></div></div>
+					<div class="pane-head" data-event-dragstart="drag_sheet" data-event-drag="drag_sheet" data-event-dragend="drag_sheet">
 						<span class="section" data-if="mesh.mode == 0">Mesh</span>
 						<span class="head-type" copy="" data-if="mesh.mode == 1">{{mesh.title}}</span>
 						<span class="head-type pair" data-if="mesh.mode == 2"><span>{{mesh.from}}</span><icon

@@ -408,6 +408,14 @@ struct Ui {
     bool touch      = false;
     bool left_open  = true, right_open = true;
     bool scrim      = false;   /* the left sidebar is over, so a tap beside it closes it */
+
+    /* A phone's sheet: its stops in dp, low to high, the one it rests at, its height now,
+       and one drag of it. */
+    std::vector<float> sheet_stops;
+    int   sheet_stop = 0;
+    float sheet_dp   = 0;
+    bool  sheet_dragging = false, sheet_dragged = false;
+    float sheet_grab = 0, sheet_from = 0;
 #ifdef __EMSCRIPTEN__
     bool web       = true;    /* the browser owns the window, so no window buttons */
 #else
@@ -435,6 +443,20 @@ void apply_body(Rml::ElementDocument* document, const Ui& ui)
         else document->RemoveProperty("--c-" + column.first);
     }
     for (const auto& column : ui.hidden_columns) document->SetClass("hide-" + column.first, column.second);
+}
+
+/* How tall an element's children stand in dp, their margins and its padding included,
+   whatever room it is given, so a pane can be sized to what it holds. */
+float content_height(Rml::Element* element, float ratio)
+{
+    const Rml::Box& own = element->GetBox();
+    float total = own.GetEdge(Rml::BoxArea::Padding, Rml::BoxEdge::Top) +
+                  own.GetEdge(Rml::BoxArea::Padding, Rml::BoxEdge::Bottom);
+    for (int i = 0; i < element->GetNumChildren(); i++) {
+        Rml::Element* child = element->GetChild(i);
+        if (child->IsVisible()) total += child->GetBox().GetSize(Rml::BoxArea::Margin).y;
+    }
+    return total / ratio;
 }
 
 /* A tree table header's columns, its cells marked col but not keep, as the checklist its
@@ -1239,6 +1261,7 @@ int main(int argc, char** argv)
             ui.left_open  = false;
             ui.right_open = true;
             ui.scrim      = false;
+            ui.sheet_stop = 0;
             handle.DirtyVariable("left_open");
             handle.DirtyVariable("right_open");
             handle.DirtyVariable("scrim");
@@ -1289,6 +1312,54 @@ int main(int argc, char** argv)
                 handle.DirtyVariable("right_open");
                 handle.DirtyVariable("scrim");
                 apply_body(event.GetTargetElement()->GetOwnerDocument(), ui);
+            });
+        /* The sheet follows a drag of its grip or head, then rests at a stop: past a short throw
+           the next one the drag was heading for, else the nearest. */
+        ctor.BindEventCallback("drag_sheet",
+            [&ui, context](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList&) {
+                if (ui.size != "compact" || ui.sheet_stops.empty()) return;
+                Rml::ElementDocument* document = event.GetCurrentElement()->GetOwnerDocument();
+                const float ratio = context->GetDensityIndependentPixelRatio();
+                const float y     = event.GetParameter<float>("mouse_y", 0.f) / ratio;
+                const std::vector<float>& stops = ui.sheet_stops;
+                if (event.GetId() == Rml::EventId::Dragstart) {
+                    ui.sheet_dragging = true;
+                    ui.sheet_grab     = y;
+                    ui.sheet_from     = ui.sheet_dp;
+                    document->SetClass("sheet-dragging", true);
+                    return;
+                }
+                const float moved = ui.sheet_grab - y;
+                if (event.GetId() == Rml::EventId::Drag) {
+                    ui.sheet_dp = std::max(stops.front(), std::min(ui.sheet_from + moved, stops.back()));
+                    document->SetProperty("--sheet", Rml::CreateString("%.0fdp", ui.sheet_dp));
+                    return;
+                }
+                ui.sheet_dragging = false;
+                ui.sheet_dragged  = std::abs(moved) > 3.f;
+                document->SetClass("sheet-dragging", false);
+                int stop = 0;
+                for (int i = 1; i < (int)stops.size(); i++)
+                    if (std::abs(stops[i] - ui.sheet_dp) < std::abs(stops[stop] - ui.sheet_dp)) stop = i;
+                if (moved > 24.f) {
+                    stop = (int)stops.size() - 1;
+                    for (int i = (int)stops.size() - 1; i >= 0; i--)
+                        if (stops[i] >= ui.sheet_dp - 1.f) stop = i;
+                } else if (moved < -24.f) {
+                    stop = 0;
+                    for (int i = 0; i < (int)stops.size(); i++)
+                        if (stops[i] <= ui.sheet_dp + 1.f) stop = i;
+                }
+                ui.sheet_stop = stop;
+            });
+        /* A tap on the grip moves the sheet up a stop, from the top back to the lowest. */
+        ctor.BindEventCallback("step_sheet",
+            [&ui](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+                if (ui.sheet_dragged || ui.sheet_stops.empty()) {
+                    ui.sheet_dragged = false;
+                    return;
+                }
+                ui.sheet_stop = (ui.sheet_stop + 1) % (int)ui.sheet_stops.size();
             });
         /* One splitter's grip: dragstart measures, every drag event after it sets the width.
            The sidebar is the splitter's neighbour, since every tab has its own. */
@@ -2385,6 +2456,40 @@ int main(int argc, char** argv)
             ui.note        = system_interface.last_problem;
             ui.note_frames = 300;
             system_interface.last_problem.clear();
+        }
+
+        /* A phone's sheet rests at its head and two rows, then at all it holds while that is
+           under half the screen, else at most 70 percent, then the screen under the floating
+           controls. No stop is taller than what it holds. Measured from the last layout. */
+        if (ui.size == "compact" && document) {
+            const float   ratio = context->GetDensityIndependentPixelRatio();
+            Rml::Element* tab   = document->GetElementById(ui.tab);
+            Rml::Element* sheet = tab ? tab->QuerySelector(".sidebar.right") : nullptr;
+            if (sheet && tab->GetClientHeight() > 0) {
+                float head = 0, body = 0;
+                for (int i = 0; i < sheet->GetNumChildren(); i++) {
+                    Rml::Element* child = sheet->GetChild(i);
+                    if (!child->IsVisible() || child->IsClassSet("sheet-grip")) continue;
+                    if (child->IsClassSet("pane-body")) body += content_height(child, ratio);
+                    else head += child->GetBox().GetSize(Rml::BoxArea::Border).y / ratio;
+                }
+                Rml::Element*       first  = sheet->QuerySelector(".tt-row");
+                const float         row    = first ? first->GetBox().GetSize(Rml::BoxArea::Border).y / ratio : 40.f;
+                const float         screen = tab->GetClientHeight() / ratio;
+                const float         holds  = head + body;
+                std::vector<float> stops{ std::min(holds, head + 2 * row) };
+                const float middle = holds <= screen * 0.5f ? holds : std::min(holds, screen * 0.7f);
+                if (middle > stops.back() + 1.f) stops.push_back(middle);
+                const float full = std::min(holds, screen - 68.f);
+                if (full > stops.back() + 1.f) stops.push_back(full);
+                ui.sheet_stops = stops;
+                ui.sheet_stop  = std::min(ui.sheet_stop, (int)stops.size() - 1);
+                const float rest = stops[ui.sheet_stop];
+                if (!ui.sheet_dragging && std::abs(rest - ui.sheet_dp) > 0.5f) {
+                    ui.sheet_dp = rest;
+                    document->SetProperty("--sheet", Rml::CreateString("%.0fdp", rest));
+                }
+            }
         }
 
         model.DirtyVariable("note");

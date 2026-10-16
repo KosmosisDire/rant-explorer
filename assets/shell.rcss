@@ -404,18 +404,30 @@ body.compact .sidebar.right > .pane-head { border-radius: 16dp 16dp 0dp 0dp; pad
 body.compact .sidebar.right > .tt-head { display: none; }
 body.compact .c-topic-jitter { display: none; }
 
+/* The grip is a strip along the sheet's top edge, wide enough to tap, holding the pill. The
+   sheet's head drags it too. */
 body.compact .sidebar.right > .sheet-grip {
 	display: block;
 	position: absolute;
-	left: 50%;
-	top: 6dp;
+	left: 0dp;
+	right: 0dp;
+	top: 0dp;
+	width: auto;
+	height: 20dp;
+	z-index: 1;
+	drag: drag;
+}
+
+body.compact .sheet-grip > div {
 	width: 40dp;
 	height: 5dp;
-	margin-left: -20dp;
+	margin: 6dp auto 0dp auto;
 	border-radius: 3dp;
 	background-color: var(--border2);
-	z-index: 1;
 }
+
+body.compact .sidebar.right > .pane-head { drag: drag; }
+body.compact.sheet-dragging .sidebar.right { transition: none; }
 
 /* The detail fills the screen under the drawer button. The topic's head floats beside it. */
 body.compact .detail > .pane-body { padding: 68dp 16dp 16dp 16dp; }

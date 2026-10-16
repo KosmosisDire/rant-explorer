@@ -442,19 +442,19 @@
 											<th class="wide">Peer</th>
 											<th class="num">Round trip</th>
 											<th class="num">Jitter</th>
-											<th class="num">Fastest</th>
-											<th class="num">Samples</th>
-											<th class="num">Lanes out</th>
-											<th class="num">Lanes in</th>
+											<th class="num more">Fastest</th>
+											<th class="num more">Samples</th>
+											<th class="num more">Lanes out</th>
+											<th class="num more">Lanes in</th>
 										</tr>
 										<tr data-for="p : meta.peer_rows">
 											<td>{{p.name}}<span class="warn" data-if="!p.active"> (dropped)</span></td>
 											<td class="num mono">{{p.rtt_ms | ms}}</td>
 											<td class="num mono">{{p.jitter_ms | ms}}</td>
-											<td class="num mono">{{p.rtt_min_ms | ms}}</td>
-											<td class="num mono">{{p.samples}}</td>
-											<td class="num mono">{{p.publish_to}}</td>
-											<td class="num mono">{{p.receive_from}}</td>
+											<td class="num mono more">{{p.rtt_min_ms | ms}}</td>
+											<td class="num mono more">{{p.samples}}</td>
+											<td class="num mono more">{{p.publish_to}}</td>
+											<td class="num mono more">{{p.receive_from}}</td>
 										</tr>
 									</table>
 								</div>

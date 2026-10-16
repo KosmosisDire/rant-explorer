@@ -9,6 +9,7 @@
 Thumbs.db
 .DS_Store
 
-# CMake fetches the Lucide font into assets/
+# CMake fetches the Lucide and IBM Plex fonts into assets/
 /assets/lucide.ttf
 /assets/lucide-codepoints.json
+/assets/IBMPlex*.ttf

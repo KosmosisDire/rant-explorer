@@ -1,38 +1,6 @@
 # The web build: the explorer as wasm in a page, its node a client of the Rant bridge. The
 # page, its script and the bridge client land beside the wasm in bin/web, ready to serve.
 
-# A page has no system fonts, so DejaVu is embedded with the assets.
-set(DEJAVU_VERSION 2.37)
-set(DEJAVU_ZIP "${DEPS}/dejavu-fonts-ttf-${DEJAVU_VERSION}.zip")
-set(WEB_FONTS DejaVuSans.ttf DejaVuSans-Bold.ttf DejaVuSansMono.ttf DejaVuSansMono-Bold.ttf)
-set(_missing OFF)
-foreach(_font ${WEB_FONTS})
-  if(NOT EXISTS "${DEPS}/web-fonts/${_font}")
-    set(_missing ON)
-  endif()
-endforeach()
-if(_missing)
-  message(STATUS "fetch dejavu fonts ${DEJAVU_VERSION}")
-  string(REPLACE "." "_" _tag "${DEJAVU_VERSION}")
-  file(DOWNLOAD
-       "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_${_tag}/dejavu-fonts-ttf-${DEJAVU_VERSION}.zip"
-       "${DEJAVU_ZIP}" STATUS _st TLS_VERIFY ON)
-  list(GET _st 0 _code)
-  if(NOT _code EQUAL 0)
-    file(REMOVE "${DEJAVU_ZIP}")
-    message(FATAL_ERROR "download failed: dejavu fonts
-  ${_st}")
-  endif()
-  file(ARCHIVE_EXTRACT INPUT "${DEJAVU_ZIP}" DESTINATION "${DEPS}/dejavu")
-  file(MAKE_DIRECTORY "${DEPS}/web-fonts")
-  foreach(_font ${WEB_FONTS})
-    file(COPY_FILE "${DEPS}/dejavu/dejavu-fonts-ttf-${DEJAVU_VERSION}/ttf/${_font}" "${DEPS}/web-fonts/${_font}")
-  endforeach()
-endif()
-foreach(_font ${WEB_FONTS})
-  list(APPEND ASSET_FILES "${DEPS}/web-fonts/${_font}")
-endforeach()
-
 # The bridge client: the package a bridge release attaches, or a built dist folder, which
 # the local preset takes from the bridge checkout beside this one.
 set(RANT_CLIENT_VERSION 0.0.2)

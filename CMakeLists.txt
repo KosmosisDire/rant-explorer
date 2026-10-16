@@ -120,6 +120,41 @@ if(NOT EXISTS "${LUCIDE_ZIP}" OR NOT EXISTS "${ASSETS}/lucide.ttf"
   file(COPY_FILE "${DEPS}/lucide/lucide-font/codepoints.json" "${ASSETS}/lucide-codepoints.json")
 endif()
 
+# IBM Plex Sans and Mono, the faces of every build, so the explorer looks the same on every
+# platform and in a page. They land in assets/ beside Lucide and are embedded the same way.
+foreach(_plex "sans 1.1.0 IBMPlexSans-Regular IBMPlexSans-SemiBold IBMPlexSans-Bold"
+              "mono 2.5.0 IBMPlexMono-Regular IBMPlexMono-Bold")
+  string(REPLACE " " ";" _plex "${_plex}")
+  list(POP_FRONT _plex _family _version)
+  set(_zip "${DEPS}/ibm-plex-${_family}-${_version}.zip")
+  set(_missing OFF)
+  foreach(_face ${_plex})
+    if(NOT EXISTS "${ASSETS}/${_face}.ttf")
+      set(_missing ON)
+    endif()
+  endforeach()
+  if(NOT EXISTS "${_zip}" OR _missing)
+    message(STATUS "fetch ibm plex ${_family} ${_version}")
+    file(DOWNLOAD
+         "https://github.com/IBM/plex/releases/download/%40ibm/plex-${_family}%40${_version}/ibm-plex-${_family}.zip"
+         "${_zip}" STATUS _st TLS_VERIFY ON)
+    list(GET _st 0 _code)
+    if(NOT _code EQUAL 0)
+      file(REMOVE "${_zip}")
+      message(FATAL_ERROR "download failed: ibm plex ${_family}
+  ${_st}")
+    endif()
+    set(_patterns "")
+    foreach(_face ${_plex})
+      list(APPEND _patterns "ibm-plex-${_family}/fonts/complete/ttf/${_face}.ttf")
+    endforeach()
+    file(ARCHIVE_EXTRACT INPUT "${_zip}" DESTINATION "${DEPS}/plex" PATTERNS ${_patterns})
+    foreach(_face ${_plex})
+      file(COPY_FILE "${DEPS}/plex/ibm-plex-${_family}/fonts/complete/ttf/${_face}.ttf" "${ASSETS}/${_face}.ttf")
+    endforeach()
+  endif()
+endforeach()
+
 # RmlUi ships its backends as reference sources for an app to compile in, not as a library:
 # the targets in Backends/CMakeLists.txt exist only when the samples are built. We own
 # main(), so we take the platform and renderer halves and leave RmlUi_Backend_SDL_GL3.cpp,
@@ -130,7 +165,7 @@ set(RMLUI_BACKENDS "${RmlUi_SOURCE_DIR}/Backends")
 # asset changes, a new asset needs a reconfigure.
 file(GLOB ASSET_FILES CONFIGURE_DEPENDS "${ASSETS}/*")
 if(EMSCRIPTEN)
-  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/web.cmake")   # adds the fonts a page lacks
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/web.cmake")   # the page and the bridge client
 endif()
 set(ASSETS_EMBEDDED "${CMAKE_BINARY_DIR}/assets_embedded.cpp")
 string(REPLACE ";" "$<SEMICOLON>" _asset_list "${ASSET_FILES}")

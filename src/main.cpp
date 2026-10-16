@@ -58,36 +58,15 @@ float read_zoom()
     return (z >= 0.5f && z <= 4.0f) ? z : 1.0f;
 }
 
-/* The stylesheet names two families. Registering the OS files under our own names keeps
-   one stylesheet across platforms, the way ui_fonts.h picks its files by path. */
+/* The stylesheet names two families, ui-sans and ui-mono, which are IBM Plex embedded with the
+   assets, so every platform and the page look the same. */
 bool load_fonts()
 {
-#if defined(__EMSCRIPTEN__)
-    /* A page reads no system fonts, so the web build embeds these with the assets. */
-    const char* sans_regular = "DejaVuSans.ttf";
-    const char* sans_semi    = "DejaVuSans-Bold.ttf";
-    const char* sans_bold    = "DejaVuSans-Bold.ttf";
-    const char* mono_regular = "DejaVuSansMono.ttf";
-    const char* mono_bold    = "DejaVuSansMono-Bold.ttf";
-#elif defined(_WIN32)
-    const char* sans_regular = "C:/Windows/Fonts/segoeui.ttf";
-    const char* sans_semi    = "C:/Windows/Fonts/seguisb.ttf";
-    const char* sans_bold    = "C:/Windows/Fonts/segoeuib.ttf";
-    const char* mono_regular = "C:/Windows/Fonts/consola.ttf";
-    const char* mono_bold    = "C:/Windows/Fonts/consolab.ttf";
-#elif defined(__APPLE__)
-    const char* sans_regular = "/System/Library/Fonts/SFNS.ttf";
-    const char* sans_semi    = "/System/Library/Fonts/SFNS.ttf";
-    const char* sans_bold    = "/System/Library/Fonts/SFNS.ttf";
-    const char* mono_regular = "/System/Library/Fonts/SFNSMono.ttf";
-    const char* mono_bold    = "/System/Library/Fonts/SFNSMono.ttf";
-#else
-    const char* sans_regular = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
-    const char* sans_semi    = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
-    const char* sans_bold    = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
-    const char* mono_regular = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf";
-    const char* mono_bold    = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf";
-#endif
+    const char* sans_regular = "IBMPlexSans-Regular.ttf";
+    const char* sans_semi    = "IBMPlexSans-SemiBold.ttf";
+    const char* sans_bold    = "IBMPlexSans-Bold.ttf";
+    const char* mono_regular = "IBMPlexMono-Regular.ttf";
+    const char* mono_bold    = "IBMPlexMono-Bold.ttf";
     const Rml::Style::FontStyle  normal   = Rml::Style::FontStyle::Normal;
     const Rml::Style::FontWeight semibold = static_cast<Rml::Style::FontWeight>(600);
 
@@ -852,7 +831,7 @@ int main(int argc, char** argv)
     Rml::Initialise();
 
     if (!load_fonts())
-        std::fprintf(stderr, "warning: a system font failed to load, text may be missing\n");
+        std::fprintf(stderr, "warning: a font failed to load, text may be missing\n");
     if (!icons_init())
         std::fprintf(stderr, "warning: the icon font failed to load, icons will be missing\n");
     decorators_init();

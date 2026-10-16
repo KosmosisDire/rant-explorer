@@ -36,10 +36,14 @@ body {
 
 /* The auto margin pushes everything after the tabs to the right edge. */
 #tabs {
+	flex: 1;
 	display: flex;
 	height: 100%;
-	margin-right: auto;
 }
+
+/* The theme toggle ends the tabs at the bar's right, and on a phone rides them to the
+   drawer's bottom right corner. */
+#tabs .theme-toggle { margin-left: auto; align-self: center; }
 
 /* The active tab is told by colour and an accent underline, never by weight or a fill.
    The underline is always there, transparent while off, so nothing moves. */
@@ -342,11 +346,9 @@ body.compact #statusbar, body.compact .splitter { display: none; }
 body.compact .tab-content { position: relative; }
 body.compact .viz-area { margin: 68dp 0dp 12dp 0dp; overflow: hidden; }   /* clear of the floating head and the grip alike */
 
-body.compact #topbar .bar-button.left-toggle {
+body.compact #topbar .bar-button.left-toggle, body.compact #topbar .bar-button.theme-toggle {
 	display: flex;
 	position: absolute;
-	left: 12dp;
-	top: 12dp;
 	width: 44dp;
 	height: 44dp;
 	background-color: var(--float);
@@ -354,6 +356,8 @@ body.compact #topbar .bar-button.left-toggle {
 	border-radius: 10dp;
 	color: var(--text);
 }
+body.compact #topbar .bar-button.left-toggle  { left: 12dp; top: 12dp; }
+body.compact #topbar .bar-button.theme-toggle { right: 12dp; top: 100vh; margin-top: -56dp; }
 
 body.compact.left-over #topbar .bar-button.left-toggle { display: none; }
 

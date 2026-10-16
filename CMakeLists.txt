@@ -58,22 +58,25 @@ CPMAddPackage(NAME SDL3
   OPTIONS "BUILD_SHARED_LIBS OFF" "SDL_SHARED OFF" "SDL_STATIC ON" "SDL_TEST OFF"
           "SDL_TEST_LIBRARY OFF" "SDL_EXAMPLES OFF")
 
-# Three patches. Colour transitions mix premultiplied, as CSS does: without it a fade between
+# Four patches. Colour transitions mix premultiplied, as CSS does: without it a fade between
 # a translucent and an opaque colour flashes the translucent one at full strength. A data-for
 # view updates before the other views on its element, which otherwise tie with it and can
 # read an index the loop just dropped. Corner radii fit the border box, as in CSS, so a
-# thick border keeps a round element round. The patch step runs on every reconfigure, so it
-# restores the files before applying.
+# thick border keeps a round element round. The GL3 renderer reads no state back each frame,
+# which in a browser stalls on the GPU for most of the frame. The patch step runs on every
+# reconfigure, so it restores the files before applying.
 CPMAddPackage(NAME RmlUi
   GITHUB_REPOSITORY mikke89/RmlUi
   GIT_TAG 6.3
   VERSION 6.3
   EXCLUDE_FROM_ALL YES
   PATCH_COMMAND git checkout -- Source/Core/ElementAnimation.cpp Source/Core/DataViewDefault.cpp
-                                Source/Core/GeometryBackgroundBorder.cpp
+                                Source/Core/GeometryBackgroundBorder.cpp Backends/RmlUi_Renderer_GL3.cpp
+                                Backends/RmlUi_Renderer_GL3.h
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmlui-premultiplied-fade.patch"
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmlui-for-view-first.patch"
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmlui-round-border.patch"
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmlui-gl3-no-state-readback.patch"
   OPTIONS "BUILD_SHARED_LIBS OFF" "RMLUI_SAMPLES OFF" "RMLUI_FONT_ENGINE freetype")
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/video.cmake")

@@ -86,6 +86,7 @@ body {
 	--sidebar-left:  470dp;
 	--sidebar-right: 340dp;
 	--sheet:         220dp;   /* a phone's sheet, moved inline as it is dragged */
+	--grip:          28dp;    /* the handle atop the sheet, all of it a closed sheet shows */
 
 	/* The tree table columns' weights, each column's share of its table's width, overridden
 	   the same way when a header edge is dragged. */

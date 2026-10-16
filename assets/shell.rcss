@@ -400,28 +400,23 @@ body.compact .sidebar.right, body.compact.right-closed .sidebar.right {
 
 body.compact.right-closed .sidebar.right { height: 0dp; }
 body.compact .sidebar.right > * { width: 100%; }
-body.compact .sidebar.right > .pane-head { border-radius: 16dp 16dp 0dp 0dp; padding-top: 10dp; height: auto; min-height: var(--bar); }
 body.compact .sidebar.right > .tt-head { display: none; }
 body.compact .c-topic-value, body.compact .c-topic-jitter, body.compact .c-type { display: none; }
 
-/* The grip is a strip along the sheet's top edge, wide enough to tap, holding the pill. The
+/* The grip heads the sheet, wide enough to tap, and is all a closed sheet shows. The
    sheet's head drags it too. */
 body.compact .sidebar.right > .sheet-grip {
 	display: block;
-	position: absolute;
-	left: 0dp;
-	right: 0dp;
-	top: 0dp;
-	width: auto;
-	height: 20dp;
-	z-index: 1;
+	height: var(--grip);
+	border-radius: 16dp 16dp 0dp 0dp;
+	background-color: var(--panel);
 	drag: drag;
 }
 
 body.compact .sheet-grip > div {
 	width: 40dp;
 	height: 5dp;
-	margin: 6dp auto 0dp auto;
+	margin: 11dp auto 0dp auto;
 	border-radius: 3dp;
 	background-color: var(--border2);
 }
@@ -429,7 +424,9 @@ body.compact .sheet-grip > div {
 body.compact .sidebar.right > .pane-head { drag: drag; }
 body.compact.sheet-dragging .sidebar.right { transition: none; }
 
-/* The detail fills the screen under the drawer button. The topic's head floats beside it. */
+/* The detail fills the screen under the drawer button and ends above a closed sheet. The
+   topic's head floats beside the button. */
+body.compact .detail { padding-bottom: var(--grip); }
 body.compact .detail > .pane-body { padding: 68dp 16dp 16dp 16dp; }
 body.compact .detail > .pane-body.feed { padding: 0dp; }
 body.compact .detail.graph > .pane-head { padding-left: 68dp; height: 68dp; }

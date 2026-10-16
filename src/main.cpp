@@ -2470,26 +2470,25 @@ int main(int argc, char** argv)
             system_interface.last_problem.clear();
         }
 
-        /* A phone's sheet rests at its head and two rows, then at all it holds while that is
-           under half the screen, else at most 70 percent, then the screen under the floating
+        /* A phone's sheet rests at its grip alone, then at all it holds while that is under
+           half the screen, else at most 70 percent, then the screen under the floating
            controls. No stop is taller than what it holds. Measured from the last layout. */
         if (ui.size == "compact" && document) {
             const float   ratio = context->GetDensityIndependentPixelRatio();
             Rml::Element* tab   = document->GetElementById(ui.tab);
             Rml::Element* sheet = tab ? tab->QuerySelector(".sidebar.right") : nullptr;
             if (sheet && tab->GetClientHeight() > 0) {
-                float head = 0, body = 0;
+                float grip = 0, holds = 0;
                 for (int i = 0; i < sheet->GetNumChildren(); i++) {
                     Rml::Element* child = sheet->GetChild(i);
-                    if (!child->IsVisible() || child->IsClassSet("sheet-grip")) continue;
-                    if (child->IsClassSet("pane-body")) body += content_height(child, ratio);
-                    else head += child->GetBox().GetSize(Rml::BoxArea::Border).y / ratio;
+                    if (!child->IsVisible()) continue;
+                    const float height = child->IsClassSet("pane-body") ? content_height(child, ratio)
+                                                                        : child->GetBox().GetSize(Rml::BoxArea::Border).y / ratio;
+                    if (child->IsClassSet("sheet-grip")) grip = height;
+                    holds += height;
                 }
-                Rml::Element*       first  = sheet->QuerySelector(".tt-row");
-                const float         row    = first ? first->GetBox().GetSize(Rml::BoxArea::Border).y / ratio : 40.f;
-                const float         screen = tab->GetClientHeight() / ratio;
-                const float         holds  = head + body;
-                std::vector<float> stops{ std::min(holds, head + 2 * row) };
+                const float        screen = tab->GetClientHeight() / ratio;
+                std::vector<float> stops{ grip };
                 const float middle = holds <= screen * 0.5f ? holds : std::min(holds, screen * 0.7f);
                 if (middle > stops.back() + 1.f) stops.push_back(middle);
                 const float full = std::min(holds, screen - 68.f);

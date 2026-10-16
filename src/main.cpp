@@ -376,7 +376,7 @@ struct Ui {
     float    card_shift = 0;
     bool     card_swiping = false;
     float    card_grab = 0;
-    uint64_t card_tick = 0;
+    uint64_t tick = 0;   /* the last frame's time in ms, for what slides */
 
     /* The one popup menu: the funnel's checklist, or what a right click offers. The row it
        was opened on is kept by tree path, and by topic name when the row is a topic. */
@@ -479,6 +479,14 @@ void apply_body(Rml::ElementDocument* document, const Ui& ui)
 
 /* How tall an element's children stand in dp, their margins and its padding included,
    whatever room it is given, so a pane can be sized to what it holds. */
+/* A step of a slide toward target that settles in about a fifth of a second, dt ms after the
+   last, landing on it once within half a dp. */
+float ease(float value, float target, float dt)
+{
+    value = target + (value - target) * std::exp(-dt / 60.f);
+    return std::abs(value - target) < 0.5f ? target : value;
+}
+
 float content_height(Rml::Element* element, float ratio)
 {
     const Rml::Box& own = element->GetBox();
@@ -2572,6 +2580,11 @@ int main(int argc, char** argv)
             system_interface.last_problem.clear();
         }
 
+        /* The sheet and the cards slide by this frame's share of time. */
+        const uint64_t now = SDL_GetTicks();
+        const float    dt  = (float)(now - ui.tick);
+        ui.tick = now;
+
         /* A phone's sheet rests at its grip alone, then at all it holds while that is under
            half the screen, else at most 70 percent, then the screen under the floating
            controls. No stop is taller than what it holds. Measured from the last layout. */
@@ -2598,9 +2611,9 @@ int main(int argc, char** argv)
                 ui.sheet_stops = stops;
                 ui.sheet_stop  = std::min(ui.sheet_stop, (int)stops.size() - 1);
                 const float rest = stops[ui.sheet_stop];
-                if (!ui.sheet_dragging && std::abs(rest - ui.sheet_dp) > 0.5f) {
-                    ui.sheet_dp = rest;
-                    document->SetProperty("--sheet", Rml::CreateString("%.0fdp", std::ceil(rest)));   /* never a hair short, which scrolls */
+                if (!ui.sheet_dragging && rest != ui.sheet_dp) {
+                    ui.sheet_dp = ease(ui.sheet_dp, rest, dt);
+                    document->SetProperty("--sheet", Rml::CreateString("%.0fdp", std::ceil(ui.sheet_dp)));   /* never a hair short, which scrolls */
                 }
             }
         }
@@ -2616,12 +2629,7 @@ int main(int argc, char** argv)
         context->Update();
         /* New cards exist only after the update, so a moved tiling lays out once more before
            it draws, and no card shows a frame in the wrong place. */
-        const uint64_t tick = SDL_GetTicks();
-        if (!ui.card_swiping && ui.card_shift != 0) {
-            ui.card_shift *= std::exp(-(float)(tick - ui.card_tick) / 60.f);
-            if (std::abs(ui.card_shift) < 0.5f) ui.card_shift = 0;
-        }
-        ui.card_tick = tick;
+        if (!ui.card_swiping) ui.card_shift = ease(ui.card_shift, 0.f, dt);
         if (tile_cards(context, document, tiling, ui.size == "compact" ? ui.card_page : -1, ui.card_shift)) context->Update();
 
         /* Clear before BeginFrame: Clear sets an opaque clear colour for the window and

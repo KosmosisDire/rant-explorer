@@ -340,7 +340,7 @@ body.compact #logo, body.compact #topbar .bar-button, body.compact #window-butto
 body.compact #statusbar, body.compact .splitter { display: none; }
 
 body.compact .tab-content { position: relative; }
-body.compact .viz-area { margin: 68dp 0dp 12dp 0dp; }   /* clear of the floating head and the grip alike */
+body.compact .viz-area { margin: 68dp 0dp 12dp 0dp; overflow: hidden; }   /* clear of the floating head and the grip alike */
 
 body.compact #topbar .bar-button.left-toggle {
 	display: flex;
@@ -461,8 +461,25 @@ body.compact .feed .detail-head {
 	border-radius: 10dp;
 }
 
-body.compact .feed .detail-head .hero { font-size: 15dp; }
+body.compact .feed .detail-head .hero { flex: 1 1 0; overflow: hidden; white-space: nowrap; font-size: 15dp; }
 body.compact .feed .detail-head .tag { display: none; }
+
+/* A phone shows one card at a time. A sideways drag of a card or of the head pages them, and
+   a visual that drags itself pages by the head. The dots say where, and a tap on one goes. */
+body.compact .viz-card, body.compact .feed .detail-head { drag: drag; }
+
+.pager { display: none; }
+body.compact .pager { display: flex; height: 100%; }
+.pager-dot {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 14dp;
+	height: 100%;
+}
+.pager-dot > span { width: 6dp; height: 6dp; border-radius: 3dp; background-color: var(--border2); }
+.pager-dot.on { width: 26dp; }
+.pager-dot.on > span { width: 18dp; background-color: var(--accent); }
 
 /* ------------------------------------------------------------------------ menu */
 

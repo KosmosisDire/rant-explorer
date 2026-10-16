@@ -122,13 +122,18 @@
 				<div class="detail">
 					<div class="pane-body feed">
 						<div class="placeholder" data-if="!has_topic"><span>select a topic</span></div>
-						<div class="detail-head" data-if="has_topic">
+						<div class="detail-head" data-if="has_topic" data-event-dragstart="swipe_card"
+							data-event-drag="swipe_card" data-event-dragend="swipe_card">
 							<span class="hero mono" copy="">{{topic.name}}</span>
 							<span class="tag">{{topic.kind}}</span>
 							<span class="tag">{{topic.reliable ? 'reliable' : 'best effort'}}</span>
 							<span class="tag" copy="" data-if="topic.type != '' || value_type != ''">{{topic.type
 								!= '' ? topic.type : value_type}}</span>
 							<span class="tag" data-if="topic.note != ''">{{topic.note}}</span>
+							<span class="pager" data-if="cards.size > 1">
+								<span class="pager-dot" data-for="c, i : cards" data-class-on="i == card_page"
+									data-event-click="show_card(i)"><span></span></span>
+							</span>
 						</div>
 						<div class="issues" data-if="has_topic &amp;&amp; topic.issues.size > 0">
 							<div class="issue" data-for="s : topic.issues">
@@ -139,7 +144,8 @@
 							<div class="hint" data-if="cards.size == 0"><span>Toggle a field in the value tree to see it
 									here.</span></div>
 							<div class="viz-card" data-for="c : cards" data-attr-topic="c.topic"
-								data-attr-path="c.path">
+								data-attr-path="c.path" data-event-dragstart="swipe_card" data-event-drag="swipe_card"
+								data-event-dragend="swipe_card">
 								<span class="viz-name mono"><span class="viz-topic"
 										data-if="c.other">{{c.topic_name}}</span><span>{{c.name}}</span></span>
 								<span class="viz-pin" data-class-on="c.pinned"

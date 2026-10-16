@@ -361,6 +361,14 @@ struct Ui {
     Rml::String              value_progress;             /* a run's bar as a width, empty while none */
     Rml::Vector<CardRow>     cards;           /* one per field whose visual is shown */
 
+    /* A phone shows one card at a time: its index, how far a swipe or the slide after has the
+       row of cards moved in dp, and one swipe. */
+    int      card_page = 0;
+    float    card_shift = 0;
+    bool     card_swiping = false;
+    float    card_grab = 0;
+    uint64_t card_tick = 0;
+
     /* The one popup menu: the funnel's checklist, or what a right click offers. The row it
        was opened on is kept by tree path, and by topic name when the row is a topic. */
     bool                  menu_open = false;
@@ -654,10 +662,11 @@ void fit_head(Rml::ElementDocument* document, const char* pane_id)
     }
 }
 
-/* The cards tiled into the area under the topic head. Each card's visual says what it
-   wants, and the boxes are written inline only when the area or a wish moved, since a
-   written box lays out again. True when they were. */
-bool tile_cards(Rml::Context* context, Rml::ElementDocument* document, std::string& key)
+/* The cards tiled into the area under the topic head, or with a page, side by side with
+   that one filling the area, moved by shift dp. Each card's visual says what it wants, and
+   the boxes are written inline only when the area or a wish moved, since a written box lays
+   out again. True when they were. */
+bool tile_cards(Rml::Context* context, Rml::ElementDocument* document, std::string& key, int page, float shift)
 {
     Rml::Element* area = document ? document->QuerySelector(".viz-area") : nullptr;
     if (!area || !area->IsVisible(true)) return false;
@@ -679,10 +688,16 @@ bool tile_cards(Rml::Context* context, Rml::ElementDocument* document, std::stri
         std::snprintf(buf, sizeof buf, ":%.3f/%.2f", t.aspect, t.stiff);
         now += buf;
     }
+    if (page >= 0) {
+        std::snprintf(buf, sizeof buf, "|%d%+.1f", page, shift);
+        now += buf;
+    }
     if (now == key) return false;
     key = now;
     const float dp = context->GetDensityIndependentPixelRatio();
-    const std::vector<TileBox> boxes = tile(tiles, W, H, 8 * dp, 16 * dp, 40 * dp, 150 * dp, 110 * dp);
+    std::vector<TileBox> boxes;
+    if (page < 0) boxes = tile(tiles, W, H, 8 * dp, 16 * dp, 40 * dp, 150 * dp, 110 * dp);
+    for (int i = 0; page >= 0 && i < (int)cards.size(); i++) boxes.push_back({ (i - page) * W + shift * dp, 0, W, H });
     for (size_t i = 0; i < cards.size(); i++) {
         const TileBox b = i < boxes.size() ? boxes[i] : TileBox();
         cards[i]->SetProperty(Rml::PropertyId::Left, Rml::Property(std::round(b.x), Rml::Unit::PX));
@@ -1254,6 +1269,7 @@ int main(int argc, char** argv)
         ctor.Bind("value_root_toggle", &ui.value_root_toggle);
         ctor.Bind("value_root_on",   &ui.value_root_on);
         ctor.Bind("cards",           &ui.cards);
+        ctor.Bind("card_page",       &ui.card_page);
         ctor.Bind("light",           &ui.light);
         ctor.Bind("mesh_filter",     &ui.mesh_filter);
         ctor.Bind("mesh_cats",       &ui.mesh_cats);
@@ -1363,6 +1379,44 @@ int main(int argc, char** argv)
                         if (stops[i] <= ui.sheet_dp + 1.f) stop = i;
                 }
                 ui.sheet_stop = stop;
+            });
+        /* A phone's cards follow a sideways drag of a card or the topic head, then settle on
+           the next card past a short throw, else back. The slide after is the shift running out. */
+        ctor.BindEventCallback("swipe_card",
+            [&ui, context](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList&) {
+                Rml::Element* area = event.GetCurrentElement()->GetOwnerDocument()->QuerySelector(".viz-area");
+                if (ui.size != "compact" || !area || ui.cards.size() < 2) return;
+                const float ratio = context->GetDensityIndependentPixelRatio();
+                const float x     = event.GetParameter<float>("mouse_x", 0.f) / ratio;
+                const int   last  = (int)ui.cards.size() - 1;
+                if (event.GetId() == Rml::EventId::Dragstart) {
+                    ui.card_swiping = true;
+                    ui.card_grab    = x - ui.card_shift;
+                    return;
+                }
+                float shift = x - ui.card_grab;
+                if ((ui.card_page == 0 && shift > 0) || (ui.card_page == last && shift < 0)) shift *= 0.3f;   /* no card that way */
+                ui.card_shift = shift;
+                if (event.GetId() == Rml::EventId::Drag) return;
+                ui.card_swiping = false;
+                const float width = area->GetClientWidth() / ratio;
+                const float reach = std::min(0.2f * width, 64.f);
+                int page = ui.card_page;
+                if (shift < -reach && page < last) page++;
+                else if (shift > reach && page > 0) page--;
+                ui.card_shift += (page - ui.card_page) * width;
+                ui.card_page = page;
+                handle.DirtyVariable("card_page");
+            });
+        /* A pager dot slides to its card. */
+        ctor.BindEventCallback("show_card",
+            [&ui, context](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList& args) {
+                Rml::Element* area = event.GetCurrentElement()->GetOwnerDocument()->QuerySelector(".viz-area");
+                if (args.empty() || !area) return;
+                const int page = args[0].Get<int>();
+                ui.card_shift += (page - ui.card_page) * area->GetClientWidth() / context->GetDensityIndependentPixelRatio();
+                ui.card_page = page;
+                handle.DirtyVariable("card_page");
             });
         /* A tap on the grip moves the sheet up a stop, from the top back to the lowest. */
         ctor.BindEventCallback("step_sheet",
@@ -2362,6 +2416,10 @@ int main(int argc, char** argv)
             sync(model, "value_root_on", ui.value_root_on, view.shown.count("") > 0);
             /* The selected topic's cards in tree order, then every other topic's pinned ones.
                Pinning never moves a card, since it keeps its place among the selected's. */
+            const auto card_id = [](const CardRow& c) { return c.topic + "\n" + c.path; };
+            const std::string shown = ui.card_page < (int)ui.cards.size() ? card_id(ui.cards[ui.card_page]) : std::string();
+            std::set<std::string> had;
+            for (const CardRow& c : ui.cards) had.insert(card_id(c));
             ui.cards.clear();
             auto card = [&ui, &watch](const std::string& key, const std::string& path, const ValueView& of) {
                 CardRow row;
@@ -2388,6 +2446,15 @@ int main(int argc, char** argv)
                 !ui.cards[0].other && !ui.cards[0].pinned)
                 ui.cards.erase(ui.cards.begin());
             if (ui.cards.size() > (size_t)MAX_CARDS) ui.cards.resize(MAX_CARDS);
+            /* A phone shows a card just added, else the one it showed, else the nearest. */
+            int page = -1, kept = -1;
+            for (int i = 0; i < (int)ui.cards.size(); i++) {
+                if (page < 0 && !had.count(card_id(ui.cards[i]))) page = i;
+                if (card_id(ui.cards[i]) == shown) kept = i;
+            }
+            if (page < 0) page = kept >= 0 ? kept : std::max(0, std::min(ui.card_page, (int)ui.cards.size() - 1));
+            if (page != ui.card_page) ui.card_shift = 0;
+            sync(model, "card_page", ui.card_page, page);
             value_first = value_last = -1;
             value_seq   = ~watch.seq;   /* the texts are rewritten below */
             model.DirtyVariable("cards");
@@ -2517,7 +2584,13 @@ int main(int argc, char** argv)
         context->Update();
         /* New cards exist only after the update, so a moved tiling lays out once more before
            it draws, and no card shows a frame in the wrong place. */
-        if (tile_cards(context, document, tiling)) context->Update();
+        const uint64_t tick = SDL_GetTicks();
+        if (!ui.card_swiping && ui.card_shift != 0) {
+            ui.card_shift *= std::exp(-(float)(tick - ui.card_tick) / 60.f);
+            if (std::abs(ui.card_shift) < 0.5f) ui.card_shift = 0;
+        }
+        ui.card_tick = tick;
+        if (tile_cards(context, document, tiling, ui.size == "compact" ? ui.card_page : -1, ui.card_shift)) context->Update();
 
         /* Clear before BeginFrame: Clear sets an opaque clear colour for the window and
            BeginFrame a transparent one for layers. Reversed, every filter layer is cleared

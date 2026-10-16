@@ -4,6 +4,12 @@
 import { RantNode } from "./rant-client/rant.js";
 import createExplorer from "./rant_explorer.js";
 
+// The wasm downloads and compiles while the bridge connects, so the two waits overlap. A
+// server that sends it without its wasm type gets the slower compile from bytes.
+const wasmUrl = new URL("rant_explorer.wasm", import.meta.url);
+const wasm = WebAssembly.compileStreaming(fetch(wasmUrl))
+    .catch(() => fetch(wasmUrl).then((r) => r.arrayBuffer()).then((b) => WebAssembly.compile(b)));
+
 const LEVELS = { error: 0, warn: 1, info: 2 };
 const now = () => performance.now() * 1000;   // monotonic microseconds for arrival times
 const empty = new Uint8Array(0);
@@ -216,6 +222,11 @@ async function start(settings) {
         canvas,
         print: (t) => console.log(t),
         printErr: (t) => console.warn(t),
+        instantiateWasm: (imports, done) => {
+            wasm.then((m) => WebAssembly.instantiate(m, imports).then((i) => done(i, m)))
+                .catch((e) => show(e?.message ?? String(e), true));
+            return {};
+        },
     });
     canvas.focus();
 }

@@ -792,6 +792,7 @@ int main(int argc, char** argv)
 
     SDL_SetMainReady();
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");   /* the click that focuses the window also lands */
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");         /* RmlUi takes a finger as a touch, so not as a mouse too */
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
@@ -2165,11 +2166,17 @@ int main(int argc, char** argv)
                 }
                 RmlSDL::InputEventHandler(context, window, event);
                 break;
+            case SDL_EVENT_FINGER_CANCELED: {
+                /* The backend skips a finger the system took over, which RmlUi must still let go. */
+                const Rml::Vector2f at{ event.tfinger.x * context->GetDimensions().x, event.tfinger.y * context->GetDimensions().y };
+                context->ProcessTouchCancel(Rml::TouchList{ Rml::Touch{ (Rml::TouchId)event.tfinger.fingerID, at } });
+                context->ProcessMouseLeave();
+                break;
+            }
             default:
                 RmlSDL::InputEventHandler(context, window, event);
                 /* A lifted finger points at nothing, so nothing stays hovered. */
-                if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.which == SDL_TOUCH_MOUSEID)
-                    context->ProcessMouseLeave();
+                if (event.type == SDL_EVENT_FINGER_UP) context->ProcessMouseLeave();
                 break;
             }
         }

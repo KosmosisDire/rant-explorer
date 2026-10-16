@@ -154,7 +154,7 @@
 						data-event-drag="drag_sidebar('right')"></div>
 				</div>
 
-				<div class="sidebar right" data-attr-topic="topic.name" path="">
+				<div class="sidebar right" data-attr-topic="topic.key" path="">
 					<div class="pane-head">
 						<span class="section" data-if="value_type == ''">Value</span>
 						<span class="head-type mono" copy="" data-if="value_type != ''">{{value_type}}</span>

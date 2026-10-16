@@ -345,10 +345,12 @@ body.compact #topbar {
 body.compact #logo, body.compact #topbar .bar-button, body.compact #window-buttons,
 body.compact #statusbar, body.compact .splitter { display: none; }
 
-/* With the top bar folded away, the theme toggle moves to the foot of a phone's sidebar,
-   which is as tall as a head so the button fits. The Nodes sidebar has that foot only here. */
-.foot-theme, .pane-foot.phone-only { display: none; }
+/* With the top bar folded away, the theme toggle and a page's bridge switch move to the
+   foot of a phone's sidebar, which is as tall as a head so the buttons fit. The Nodes
+   sidebar has that foot only here. */
+.foot-theme, .foot-bridge, .pane-foot.phone-only { display: none; }
 body.compact .foot-theme { display: flex; margin-left: auto; }
+body.compact .foot-bridge { display: flex; }
 body.compact .pane-foot.phone-only { display: flex; }
 body.compact .pane-foot { height: var(--bar); padding: 0dp 6dp 0dp var(--pad); }
 

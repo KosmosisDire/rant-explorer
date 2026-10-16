@@ -1437,6 +1437,13 @@ int main(int argc, char** argv)
                 capture.select(args[0].Get<Rml::String>());
                 picked(handle, event);
             });
+        /* A page starts over at its form to pick another bridge or domain, since its node
+           lives as long as the page. */
+        ctor.BindEventCallback("switch_bridge", [](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+#ifdef __EMSCRIPTEN__
+            EM_ASM({ globalThis.rantSwitch(); });
+#endif
+        });
         ctor.BindEventCallback("stop_recording",
             [end_shot](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) { end_shot(); });
         ctor.BindEventCallback("toggle_theme",

@@ -214,6 +214,12 @@ async function start(settings) {
         return;
     }
     try { localStorage.setItem("rant-explorer", JSON.stringify(settings)); } catch { /* not kept */ }
+    // A reload connects to what was just chosen, not to the form or a bridge the address named before.
+    const address = new URL(location.href);
+    address.searchParams.delete("ask");
+    if (address.searchParams.has("bridge")) address.searchParams.set("bridge", settings.bridge);
+    if (address.searchParams.has("domain")) address.searchParams.set("domain", settings.domain);
+    history.replaceState(null, "", address);
     form.hidden = true;
     show("");
     window.rantWeb = new WebBridge(node);
@@ -230,6 +236,13 @@ async function start(settings) {
     });
     canvas.focus();
 }
+
+// The explorer's plug button: the page starts over at the form, filled with what it is on now.
+globalThis.rantSwitch = () => {
+    const address = new URL(location.href);
+    address.searchParams.set("ask", "");
+    location.assign(address);
+};
 
 form.addEventListener("submit", (e) => {
     e.preventDefault();

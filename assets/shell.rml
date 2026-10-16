@@ -28,6 +28,7 @@
 			<div class="bar-button" data-event-click="toggle_theme">
 				<icon data-attr-name="light ? 'moon' : 'sun'" />
 			</div>
+			<div class="bar-button" data-if="web" data-event-click="switch_bridge"><icon name="plug" /></div>
 			<div class="bar-button right-toggle" data-class-on="right_open" data-event-click="toggle_sidebar('right')">
 				<icon name="panel-right" />
 			</div>
@@ -112,6 +113,7 @@
 						<span class="section" data-if="!filtering">{{topic_count}} topics</span>
 						<span class="section" data-if="filtering">{{topic_matched}} / {{topic_count}} topics</span>
 						<span class="icon-button foot-theme" data-event-click="toggle_theme"><icon data-attr-name="light ? 'moon' : 'sun'" /></span>
+						<span class="icon-button foot-bridge" data-if="web" data-event-click="switch_bridge"><icon name="plug" /></span>
 					</div>
 				</div>
 
@@ -327,6 +329,7 @@
 					<div class="pane-foot phone-only">
 						<span class="section">{{peer_count}} nodes</span>
 						<span class="icon-button foot-theme" data-event-click="toggle_theme"><icon data-attr-name="light ? 'moon' : 'sun'" /></span>
+						<span class="icon-button foot-bridge" data-if="web" data-event-click="switch_bridge"><icon name="plug" /></span>
 					</div>
 				</div>
 

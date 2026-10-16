@@ -49,11 +49,12 @@ Rml::Colourb palette(long long i)
     return colours[((i % n) + n) % n];
 }
 
-/* The strips kept free for text at the top and bottom of a drawing, in dp. */
-constexpr float TOP = 28, BOT = 22;
+/* The strips kept free for text at the top and bottom of a drawing, in dp, and the line a
+   reading takes above the time labels of a view over time. */
+constexpr float TOP = 28, BOT = 22, LINE = 18;
 
-/* Text sizes in dp: a label, the value at the top right, and a value shown alone. */
-constexpr float LABEL = 12, VALUE = 18, ALONE = 48;
+/* Text sizes in dp: a label, and a value shown alone. */
+constexpr float LABEL = 12, ALONE = 48;
 
 /* Line widths in dp: an axis or an outline, a data line or a shape, an arrow. Grids are 1. */
 constexpr float THIN = 1.5f, STROKE = 2.5f, ARROW = 3.5f;
@@ -378,20 +379,47 @@ void value_grid(Canvas& c, float x0, float x1, double lo, double hi, Y y_of, boo
 /* The left gutter a value grid labels in. */
 constexpr float GUTTER = 72;
 
-/* The current value at the top right of an area, clear of the pin and close buttons. */
-void corner(Canvas& c, const Area& a, const std::string& s, Rml::Colourb colour = ink.text)
+/* A piece of a reading, in the colour of the line it names, else dim. */
+struct Part {
+    std::string  s;
+    Rml::Colourb colour;
+};
+
+/* Every reading of a visual goes along the bottom of its area, in order from the left, and
+   its context at the right, faint. What does not fit is left out, the context first, then
+   the last readings. */
+void foot(Canvas& c, const Area& a, const std::vector<Part>& left, const std::string& right = {})
 {
-    c.text(s, a.x + a.w - c.dp(54), a.y + c.dp(21), Canvas::Right, colour, VALUE);
+    const float room = a.w - c.dp(16), gap = c.text_width("  ", LABEL);
+    std::vector<float> widths;
+    float all = 0;
+    for (const Part& part : left) {
+        widths.push_back(part.s.empty() ? -gap : c.text_width(part.s, LABEL));
+        all += widths.back() + gap;
+    }
+    const float rw = right.empty() ? 0 : c.text_width(right, LABEL);
+    const bool context = !right.empty() && all + rw <= room;
+    size_t n = left.size();
+    for (; n > 0 && all - gap > room; n--) all -= widths[n - 1] + gap;
+    float x = a.x + c.dp(8);
+    const float y = a.y + a.h - c.dp(6);
+    for (size_t i = 0; i < n; i++) {
+        if (left[i].s.empty()) continue;
+        c.text(left[i].s, x, y, Canvas::Left, left[i].colour, LABEL);
+        x += widths[i] + gap;
+    }
+    if (context) c.text(right, a.x + a.w - c.dp(8), y, Canvas::Right, ink.faint, LABEL);
 }
 
-/* Components along the bottom of an area: the left dim, the right faint. What does not fit
-   is left out, the right first. */
 void foot(Canvas& c, const Area& a, const std::string& left, const std::string& right = {})
 {
-    const float room = a.w - c.dp(16), lw = c.text_width(left, LABEL), rw = c.text_width(right, LABEL);
-    if (!left.empty() && lw <= room) c.text(left, a.x + c.dp(8), a.y + a.h - c.dp(6), Canvas::Left, ink.dim, LABEL);
-    if (!right.empty() && (left.empty() ? rw : lw + c.dp(16) + rw) <= room)
-        c.text(right, a.x + a.w - c.dp(8), a.y + a.h - c.dp(6), Canvas::Right, ink.faint, LABEL);
+    foot(c, a, std::vector<Part>{ { left, ink.dim } }, right);
+}
+
+/* The area of a view over time down to its foot, which sits above the time labels. */
+Area over_time(const Canvas& c)
+{
+    return Area{ 0, 0, c.w(), c.h() - c.dp(LINE) };
 }
 
 /* Values side by side across an area, each named above in its colour, as large as the
@@ -410,14 +438,6 @@ void side_by_side(Canvas& c, const Area& a, const std::vector<std::string>& name
         c.text(names[i], x, base - c.dp(size + 6), Canvas::Center, colours[i], LABEL);
         c.text(texts[i], x, base, Canvas::Center, ink.text, size);
     }
-}
-
-/* A drawing's second reading, at the top right where a plot's value goes, while there is
-   room beside a short card name. */
-void note(Canvas& c, const Area& a, const std::string& s)
-{
-    if (c.text_width(s, LABEL) > a.w - c.dp(54 + 120)) return;
-    c.text(s, a.x + a.w - c.dp(54), a.y + c.dp(19), Canvas::Right, ink.dim, LABEL);
 }
 
 /* An element's index beside the point it is drawn at, in its colour. */
@@ -1396,7 +1416,7 @@ private:
         else { const double m = (hi - lo) * 0.1; lo -= m; hi += m; }
         ease_range(lo, hi);
 
-        const float top = c.dp(TOP), bottom = c.h() - c.dp(BOT);
+        const float top = c.dp(TOP), bottom = c.h() - c.dp(BOT + LINE);
         const float x0 = c.dp(GUTTER), x1 = c.w() - c.dp(10);
         auto X = [&](double t) { return (float)(x0 + (x1 - x0) * (1 - (now - t) / PLOT_SECONDS)); };
         auto Y = [&](double v) { return (float)(top + (bottom - top) * (1 - (v - lo_) / (hi_ - lo_))); };
@@ -1437,11 +1457,11 @@ private:
             return;
         }
         lines(c, { path_ }, { ink.accent }, node.number, node.is_float);
-        corner(c, c.all(), value_text(node));
+        foot(c, over_time(c), { { value_text(node), ink.accent } });
     }
 
-    /* A Float4, Double4 or Int4: a line per component in its own colour, named at the top
-       right, or without history the four values side by side. */
+    /* A Float4, Double4 or Int4: a line per component in its own colour, named in the foot,
+       or without history the four values side by side. */
     void vec4(Canvas& c, const Nodes& nodes)
     {
         const char* names[4] = { "x", "y", "z", "w" };
@@ -1461,20 +1481,16 @@ private:
         }
         const int x = kid(nodes, found_, "x");
         lines(c, paths, colours, x >= 0 ? nodes[x].number : 0, is_float);
-        /* each component named in its colour at the top right, with its value while there is room */
-        std::vector<std::string> legend;
+        /* each component named in its colour, with its value while all four fit */
+        std::vector<Part> legend;
         float wide = 0;
         for (int i = 0; i < 4; i++) {
-            legend.push_back(std::string(names[i]) + " " + texts[i]);
-            wide += c.text_width(legend.back(), LABEL) + c.dp(12);
+            legend.push_back({ std::string(names[i]) + " " + texts[i], colours[i] });
+            wide += c.text_width(legend.back().s + "  ", LABEL);
         }
-        if (wide > c.w() - c.dp(54 + 120))
-            for (int i = 0; i < 4; i++) legend[i] = names[i];
-        float right = c.w() - c.dp(54);
-        for (int i = 3; i >= 0; i--) {
-            c.text(legend[i], right, c.dp(19), Canvas::Right, colours[i], LABEL);
-            right -= c.text_width(legend[i], LABEL) + c.dp(12);
-        }
+        if (wide > c.w() - c.dp(16))
+            for (int i = 0; i < 4; i++) legend[i].s = names[i];
+        foot(c, over_time(c), legend);
     }
 
     void ease_range(double lo, double hi)
@@ -1504,7 +1520,7 @@ private:
         auto X = [&](double t) {
             return std::max(left, (float)(left + (right - left) * (1 - (now - t) / PLOT_SECONDS)));
         };
-        const float top = c.dp(TOP) + c.dp(4), bottom = c.h() - c.dp(BOT);
+        const float top = c.dp(TOP) + c.dp(4), bottom = c.h() - c.dp(BOT + LINE);
         float drawn = -1;
         for (size_t i = 0; i < points.size();) {
             size_t j = i;
@@ -1518,7 +1534,7 @@ private:
             i = j + 1;
         }
         time_grid(c, X, now, c.dp(TOP) + c.dp(2), bottom);
-        corner(c, c.all(), value_text(node));
+        foot(c, over_time(c), value_text(node));
     }
 
     /* ---------------------------------------------------------------- arrays of numbers */
@@ -1557,7 +1573,7 @@ private:
             c.rect(x, y_top, std::max(1.f, right - x), std::max(1.f, y_bot - y_top), ink.accent);
             if (n <= LABELLED) c.text(std::to_string(first), x + width * (1 - gap) / 2, c.h() - c.dp(6), Canvas::Center, ink.faint, LABEL);
         }
-        foot(c, c.all(), {}, format_number((double)n) + " values");
+        foot(c, c.all(), "", format_number((double)n) + " values");
     }
 
     /* ---------------------------------------------------------------- planes */
@@ -1603,8 +1619,7 @@ private:
         }
         c.line(p(0, 0), p(at.at), ink.faint, THIN);
         heading(c, p, at, 0.2 * r, ink.accent);
-        note(c, c.all(), "angle " + degrees(at.angle));
-        foot(c, c.all(), "x " + f3(at.at.x) + "  y " + f3(at.at.y));
+        foot(c, c.all(), { { "x " + f3(at.at.x) + "  y " + f3(at.at.y), ink.dim }, { "angle " + degrees(at.angle), ink.dim } });
     }
 
     /* A chain of Pose2Ds: consecutive ones joined, a heading at each. */
@@ -1632,9 +1647,9 @@ private:
         hold(reach_[0], one);
         const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_));
         draw_figure(c, p, one, ink.accent);
-        if (one.kind == "OrientedBox2D") note(c, c.all(), "angle " + degrees(one.angle));
         const auto text = describe(one);
-        foot(c, c.all(), text.first, text.second);
+        foot(c, c.all(), { { text.first, ink.dim }, { one.kind == "OrientedBox2D" ? "angle " + degrees(one.angle) : "", ink.dim } },
+             text.second);
     }
 
     /* An array of one kind of 2D shape on one plane, each in its own colour. */
@@ -1692,9 +1707,8 @@ private:
             c.line(s(0, 0, 0), s(p.at), ink.faint, THIN);
             triad(c, s, p.at, p.turn, 0.2 * r);
         });
-        note(c, c.all(), euler(p.turn));
         const int parent = framed ? kid(nodes, found_, "parent") : -2;
-        foot(c, c.all(), "x " + f3(p.at.x) + "  y " + f3(p.at.y) + "  z " + f3(p.at.z),
+        foot(c, c.all(), { { "x " + f3(p.at.x) + "  y " + f3(p.at.y) + "  z " + f3(p.at.z), ink.dim }, { euler(p.turn), ink.dim } },
              parent >= 0 && !nodes[parent].text.empty() ? "in " + nodes[parent].text : std::string());
     }
 
@@ -1808,9 +1822,8 @@ private:
         hold(reach_[0], one);
         const Scene s = scene(c, c.all(), reach_[0].grow({}, dt_), camera());
         layered(c, s, middle(one), nullptr, [&] { draw_solid(c, s, one, ink.accent); });
-        if (one.kind == "OrientedBox") note(c, c.all(), euler(one.turn));
         const auto text = describe(one);
-        foot(c, c.all(), text.first, text.second);
+        foot(c, c.all(), { { text.first, ink.dim }, { one.kind == "OrientedBox" ? euler(one.turn) : "", ink.dim } }, text.second);
     }
 
     /* An array of one kind of shape in one scene, each in its own colour. */
@@ -1943,7 +1956,7 @@ private:
             if (items.size() <= LABELLED)
                 c.text(std::to_string(i), c.dp(10) + i * width + width / 2, c.h() - c.dp(BOT + 4), Canvas::Center, ink.faint, LABEL);
         }
-        foot(c, c.all(), {}, format_number((double)items.size()) + " colors");
+        foot(c, c.all(), "", format_number((double)items.size()) + " colors");
     }
 
     /* One row per joint and a column each for position, velocity and effort: a bar from

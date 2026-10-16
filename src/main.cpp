@@ -2498,7 +2498,7 @@ int main(int argc, char** argv)
                 const float rest = stops[ui.sheet_stop];
                 if (!ui.sheet_dragging && std::abs(rest - ui.sheet_dp) > 0.5f) {
                     ui.sheet_dp = rest;
-                    document->SetProperty("--sheet", Rml::CreateString("%.0fdp", rest));
+                    document->SetProperty("--sheet", Rml::CreateString("%.0fdp", std::ceil(rest)));   /* never a hair short, which scrolls */
                 }
             }
         }

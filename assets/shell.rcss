@@ -332,7 +332,7 @@ body.compact #logo, body.compact #topbar .bar-button, body.compact #window-butto
 body.compact #statusbar, body.compact .splitter { display: none; }
 
 body.compact .tab-content { position: relative; }
-body.compact .viz-area { margin-top: 68dp; }
+body.compact .viz-area { margin: 68dp 0dp 12dp 0dp; }   /* clear of the floating head and the grip alike */
 
 body.compact #topbar .bar-button.left-toggle {
 	display: flex;

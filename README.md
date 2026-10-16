@@ -12,8 +12,8 @@ out the UI from RML and RCSS.
 
 `--web-server` opens no window. It serves the explorer as a web page, by default on port
 8090 of every address, for any browser on the network. The page reaches the mesh through a
-Rant bridge, which it looks for on port 7480 of the same host. `rant web enable` runs the
-server as a service.
+Rant bridge, which it looks for on port 7480 of the same host. `rant explore web enable`
+runs the server as a service.
 
 `F12` toggles the RmlUi debugger and `F5` reloads the assets. `RANT_UI_ZOOM` scales the
 whole UI. The exe carries its `assets/` embedded, so a copy runs on its own. An exe built

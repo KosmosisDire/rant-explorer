@@ -1,0 +1,16 @@
+diff --git a/Source/Core/ScrollController.cpp b/Source/Core/ScrollController.cpp
+index c9a1169d..9908eda7 100644
+--- a/Source/Core/ScrollController.cpp
++++ b/Source/Core/ScrollController.cpp
+@@ -15,8 +15,9 @@ static constexpr float SMOOTHSCROLL_VELOCITY_CONSTANT = 800.f; // [dp/s]
+ static constexpr float SMOOTHSCROLL_VELOCITY_SQUARE_FACTOR = 0.05f;
+ static constexpr float SMOOTHSCROLL_FIRST_FRAME_DELTA_TIME_MIN = 1.f / 100.f; // To make the scroll feel a bit more responsive. [s]
+ 
+-// Factor to multiply friction by before applying to velocity.
+-static constexpr float INERTIA_FRICTION_FACTOR = 5.0f;
++// Factor to multiply friction by before applying to velocity. A phone's own lists slow by
++// about 2, so a fling glides as far as the finger expects.
++static constexpr float INERTIA_FRICTION_FACTOR = 2.0f;
+ static constexpr float INERTIA_VELOCITY_CUTOFF = 30.0f;
+ 
+ // Saturate the delta time to some reasonable FPS value, to avoid large steps in case of stuttering or freezing.

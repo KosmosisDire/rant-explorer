@@ -419,8 +419,8 @@ body.compact .sidebar.right > * { width: 100%; }
 body.compact .sidebar.right > .tt-head { display: none; }
 body.compact .c-topic-value, body.compact .c-topic-jitter, body.compact .c-type { display: none; }
 
-/* A phone stacks a panel's pairs one to a line and leaves out whatever is marked more, such
-   as a table's extra columns. */
+/* A phone stacks a panel's pairs one to a line and leaves out whatever is marked more: a
+   table's extra columns, the mesh head's hops, focus and shuffle. */
 body.compact .kv-row { flex-direction: column; }
 body.compact .kv { flex: 0 0 auto; }
 body.compact .kv + .kv { border-left-width: 0dp; border-top: 1dp var(--border); }
@@ -457,7 +457,20 @@ body.compact.sheet-dragging .sidebar.right { transition: none; }
 body.compact .detail { padding-bottom: var(--grip); }
 body.compact .detail > .pane-body { padding: 68dp 16dp 16dp 16dp; }
 body.compact .detail > .pane-body.feed { padding: 0dp; }
-body.compact .detail.graph > .pane-head { padding-left: 68dp; height: 68dp; }
+/* The mesh's head floats over the graph beside the drawer button, like a topic's head. */
+body.compact .detail.graph > .pane-head {
+	position: absolute;
+	left: 68dp;
+	right: 12dp;
+	top: 12dp;
+	height: 44dp;
+	padding: 0dp 6dp 0dp 10dp;
+	z-index: 10;
+	background-color: var(--float);
+	border: 1dp var(--border2);
+	border-radius: 10dp;
+}
+body.compact .detail.graph > .pane-head .filter { border-width: 0dp; background-color: transparent; }
 
 body.compact .feed .detail-head {
 	position: absolute;

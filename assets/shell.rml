@@ -559,18 +559,18 @@
 						<span class="icon-button" data-class-on="mesh_funnel" data-event-click="open_filter_menu('mesh')">
 							<icon name="funnel" />
 						</span>
-						<span class="head-note">Hops</span>
-						<span class="pill" data-class-on="mesh_hops == 1" data-class-off="mesh.mode != 1"
+						<span class="head-note more">Hops</span>
+						<span class="pill more" data-class-on="mesh_hops == 1" data-class-off="mesh.mode != 1"
 							data-event-click="set_hops(1)">1</span>
-						<span class="pill" data-class-on="mesh_hops == 2" data-class-off="mesh.mode != 1"
+						<span class="pill more" data-class-on="mesh_hops == 2" data-class-off="mesh.mode != 1"
 							data-event-click="set_hops(2)">2</span>
-						<span class="pill" data-class-on="mesh_hops == 3" data-class-off="mesh.mode != 1"
+						<span class="pill more" data-class-on="mesh_hops == 3" data-class-off="mesh.mode != 1"
 							data-event-click="set_hops(3)">3</span>
-						<span class="pill" data-class-on="mesh_hops == 0" data-class-off="mesh.mode != 1"
+						<span class="pill more" data-class-on="mesh_hops == 0" data-class-off="mesh.mode != 1"
 							data-event-click="set_hops(0)">All</span>
-						<span class="icon-button" data-class-on="mesh_focus" data-class-off="mesh.mode == 0"
+						<span class="icon-button more" data-class-on="mesh_focus" data-class-off="mesh.mode == 0"
 							data-event-click="toggle_focus"><icon name="focus" /></span>
-						<span class="icon-button" data-event-click="relayout_mesh"><icon name="shuffle" /></span>
+						<span class="icon-button more" data-event-click="relayout_mesh"><icon name="shuffle" /></span>
 						<span class="icon-button" data-event-click="fit_mesh"><icon name="scan" /></span>
 					</div>
 					<mesh-graph></mesh-graph>

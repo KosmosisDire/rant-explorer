@@ -1343,11 +1343,23 @@ int main(int argc, char** argv)
                 quit.type = SDL_EVENT_QUIT;
                 SDL_PushEvent(&quit);
             });
+        /* On a phone a tab with no list to pick from, the mesh, closes the drawer it was
+           picked in and shows its sheet's grip, as a pick would. */
         ctor.BindEventCallback("set_tab",
-            [&ui](Rml::DataModelHandle handle, Rml::Event&, const Rml::VariantList& args) {
+            [&ui](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList& args) {
                 if (args.empty()) return;
                 ui.tab = args[0].Get<Rml::String>();
                 handle.DirtyVariable("tab");
+                Rml::ElementDocument* document = event.GetTargetElement()->GetOwnerDocument();
+                Rml::Element*         tab      = document->GetElementById(ui.tab);
+                if (ui.size == "compact" && tab && !tab->QuerySelector(".sidebar.left")) {
+                    ui.left_open = ui.scrim = false;
+                    ui.right_open = true;
+                    handle.DirtyVariable("left_open");
+                    handle.DirtyVariable("right_open");
+                    handle.DirtyVariable("scrim");
+                    apply_body(document, ui);
+                }
             });
         /* A top bar toggle shows or hides its sidebar, and a tap beside one that is over
            closes it. */

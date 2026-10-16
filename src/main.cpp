@@ -825,12 +825,13 @@ Rml::ElementDocument* reload_document(Rml::Context* context, Rml::ElementDocumen
     return fresh;
 }
 
-void usage(const char* path)
+/* To stdout when asked for with --help, else to stderr beside the error. */
+void usage(const char* path, FILE* out)
 {
     const char* exe = path;
     for (const char* c = path; *c; c++)
         if (*c == '/' || *c == '\\') exe = c + 1;
-    std::fprintf(stderr,
+    std::fprintf(out,
         "usage: %s [--domain N] [--group IP] [--port N] [--if IP] [--name STR]\n"
         "       %s --web-server [--port N] [--bind IP] [--log-file PATH]\n"
         "       %s --version\n"
@@ -864,8 +865,8 @@ int main(int argc, char** argv)
 #ifndef __EMSCRIPTEN__
     route_output(web.log_file);
 #endif
-    if (help) { usage(argv[0]); return 0; }
-    if (bad || (serve && node_flag) || (!serve && server_flag)) { usage(argv[0]); return 2; }
+    if (help) { usage(argv[0], stdout); return 0; }
+    if (bad || (serve && node_flag) || (!serve && server_flag)) { usage(argv[0], stderr); return 2; }
     if (version) { std::printf("%s\n", RANT_EXPLORER_VERSION); return 0; }
 #ifndef __EMSCRIPTEN__
     if (serve) {

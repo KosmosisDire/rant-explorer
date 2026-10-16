@@ -29,11 +29,12 @@ void let_go(Rml::Context* context, SDL_FingerID id, Rml::Vector2f at)
     context->ProcessTouchCancel(Rml::TouchList{ Rml::Touch{ (Rml::TouchId)id, at } });
 }
 
-/* An element marked hold does its own holding, so a held finger there is no right click. */
+/* An element marked hold, or a text field, does its own holding, so a held finger there is
+   no right click. */
 bool holds_itself(Rml::Element* element)
 {
     for (; element; element = element->GetParentNode())
-        if (element->HasAttribute("hold")) return true;
+        if (element->HasAttribute("hold") || element->GetTagName() == "input") return true;
     return false;
 }
 

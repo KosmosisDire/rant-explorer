@@ -22,9 +22,19 @@ bool is_text(Rml::Element* element)
 }
 
 #ifdef __EMSCRIPTEN__
+/* A lifted finger is followed by a made up mouse press, which focuses the canvas and so
+   closes the keyboard. SDL reads fingers as pointer events, so the canvas cancels the touch
+   end that would make it. A tap after a focus the page refused raises the keyboard inside
+   the gesture, which a phone may insist on. */
+EM_JS(void, keyboard_prepare, (), {
+    Module.canvas.addEventListener("touchend", (e) => {
+        if (e.cancelable) e.preventDefault();
+        if (Module.keyboardOpen && document.activeElement !== Module.keyboard) Module.keyboard.focus();
+    }, { passive: false });
+});
+
 /* The hidden input is made once. Its keys stop at it, so SDL, which hears keys on the
-   window, never types them twice. A tap after a focus the page refused still raises it,
-   since a phone opens its keyboard only inside a gesture. */
+   window, never types them twice. */
 EM_JS_DEPS(keyboard, "$stringToNewUTF8,$UTF8ToString");
 EM_JS(void, keyboard_open, (const char* text, const char* mode), {
     let input = Module.keyboard;
@@ -42,7 +52,6 @@ EM_JS(void, keyboard_open, (const char* text, const char* mode), {
         });
         input.addEventListener("input", () => { const p = stringToNewUTF8(input.value); _keyboard_text(p); _free(p); });
         input.addEventListener("blur", () => { if (Module.keyboardOpen) { Module.keyboardOpen = false; _keyboard_closed(); } });
-        Module.canvas.addEventListener("touchend", () => { if (Module.keyboardOpen && document.activeElement !== input) input.focus(); });
         document.body.appendChild(input);
     }
     input.inputMode = UTF8ToString(mode);
@@ -56,6 +65,7 @@ EM_JS(void, keyboard_close, (), {
     if (Module.keyboard) Module.keyboard.blur();
 });
 #else
+void keyboard_prepare() {}
 void keyboard_open(const char*, const char*) {}
 void keyboard_close() {}
 #endif
@@ -107,6 +117,7 @@ void keyboard_closed()
 Keyboard::Keyboard(Rml::Context* context, const bool& touch) : touch_(touch)
 {
     g_context = context;
+    keyboard_prepare();
 }
 
 void Keyboard::listen(Rml::ElementDocument* document)

@@ -1380,8 +1380,8 @@ int main(int argc, char** argv)
                 }
                 ui.sheet_stop = stop;
             });
-        /* A phone's cards follow a sideways drag of a card or the topic head, then settle on
-           the next card past a short throw, else back. The slide after is the shift running out. */
+        /* A phone's cards follow a sideways drag of the topic head, then settle on the next
+           card past a short throw, else back. The slide after is the shift running out. */
         ctor.BindEventCallback("swipe_card",
             [&ui, context](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList&) {
                 Rml::Element* area = event.GetCurrentElement()->GetOwnerDocument()->QuerySelector(".viz-area");

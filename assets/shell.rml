@@ -144,8 +144,7 @@
 							<div class="hint" data-if="cards.size == 0"><span>Toggle a field in the value tree to see it
 									here.</span></div>
 							<div class="viz-card" data-for="c : cards" data-attr-topic="c.topic"
-								data-attr-path="c.path" data-event-dragstart="swipe_card" data-event-drag="swipe_card"
-								data-event-dragend="swipe_card">
+								data-attr-path="c.path">
 								<span class="viz-name mono"><span class="viz-topic"
 										data-if="c.other">{{c.topic_name}}</span><span>{{c.name}}</span></span>
 								<span class="viz-pin" data-class-on="c.pinned"

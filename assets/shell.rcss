@@ -464,9 +464,9 @@ body.compact .feed .detail-head {
 body.compact .feed .detail-head .hero { flex: 1 1 0; overflow: hidden; white-space: nowrap; font-size: 15dp; }
 body.compact .feed .detail-head .tag { display: none; }
 
-/* A phone shows one card at a time. A sideways drag of a card or of the head pages them, and
-   a visual that drags itself pages by the head. The dots say where, and a tap on one goes. */
-body.compact .viz-card, body.compact .feed .detail-head { drag: drag; }
+/* A phone shows one card at a time. A sideways drag of the head pages them, since a visual
+   keeps its own drags. The dots say where, and a tap on one goes. */
+body.compact .feed .detail-head { drag: drag; }
 
 .pager { display: none; }
 body.compact .pager { display: flex; height: 100%; }

@@ -25,15 +25,17 @@ Visual struct_visual(const std::string& name)
         { "Float3", Visual::Vec3 }, { "Double3", Visual::Vec3 }, { "Int3", Visual::Vec3 },
         { "Float4", Visual::Vec4 }, { "Double4", Visual::Vec4 }, { "Int4", Visual::Vec4 },
         { "Quaternion", Visual::Quat }, { "Pose", Visual::Pose }, { "Transform", Visual::Pose },
-        { "Pose2D", Visual::Pose2D },
+        { "Pose2D", Visual::Pose2D }, { "Transform2D", Visual::Pose2D },
         { "Twist", Visual::Twist }, { "Wrench", Visual::Wrench },
+        { "Twist2D", Visual::Twist2D }, { "Wrench2D", Visual::Wrench2D },
         { "AlignedBox", Visual::Solid }, { "OrientedBox", Visual::Solid }, { "Plane", Visual::Solid },
         { "Segment", Visual::Solid }, { "Sphere", Visual::Solid }, { "Capsule", Visual::Solid },
         { "Cylinder", Visual::Solid }, { "Cone", Visual::Solid }, { "Polygon", Visual::Solid },
         { "AlignedBox2D", Visual::Figure }, { "OrientedBox2D", Visual::Figure },
-        { "Circle", Visual::Figure }, { "Polygon2D", Visual::Figure },
+        { "Circle", Visual::Figure }, { "Polygon2D", Visual::Figure }, { "Plane2D", Visual::Figure },
+        { "Segment2D", Visual::Figure }, { "Capsule2D", Visual::Figure },
         { "GeoPoint", Visual::Geo }, { "Color", Visual::Color },
-        { "JointState", Visual::Joints }, { "Image", Visual::Image },
+        { "JointState", Visual::Joints }, { "JointNames", Visual::Chips }, { "Image", Visual::Image },
         { "VideoFrame", Visual::Video }, { "ExternalVideoStream", Visual::Stream },
     };
     for (const auto& entry : table)
@@ -49,6 +51,7 @@ Visual array_of_struct(const std::string& name)
         { "Float3", Visual::Vec3s }, { "Double3", Visual::Vec3s }, { "Int3", Visual::Vec3s },
         { "Float2", Visual::Vec2s }, { "Double2", Visual::Vec2s }, { "Int2", Visual::Vec2s },
         { "Pose", Visual::Poses }, { "Transform", Visual::Poses }, { "Pose2D", Visual::Poses2D },
+        { "Transform2D", Visual::Poses2D },
         { "GeoPoint", Visual::Geos },
         { "Color", Visual::Colors },
     };

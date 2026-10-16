@@ -73,7 +73,8 @@ struct ValueView {
    name, everything else by shape. Kv is the fallback, a plain list of the fields. */
 enum class Visual {
     None, Plot, State, Text, Time, Duration, Uuid, Hex, Chips, Bars, Cells, Table, Matrix, Multi,
-    Vec2, Vec3, Vec4, Quat, Pose, Pose2D, Twist, Wrench, Solid, Figure, Geo, Color, Joints, Image, Video, Stream,
+    Vec2, Vec3, Vec4, Quat, Pose, Pose2D, Twist, Twist2D, Wrench, Wrench2D, Solid, Figure, Geo, Color, Joints,
+    Image, Video, Stream,
     Vec2s, Vec3s, Poses, Poses2D, Solids, Figures, Geos, Colors, Kv,
 };
 Visual visual_for(const Capture::ValueNode& node);

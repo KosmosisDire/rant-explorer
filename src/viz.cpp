@@ -855,7 +855,7 @@ std::string counted(size_t n, const std::string& kind)
 /* The box of a 2D scene fitted to an area, with the grid and both axes, x right and y up,
    each named at its end. Its reach is a largest component, since the box is square. */
 struct Plane {
-    double k = 1, cx = 0, cy = 0;
+    double k = 1, cx = 0, cy = 0, r = 1;
     Rml::Vector2f operator()(double x, double y) const { return { (float)(cx + x * k), (float)(cy - y * k) }; }
     Rml::Vector2f operator()(const V3& p) const { return (*this)(p.x, p.y); }
 };
@@ -863,6 +863,7 @@ struct Plane {
 Plane plane(Canvas& c, const Area& a, double r)
 {
     Plane p;
+    p.r  = r;
     p.k  = std::min(a.w - c.dp(16), a.h - c.dp(TOP + BOT + 4)) / (2 * r);
     p.cx = a.x + a.w / 2;
     p.cy = a.y + c.dp(TOP) + (a.h - c.dp(TOP + BOT)) / 2;
@@ -909,10 +910,11 @@ std::string degrees(double radians)
 /* A standard 2D shape read from its node, as the corners of its outline, or a circle. */
 struct Figure {
     std::string     kind;
-    V3              centre;
+    V3              centre;    /* a line's point */
     V3              size;      /* a box's edge lengths */
+    V3              normal;    /* a line's */
     double          angle = 0, radius = 0;
-    std::vector<V3> points;    /* a box's or a polygon's corners in order */
+    std::vector<V3> points;    /* a box's or a polygon's corners in order, a segment's or a capsule's ends */
 };
 
 Figure figure(const Nodes& nodes, int index, const std::string& kind)
@@ -946,7 +948,32 @@ Figure figure(const Nodes& nodes, int index, const std::string& kind)
         if (points >= 0)
             for (const int k : children_of(nodes, points)) out.points.push_back(vec(nodes, k));
         for (const V3& v : out.points) out.centre = out.centre + v * (1.0 / out.points.size());
+    } else if (kind == "Plane2D") {
+        out.centre = at("position");
+        out.normal = at("normal");
+    } else if (kind == "Segment2D") {
+        out.points = { at("a"), at("b") };
+    } else if (kind == "Capsule2D") {
+        const int axis = kid(nodes, index, "axis");
+        out.points = { V3{}, V3{} };
+        if (axis >= 0) out.points = { vec(nodes, kid(nodes, axis, "a")), vec(nodes, kid(nodes, axis, "b")) };
+        out.radius = number(nodes, index, "radius");
     }
+    return out;
+}
+
+/* A capsule's outline: its sides and the half circles around both ends. */
+std::vector<V3> stadium(const V3& a, const V3& b, double radius)
+{
+    const double len = length(b - a);
+    const V3 d = len > 1e-12 ? (b - a) * (1 / len) : V3{ 1, 0, 0 };
+    const double side = std::atan2(d.x, -d.y);   /* the left of the axis, from +x */
+    std::vector<V3> out;
+    for (const auto& end : { std::make_pair(b, side), std::make_pair(a, side + 3.14159265358979) })
+        for (int i = 0; i <= 24; i++) {
+            const double t = end.second - 3.14159265358979 * i / 24;
+            out.push_back(V3{ end.first.x + radius * std::cos(t), end.first.y + radius * std::sin(t), 0 });
+        }
     return out;
 }
 
@@ -957,7 +984,8 @@ void hold(Reach& reach, const Figure& f)
         reach.seen = std::max({ reach.seen, std::fabs(p.x) + pad, std::fabs(p.y) + pad });
     };
     if (f.kind == "Circle") take(f.centre, f.radius);
-    for (const V3& p : f.points) take(p, 0);
+    if (f.kind == "Plane2D") take(f.centre * 2, 0);   /* its point at most half way out, so the line shows */
+    for (const V3& p : f.points) take(p, f.kind == "Capsule2D" ? f.radius : 0);
 }
 
 void draw_figure(Canvas& c, const Plane& p, const Figure& f, Rml::Colourb colour)
@@ -965,6 +993,29 @@ void draw_figure(Canvas& c, const Plane& p, const Figure& f, Rml::Colourb colour
     if (f.kind == "Circle") {
         c.polyline(circle(p(f.centre), (float)(f.radius * p.k)), colour, STROKE);
         c.dot(p(f.centre), colour, 3);
+        return;
+    }
+    if (f.kind == "Plane2D") {
+        /* the endless line cut to the grid, and its normal from its point */
+        const double len = length(f.normal);
+        const V3 n = len > 1e-12 ? f.normal * (1 / len) : V3{ 0, 1, 0 }, along{ -n.y, n.x, 0 };
+        Rml::Vector2f a = p(f.centre + along * (-4 * p.r)), b = p(f.centre + along * (4 * p.r));
+        const Rml::Vector2f lo = p(-p.r, p.r), hi = p(p.r, -p.r);
+        if (clip(a.x, a.y, b.x, b.y, lo.x, lo.y, hi.x, hi.y)) c.line(a, b, colour, STROKE);
+        c.arrow(p(f.centre), p(f.centre + n * (0.2 * p.r)), colour, STROKE);
+        c.dot(p(f.centre), colour, 3);
+        return;
+    }
+    if (f.kind == "Segment2D" && f.points.size() == 2) {
+        c.line(p(f.points[0]), p(f.points[1]), colour, STROKE);
+        for (const V3& v : f.points) c.dot(p(v), colour, 3.5f);
+        return;
+    }
+    if (f.kind == "Capsule2D" && f.points.size() == 2) {
+        std::vector<Rml::Vector2f> outline;
+        for (const V3& v : stadium(f.points[0], f.points[1], f.radius)) outline.push_back(p(v));
+        c.polyline(outline, colour, STROKE, true);
+        c.dashed(p(f.points[0]), p(f.points[1]), faded(colour, 0.6f), THIN);
         return;
     }
     std::vector<Rml::Vector2f> corners;
@@ -979,6 +1030,17 @@ std::pair<std::string, std::string> describe(const Figure& f)
     const std::string at = "at (" + f3(f.centre.x) + ", " + f3(f.centre.y) + ")";
     if (f.kind == "Circle")    return { "radius " + f3(f.radius), at };
     if (f.kind == "Polygon2D") return { format_number((double)f.points.size()) + " points", {} };
+    if (f.kind == "Plane2D") {
+        const double len = length(f.normal);
+        const V3 n = len > 1e-12 ? f.normal * (1 / len) : V3{};
+        return { "normal (" + f3(n.x) + ", " + f3(n.y) + ")", at };
+    }
+    if (f.kind == "Segment2D" || f.kind == "Capsule2D") {
+        const V3 a = f.points.empty() ? V3{} : f.points[0], b = f.points.size() > 1 ? f.points[1] : a;
+        const std::string len = "length " + f3(length(b - a));
+        return { f.kind == "Capsule2D" ? "radius " + f3(f.radius) + "  " + len : len,
+                 "from (" + f3(a.x) + ", " + f3(a.y) + ")" };
+    }
     return { "size " + f3(f.size.x) + " x " + f3(f.size.y), at };
 }
 
@@ -993,6 +1055,22 @@ void curl(Canvas& c, const Scene& s, const V3& axis, double rho, double sweep, R
     for (int i = 0; i <= steps; i++) {
         const double t = sweep * i / steps;
         arc.push_back(s((a * std::cos(t) + b * std::sin(t)) * rho));
+    }
+    const Rml::Vector2f tip = arc.back();
+    arc.pop_back();
+    c.polyline(arc, colour, STROKE);
+    c.arrow(arc.back(), tip, colour, STROKE);
+}
+
+/* A turn on a plane: an arc about centre of radius rho, sweeping sweep radians from +x,
+   toward +y when positive, with a head at its end. */
+void curl_2d(Canvas& c, const Plane& p, const V3& centre, double rho, double sweep, Rml::Colourb colour)
+{
+    const int steps = 32;
+    std::vector<Rml::Vector2f> arc;
+    for (int i = 0; i <= steps; i++) {
+        const double t = sweep * i / steps;
+        arc.push_back(p(centre.x + rho * std::cos(t), centre.y + rho * std::sin(t)));
     }
     const Rml::Vector2f tip = arc.back();
     arc.pop_back();
@@ -1133,15 +1211,17 @@ protected:
         case Visual::Quat:       quaternion(c, nodes); break;
         case Visual::Pose:       pose(c, nodes, node); break;
         case Visual::Twist:      twist(c, nodes); break;
+        case Visual::Twist2D:    twist_2d(c, nodes); break;
         case Visual::Wrench:     wrench(c, nodes); break;
+        case Visual::Wrench2D:   wrench_2d(c, nodes); break;
         case Visual::Solid:      solid_one(c, nodes, node); break;
         case Visual::Solids:     solids(c, nodes, node); break;
         case Visual::Geo:        geo(c, nodes); break;
         case Visual::Color:      colour(c, nodes); break;
         case Visual::Joints:     joints(c, nodes); break;
         case Visual::Vec2s:      vec2s(c, nodes); break;
-        case Visual::Pose2D:     pose_2d(c, nodes); break;
-        case Visual::Poses2D:    poses_2d(c, nodes); break;
+        case Visual::Pose2D:     pose_2d(c, nodes, node); break;
+        case Visual::Poses2D:    poses_2d(c, nodes, node); break;
         case Visual::Figure:     figure_one(c, nodes, node); break;
         case Visual::Figures:    figures(c, nodes, node); break;
         case Visual::Vec3s:      vec3s(c, nodes); break;
@@ -1228,7 +1308,9 @@ private:
     void fill(const Nodes& nodes)
     {
         const ValueNode& node = found_ < 0 ? root_ : nodes[found_];
-        const std::vector<int> children = children_of(nodes, found_);
+        /* JointNames shows its names, each numbered as a JointState counts its joints */
+        const bool named = visual_ == Visual::Chips && node.kind == ValueNode::Struct;
+        const std::vector<int> children = children_of(nodes, named ? kid(nodes, found_, "name") : found_);
         const std::string count = std::to_string(children.size());
         switch (visual_) {
         case Visual::Text:
@@ -1282,7 +1364,8 @@ private:
             for (size_t i = 0; i < children.size(); i++) rml += "<span class=\"chip mono slot\"></span>";
             if (children.empty()) rml += "<span class=\"faint\">empty</span>";
             html("chips:" + count, rml + "</div>");
-            for (size_t i = 0; i < children.size(); i++) put(i, human(nodes[children[i]]), nodes[children[i]].path);
+            for (size_t i = 0; i < children.size(); i++)
+                put(i, (named ? std::to_string(i) + " " : "") + human(nodes[children[i]]), nodes[children[i]].path);
             break;
         }
         case Visual::Kv: {
@@ -1605,29 +1688,34 @@ private:
         foot(c, c.all(), format_number((double)v.size()) + " vectors");
     }
 
-    /* A Pose2D: its heading at its position joined to the origin, and the position's trail. */
-    void pose_2d(Canvas& c, const Nodes& nodes)
+    /* A Pose2D or a Transform2D: its heading at its position joined to the origin, and the
+       position's trail. */
+    void pose_2d(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
-        const Placed2D at = placed_2d(nodes, found_);
+        const bool framed = node.std_name == "Transform2D";
+        const Placed2D at = placed_2d(nodes, framed ? kid(nodes, found_, "pose") : found_);
         /* the margin keeps the heading inside */
         const double r = reach_[0].grow({ at.at.x, at.at.y }, dt_, 1.3);
         const Plane p = plane(c, c.all(), r);
         if (history_) {
-            const std::string base = child_path(path_, "position");
+            const std::string base = child_path(framed ? child_path(path_, "pose") : path_, "position");
             Dots dots(c, ink.trail, 2);
             for (const V3& t : trail(base + ".x", base + ".y")) dots.add(p(t.x, t.y));
         }
         c.line(p(0, 0), p(at.at), ink.faint, THIN);
         heading(c, p, at, 0.2 * r, ink.accent);
-        foot(c, c.all(), { { "x " + f3(at.at.x) + "  y " + f3(at.at.y), ink.dim }, { "angle " + degrees(at.angle), ink.dim } });
+        const int parent = framed ? kid(nodes, found_, "parent") : -2;
+        foot(c, c.all(), { { "x " + f3(at.at.x) + "  y " + f3(at.at.y), ink.dim }, { "angle " + degrees(at.angle), ink.dim } },
+             parent >= 0 && !nodes[parent].text.empty() ? "in " + nodes[parent].text : std::string());
     }
 
-    /* A chain of Pose2Ds: consecutive ones joined, a heading at each. */
-    void poses_2d(Canvas& c, const Nodes& nodes)
+    /* A chain of Pose2Ds or Transform2Ds: consecutive ones joined, a heading at each. */
+    void poses_2d(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
+        const bool framed = node.elem_std == "Transform2D";
         std::vector<Placed2D> list;
         for (const int i : children_of(nodes, found_)) {
-            list.push_back(placed_2d(nodes, i));
+            list.push_back(placed_2d(nodes, framed ? kid(nodes, i, "pose") : i));
             reach_[0].seen = std::max({ reach_[0].seen, std::fabs(list.back().at.x), std::fabs(list.back().at.y) });
         }
         const double r = reach_[0].grow({}, dt_, 1.2);
@@ -1637,7 +1725,7 @@ private:
             heading(c, p, list[i], 0.15 * r, palette((long long)i));
             index_label(c, p(list[i].at), i);
         }
-        foot(c, c.all(), counted(list.size(), "Pose2D"));
+        foot(c, c.all(), counted(list.size(), node.elem_std));
     }
 
     /* One standard 2D shape on a plane that grows to hold it. */
@@ -1758,6 +1846,69 @@ private:
         if (turning) curl(c, s, w * (1 / spin), 0.15 * r, 5 * spin / fastest, ink.amber);
         layered(c, s, v, nullptr, [&] { c.arrow(s(0, 0, 0), s(v), ink.accent, ARROW); });
         foot(c, c.all(), "speed " + f3(length(v)) + " m/s  turn " + f3(spin) + " rad/s", "next " + print("%.1f", ahead) + " s");
+    }
+
+    /* A Twist2D in the moving body's frame: the velocity arrow, the turn as an arc about the
+       origin, the path while it holds, and the turn centre. The path stops short of a full turn. */
+    void twist_2d(Canvas& c, const Nodes& nodes)
+    {
+        const int li = kid(nodes, found_, "linear");
+        const V3 v = li >= 0 ? vec(nodes, li) : V3{};
+        const double w = number(nodes, found_, "angular"), spin = std::fabs(w);
+        const bool turning = spin > 1e-9;
+        const double ahead = turning ? std::min(TWIST_AHEAD, 6.28318530717959 / spin) : TWIST_AHEAD;
+        /* each step's travel turned by the heading at its middle */
+        std::vector<V3> path{ V3{} };
+        const int steps = 64;
+        const double dt = ahead / steps;
+        for (int i = 0; i < steps; i++) {
+            const double h = w * dt * (i + 0.5), ch = std::cos(h), sh = std::sin(h);
+            path.push_back(path.back() + V3{ (v.x * ch - v.y * sh) * dt, (v.x * sh + v.y * ch) * dt, 0 });
+        }
+        /* as in 3D, a far turn centre is left out of the reach, which only grows */
+        const V3 centre = turning ? V3{ -v.y / w, v.x / w, 0 } : V3{};
+        double extent = length(v);
+        auto hold = [this](const V3& p) { reach_[0].seen = std::max({ reach_[0].seen, std::fabs(p.x), std::fabs(p.y) }); };
+        for (const V3& p : path) {
+            extent = std::max(extent, length(p));
+            hold(p);
+        }
+        if (turning && length(centre) <= 2 * extent) hold(centre);
+        const double r = reach_[0].grow({ v.x, v.y }, dt_);
+        const Plane p = plane(c, c.all(), r);
+
+        if (turning && length(centre) < 20 * r) {
+            c.dashed(p(0, 0), p(centre), ink.dim, THIN);
+            c.dot(p(centre), ink.dim, 4);
+        }
+        std::vector<Rml::Vector2f> drawn;
+        for (const V3& e : path) drawn.push_back(p(e));
+        c.polyline(drawn, ink.purple, STROKE);
+        c.dot(drawn.back(), ink.purple, 4);
+        const double fastest = reach_[1].grow({ spin }, dt_, 1.0);
+        if (turning) curl_2d(c, p, V3{}, 0.15 * r, 5 * w / fastest, ink.amber);
+        c.arrow(p(0, 0), p(v), ink.accent, ARROW);
+        foot(c, c.all(), "speed " + f3(length(v)) + " m/s  turn " + f3(w) + " rad/s", "next " + print("%.1f", ahead) + " s");
+    }
+
+    /* A Wrench2D: the force as an arrow with its trail, the torque as a turn about the
+       origin that sweeps most of a turn at the strongest seen. */
+    void wrench_2d(Canvas& c, const Nodes& nodes)
+    {
+        const int fi = kid(nodes, found_, "force");
+        const V3 f = fi >= 0 ? vec(nodes, fi) : V3{};
+        const double torque = number(nodes, found_, "torque");
+        const double r = reach_[0].grow({ f.x, f.y }, dt_);
+        const Plane p = plane(c, c.all(), r);
+        const double strongest = reach_[1].grow({ torque }, dt_, 1.0);
+        if (std::fabs(torque) > 1e-9) curl_2d(c, p, V3{}, 0.2 * r, 5 * torque / strongest, ink.amber);
+        if (history_) {
+            const std::string base = child_path(path_, "force");
+            Dots dots(c, ink.trail, 2);
+            for (const V3& t : trail(base + ".x", base + ".y")) dots.add(p(t.x, t.y));
+        }
+        c.arrow(p(0, 0), p(f), ink.accent, ARROW);
+        foot(c, c.all(), "force " + f3(length(f)) + " N  torque " + f3(torque) + " N m");
     }
 
     void vec3s(Canvas& c, const Nodes& nodes)
@@ -2114,7 +2265,7 @@ public:
         case Visual::Solid: case Visual::Vec3s: case Visual::Poses: case Visual::Solids:
             return Tile{ 1, 1.5 };
         case Visual::Vec2: case Visual::Vec2s: case Visual::Pose2D: case Visual::Poses2D:
-        case Visual::Figure: case Visual::Figures:
+        case Visual::Twist2D: case Visual::Wrench2D: case Visual::Figure: case Visual::Figures:
             return Tile{ 1.3, 1 };
         case Visual::Geo: case Visual::Geos:
             return Tile{ 1.5, 1 };
@@ -2219,7 +2370,7 @@ bool viz_history(Visual visual)
 {
     switch (visual) {
     case Visual::Plot: case Visual::Vec4: case Visual::State: case Visual::Vec2: case Visual::Vec3: case Visual::Pose:
-    case Visual::Pose2D: case Visual::Wrench: case Visual::Geo:
+    case Visual::Pose2D: case Visual::Wrench: case Visual::Wrench2D: case Visual::Geo:
         return true;
     default:
         return false;
@@ -2251,8 +2402,11 @@ VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>&
         case Visual::Pose:
             add(child_path(std_name == "Transform" ? child_path(path, "pose") : path, "position"), { "x", "y", "z" });
             break;
-        case Visual::Pose2D: add(child_path(path, "position"), { "x", "y" }); break;
-        case Visual::Wrench: add(child_path(path, "force"), { "x", "y", "z" }); break;
+        case Visual::Pose2D:
+            add(child_path(std_name == "Transform2D" ? child_path(path, "pose") : path, "position"), { "x", "y" });
+            break;
+        case Visual::Wrench:   add(child_path(path, "force"), { "x", "y", "z" }); break;
+        case Visual::Wrench2D: add(child_path(path, "force"), { "x", "y" }); break;
         case Visual::Geo:   add(path, { "lat", "lon" }); break;
         default: break;
         }

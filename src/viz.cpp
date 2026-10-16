@@ -1692,8 +1692,7 @@ private:
     }
 
     /* A Pose or a Transform: its triad at its position joined to the origin, and the
-       position's trail. The turn is at the top right, a Transform's parent frame at the
-       bottom right. */
+       position's trail. */
     void pose(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
         const bool framed = node.std_name == "Transform";

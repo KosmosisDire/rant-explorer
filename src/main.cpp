@@ -731,6 +731,7 @@ bool window_rows(Rml::Context* context, Rml::ElementDocument* document, const ch
     int first = (int)(top_dp / row_dp) - 8;
     int last  = (int)((top_dp + height_dp) / row_dp) + 9;
     first = first < 0 ? 0 : first > total ? total : first;
+    first -= first % 2;   /* each element keeps its stripe, else it fades over as the window steps */
     last  = last < first ? first : last > total ? total : last;
     const Rml::String top    = Rml::CreateString("%.2fdp", first * row_dp);
     const Rml::String bottom = Rml::CreateString("%.2fdp", (total - last) * row_dp);

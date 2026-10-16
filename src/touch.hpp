@@ -27,6 +27,7 @@ private:
     int      down_ = 0;         /* fingers down now */
     uint64_t pressed_ = 0;      /* when the first came down, in ms */
     bool     moved_ = false;    /* the first went further than a tap */
+    bool     armed_ = false;    /* it may still turn into a long press */
     bool     taken_ = false;    /* a long press or a pinch took it, so the backend sees no more of it */
     float    span_ = 0;         /* the pinch's spread at its last wheel step */
 };

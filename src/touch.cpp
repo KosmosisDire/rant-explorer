@@ -29,6 +29,14 @@ void let_go(Rml::Context* context, SDL_FingerID id, Rml::Vector2f at)
     context->ProcessTouchCancel(Rml::TouchList{ Rml::Touch{ (Rml::TouchId)id, at } });
 }
 
+/* An element marked hold does its own holding, so a held finger there is no right click. */
+bool holds_itself(Rml::Element* element)
+{
+    for (; element; element = element->GetParentNode())
+        if (element->HasAttribute("hold")) return true;
+    return false;
+}
+
 /* A visual zooms on the wheel, so a pinch over anything else does nothing. */
 bool pinchable(Rml::Element* element)
 {
@@ -47,6 +55,7 @@ bool Touch::before(const SDL_Event& event, Rml::Context* context)
             first_   = { event.tfinger.fingerID, where(event, context), where(event, context) };
             pressed_ = SDL_GetTicks();
             moved_ = taken_ = false;
+            armed_ = true;
             return false;
         }
         if (down_ == 2) {
@@ -72,7 +81,10 @@ bool Touch::before(const SDL_Event& event, Rml::Context* context)
             return true;
         }
         if (taken_) return true;
-        if (apart(first_.at, first_.from) > TAP_DP * context->GetDensityIndependentPixelRatio()) moved_ = true;
+        if (apart(first_.at, first_.from) > TAP_DP * context->GetDensityIndependentPixelRatio()) {
+            moved_ = true;
+            armed_ = false;
+        }
         return false;
 
     case SDL_EVENT_FINGER_UP:
@@ -103,7 +115,9 @@ void Touch::after(const SDL_Event& event, Rml::Context* context)
 
 void Touch::tick(Rml::Context* context)
 {
-    if (down_ != 1 || moved_ || taken_ || SDL_GetTicks() - pressed_ < HOLD_MS) return;
+    if (!armed_ || down_ != 1 || taken_ || SDL_GetTicks() - pressed_ < HOLD_MS) return;
+    armed_ = false;
+    if (holds_itself(context->GetElementAtPoint(first_.at))) return;
     taken_ = true;
     let_go(context, first_.id, first_.at);
     context->ProcessMouseMove((int)first_.at.x, (int)first_.at.y, 0);

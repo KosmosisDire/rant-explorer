@@ -268,6 +268,12 @@
 										data-class-bad="value_cells[i].bad" data-class-writing="value_cells[i].writing"
 										data-event-change="edit_value(r.path)" data-event-keydown="edit_key(r.path)"
 										data-event-mousescroll="wheel_value(r.path)" />
+									<span class="stepper" hold="" data-if="r.editor == 'text' &amp;&amp; r.scrub"
+										data-event-mousedown="step_value(r.path, -1)" data-event-mouseup="stop_step"
+										data-event-mouseout="stop_step"><icon name="minus" /></span>
+									<span class="stepper" hold="" data-if="r.editor == 'text' &amp;&amp; r.scrub"
+										data-event-mousedown="step_value(r.path, 1)" data-event-mouseup="stop_step"
+										data-event-mouseout="stop_step"><icon name="plus" /></span>
 									<span class="bool-edit mono" data-if="r.editor == 'bool'"
 										data-class-writing="value_cells[i].writing"
 										data-event-click="flip_value(r.path)">

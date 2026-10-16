@@ -414,6 +414,10 @@ struct Ui {
     /* One scrub of a number by its name: the text it started from and where. */
     std::string scrub_from;
     float       scrub_x = 0;
+    /* A finger holding a number's minus or plus: which, and when it steps again. */
+    std::string step_path;
+    int         step_dir = 0;
+    uint64_t    step_next = 0;
 
     bool light     = false;   /* the light palette, a class on body */
     bool maximized = false;   /* picks the maximize or restore glyph */
@@ -1835,6 +1839,17 @@ int main(int argc, char** argv)
                 SDL_WarpMouseInWindow(window, to / density, event.GetParameter<float>("mouse_y", 0.f) / density);
                 ui.scrub_x += (to - px) / ratio;
             });
+        /* A finger's minus or plus steps the number once, then again and again while held. */
+        ctor.BindEventCallback("step_value",
+            [&ui, &editor](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
+                if (args.size() < 2) return;
+                ui.step_path = args[0].Get<Rml::String>();
+                ui.step_dir  = args[1].Get<int>();
+                ui.step_next = SDL_GetTicks() + 400;
+                editor.nudge(ui.step_path, editor.text(ui.step_path), ui.step_dir, false);
+            });
+        ctor.BindEventCallback("stop_step",
+            [&ui](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) { ui.step_path.clear(); });
         ctor.BindEventCallback("edit_value",
             [&editor](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList& args) {
                 /* Enter also reaches an input as a change with a line break, after edit_key
@@ -2242,6 +2257,10 @@ int main(int argc, char** argv)
             }
         }
         touch.tick(context);
+        if (!ui.step_path.empty() && SDL_GetTicks() >= ui.step_next) {
+            ui.step_next = SDL_GetTicks() + 80;
+            editor.nudge(ui.step_path, editor.text(ui.step_path), ui.step_dir, false);
+        }
 
         if (watcher.changed()) reload_now = true;
         if (reload_now) {

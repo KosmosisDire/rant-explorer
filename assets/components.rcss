@@ -338,6 +338,23 @@ td.held, th.held, .kv.held, [cell].held, viz [cell-path].held { background-color
 /* A number editor's field cell scrubs it when dragged. The name shrinks to its text so
    the dotted underline ends with it. */
 .value-row .scrub       { drag: drag; cursor: col-resize; }
+body.touch .value-row .scrub       { drag: none; cursor: auto; }   /* a finger scrolls the list, the stepper steps */
+body.touch .value-row .scrub .name { decorator: none; }
+
+/* A finger steps a number by its minus and plus, held to repeat. A mouse scrubs instead. */
+.stepper { display: none; }
+body.touch .stepper {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 30dp;
+	height: 28dp;
+	margin-left: 4dp;
+	color: var(--dim);
+	background-color: var(--panel3);
+	border-radius: 4dp;
+}
 .value-row .scrub .name { flex: 0 1 auto; decorator: dotted-underline(1dp 2dp); }
 
 /* A function's or task's part: a heading row with its state where a value would be. */

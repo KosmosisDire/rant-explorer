@@ -3,7 +3,7 @@
 
 # The bridge client: the package a bridge release attaches, or a built dist folder, which
 # the local preset takes from the bridge checkout beside this one.
-set(RANT_CLIENT_VERSION 0.0.2)
+set(RANT_CLIENT_VERSION 0.0.4)
 set(RANT_CLIENT_DIR "" CACHE PATH "A built rant-client dist folder, empty to fetch the release")
 if(RANT_CLIENT_DIR)
   set(WEB_CLIENT "${RANT_CLIENT_DIR}")

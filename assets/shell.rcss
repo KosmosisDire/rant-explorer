@@ -284,6 +284,14 @@ body.hide-value .c-value { display: none; }
 
 .feed .detail-head, .feed .issues { flex: 0 0 auto; }
 
+/* With nothing picked the detail says so in its middle, clear of the floating drawer button. */
+.detail > .pane-body > .placeholder {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	height: 100%;
+}
+
 /* The cards are tiled by tile_cards in main.cpp, which writes each one's box inline, so
    the area only has to be the rest of the pane. The visual takes the card's height from a
    zero basis, so its own size never feeds back. */

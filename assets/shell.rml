@@ -121,7 +121,7 @@
 
 				<div class="detail">
 					<div class="pane-body feed">
-						<div class="placeholder" data-if="!has_topic">select a topic</div>
+						<div class="placeholder" data-if="!has_topic"><span>select a topic</span></div>
 						<div class="detail-head" data-if="has_topic">
 							<span class="hero mono" copy="">{{topic.name}}</span>
 							<span class="tag">{{topic.kind}}</span>
@@ -313,7 +313,7 @@
 
 				<div class="detail">
 					<div class="pane-body">
-						<div class="placeholder" data-if="!has_selection">select a node</div>
+						<div class="placeholder" data-if="!has_selection"><span>select a node</span></div>
 						<div data-if="has_selection">
 
 							<div class="detail-head">

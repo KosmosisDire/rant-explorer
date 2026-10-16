@@ -681,6 +681,19 @@ void fit_head(Rml::ElementDocument* document, const char* pane_id)
         Rml::Element* edge = head->GetChild(i);
         if (edge->IsClassSet("edge")) edge->SetClass("end", !column_after(edge));
     }
+
+    /* The pane head's toggle for the whole value stands over the column of toggles below it:
+       out through the head's end padding, and back off the body's scrollbar. */
+    Rml::Element* top = head->GetPreviousSibling();
+    while (top && !top->IsClassSet("pane-head")) top = top->GetPreviousSibling();
+    Rml::Element* toggle = nullptr;
+    for (int i = 0; top && i < top->GetNumChildren() && !toggle; i++)
+        if (top->GetChild(i)->IsClassSet("viz-toggle")) toggle = top->GetChild(i);
+    if (!toggle) return;
+    const float bar  = pane->GetBox().GetSize(Rml::BoxArea::Padding).x - pane->GetClientWidth();
+    const float pull = bar - top->GetBox().GetEdge(Rml::BoxArea::Padding, Rml::BoxEdge::Right);
+    if (std::abs(toggle->GetBox().GetEdge(Rml::BoxArea::Margin, Rml::BoxEdge::Right) - pull) > 0.5f)
+        toggle->SetProperty(Rml::PropertyId::MarginRight, Rml::Property(pull, Rml::Unit::PX));
 }
 
 /* The cards tiled into the area under the topic head, or with a page, side by side with

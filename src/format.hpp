@@ -20,6 +20,8 @@ std::string format_rate(double hz);             /* "0.5 Hz", "20 Hz", "1.2k Hz" 
    millisecond, a dash for none, and as ISO 8601 to the microsecond, empty for none. */
 std::string format_timestamp(int64_t us);       /* "2026-09-24 19:56:41.123" */
 std::string format_iso_time(int64_t us);        /* "2026-09-24T19:56:41.123456Z" */
+/* That form read back, also with a space for the T, any fraction or no Z. False for any other. */
+bool        parse_iso_time(const std::string& text, int64_t& us);
 std::string format_span(int64_t us);            /* a Duration: "1 d 2 h 3 m 4 s" */
 std::string format_clock(uint64_t unix_us);     /* local time of day: "15:56:41" */
 std::string format_hex(const uint8_t* data, size_t size);   /* "00ff1a" */

@@ -1709,11 +1709,32 @@ bool Capture::draft(Draft& out) const
     }
     WatchView scratch;
     impl_->decode(out.message, out.schema, scratch, true);
-    out.nodes = std::move(scratch.nodes);
+    out.nodes       = std::move(scratch.nodes);
+    out.root_std    = scratch.root_std;
+    out.root_struct = scratch.root_struct;
     return true;
 }
 
-bool Capture::resize(Draft& draft, uint16_t field, int remove, std::string& error) const
+bool Capture::resize(Draft& draft, uint16_t field, uint32_t length, std::string& error) const
+{
+    return rewrite(draft, field, [length](std::vector<uint8_t>& elements, size_t size) {
+        const std::vector<uint8_t> last = elements.empty() ? std::vector<uint8_t>(size, 0)
+                                                           : std::vector<uint8_t>(elements.end() - size, elements.end());
+        if (length * size < elements.size()) elements.resize(length * size);
+        while (elements.size() < length * size) elements.insert(elements.end(), last.begin(), last.end());
+    }, error);
+}
+
+bool Capture::remove(Draft& draft, uint16_t field, uint32_t index, std::string& error) const
+{
+    return rewrite(draft, field, [index](std::vector<uint8_t>& elements, size_t size) {
+        if ((size_t)index < elements.size() / size)
+            elements.erase(elements.begin() + index * size, elements.begin() + (index + 1) * size);
+    }, error);
+}
+
+bool Capture::rewrite(Draft& draft, uint16_t field, const std::function<void(std::vector<uint8_t>&, size_t)>& change,
+                      std::string& error) const
 {
     error.clear();
     if (!impl_) {
@@ -1736,15 +1757,9 @@ bool Capture::resize(Draft& draft, uint16_t field, int remove, std::string& erro
     }
     std::vector<uint8_t> elements;
     if (now.bytes.data) elements.assign(now.bytes.data, now.bytes.data + now.bytes.len);
-    const size_t size = f.elem_size, count = elements.size() / size;
-    if (remove < 0) {
-        if (count) elements.insert(elements.end(), elements.end() - size, elements.end());
-        else elements.resize(size, 0);
-    } else if ((size_t)remove < count) {
-        elements.erase(elements.begin() + remove * size, elements.begin() + (remove + 1) * size);
-    }
+    change(elements, f.elem_size);
     std::vector<uint8_t> buf(draft.message);
-    buf.resize(buf.size() + size + 16);
+    buf.resize(buf.size() + elements.size() + 16);
     rant::detail::RantValue v{};
     v.bytes = rant::detail::rant_bytes(elements.data(), elements.size());
     if (!rant::detail::rant_set_value_at(buf.data(), buf.size(), raw, field, nullptr, 0, &v)) {

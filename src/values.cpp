@@ -483,6 +483,25 @@ bool is_container(int index, const std::vector<ValueNode>& nodes)
     return index < 0 || is_branch(nodes[index]) || nodes[index].kind == ValueNode::Part;
 }
 
+/* What a container holds. A part's fields sit beside its heading, up to the next part. */
+std::vector<int> members(const std::vector<ValueNode>& nodes, int index)
+{
+    if (index < 0 || nodes[index].kind != ValueNode::Part) return children_of(nodes, index);
+    std::vector<int> out;
+    for (size_t j = (size_t)index + 1; j < nodes.size() && nodes[j].kind != ValueNode::Part; j++)
+        if (nodes[j].depth == nodes[index].depth) out.push_back((int)j);
+    return out;
+}
+
+/* A part whose value is not a struct holds it as one node at the part's own path, which
+   stands for the part. */
+int unwrap(const std::vector<ValueNode>& nodes, int index)
+{
+    if (index < 0 || nodes[index].kind != ValueNode::Part) return index;
+    const std::vector<int> inside = members(nodes, index);
+    return inside.size() == 1 && nodes[inside[0]].path == nodes[index].path.substr(1) ? inside[0] : index;
+}
+
 /* A leaf as it pastes on its own: bytes as hex, a string raw, a number exact. */
 std::string leaf(const ValueNode& node, const std::vector<uint8_t>& message)
 {
@@ -496,6 +515,7 @@ std::string leaf(const ValueNode& node, const std::vector<uint8_t>& message)
 void json(const std::vector<ValueNode>& nodes, int index, int indent, const std::vector<uint8_t>& message,
           std::string& out)
 {
+    index = unwrap(nodes, index);
     if (!is_container(index, nodes)) {
         const ValueNode& node = nodes[index];
         switch (node.kind) {
@@ -509,7 +529,7 @@ void json(const std::vector<ValueNode>& nodes, int index, int indent, const std:
     const bool list = index >= 0 && nodes[index].kind == ValueNode::Array;
     bool first = true;
     out += list ? "[" : "{";
-    for (const int k : children_of(nodes, index)) {
+    for (const int k : members(nodes, index)) {
         if (nodes[k].kind == ValueNode::Gap) continue;
         if (indent < 0) {
             out += first ? "" : ", ";
@@ -585,7 +605,7 @@ std::string uuid_text(const std::vector<ValueNode>& nodes, int index)
 
 std::string copy_text(const std::vector<ValueNode>& nodes, const Capture::WatchView& view, const std::string& path)
 {
-    const int index = find_node(nodes, view, path);
+    const int index = unwrap(nodes, find_node(nodes, view, path));
     if (index < -1) return {};
     const std::string std_name = index < 0 ? view.root_std : nodes[index].std_name;
     const std::string text = standard(nodes, index, std_name, view.message);
@@ -594,7 +614,7 @@ std::string copy_text(const std::vector<ValueNode>& nodes, const Capture::WatchV
 
 std::string copy_raw(const std::vector<ValueNode>& nodes, const Capture::WatchView& view, const std::string& path)
 {
-    const int index = find_node(nodes, view, path);
+    const int index = unwrap(nodes, find_node(nodes, view, path));
     if (index < -1) return {};
     if (!is_container(index, nodes)) return leaf(nodes[index], view.message);
     std::string out;
@@ -605,10 +625,10 @@ std::string copy_raw(const std::vector<ValueNode>& nodes, const Capture::WatchVi
 Table table_of(const std::vector<ValueNode>& nodes, const Capture::WatchView& view, const std::string& path)
 {
     Table table;
-    const int index = find_node(nodes, view, path);
+    const int index = unwrap(nodes, find_node(nodes, view, path));
     if (index < -1 || !is_container(index, nodes)) return table;
     std::vector<int> rows;
-    for (const int k : children_of(nodes, index))
+    for (const int k : members(nodes, index))
         if (nodes[k].kind != ValueNode::Gap) rows.push_back(k);
     if (rows.empty()) return table;
     const bool list = index >= 0 && nodes[index].kind == ValueNode::Array;
@@ -667,4 +687,405 @@ std::string table_json(const Table& table)
         out += table.header ? "}" : "]";
     }
     return out + (table.rows.size() > first ? "\n" : "") + (pairs ? "}" : "]");
+}
+
+namespace {
+
+int hex_digit(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* JSON into Pasted. Every list and object keeps its source and every number its literal. */
+class JsonReader {
+public:
+    explicit JsonReader(const std::string& text) : s_(text) {}
+
+    bool read(Pasted& out)
+    {
+        space();
+        if (!value(out, 0)) return false;
+        space();
+        return i_ == s_.size();
+    }
+
+private:
+    const std::string& s_;
+    size_t             i_ = 0;
+
+    bool at(char c) const { return i_ < s_.size() && s_[i_] == c; }
+    bool digit() const { return i_ < s_.size() && s_[i_] >= '0' && s_[i_] <= '9'; }
+
+    void space()
+    {
+        while (at(' ') || at('\t') || at('\n') || at('\r')) i_++;
+    }
+
+    bool word(const char* text)
+    {
+        const size_t n = std::string(text).size();
+        if (s_.compare(i_, n, text) != 0) return false;
+        i_ += n;
+        return true;
+    }
+
+    /* Nesting is capped, so a hostile clipboard cannot run the stack out. */
+    bool value(Pasted& out, int depth)
+    {
+        const size_t start = i_;
+        if (depth > 64 || i_ >= s_.size()) return false;
+        if (at('{') || at('[')) {
+            const bool object = at('{');
+            const char close  = object ? '}' : ']';
+            out.kind = object ? Pasted::Object : Pasted::List;
+            i_++;
+            space();
+            for (bool first = true; !at(close); first = false) {
+                if (!first) {
+                    if (!at(',')) return false;
+                    i_++;
+                    space();
+                }
+                if (object) {
+                    out.keys.emplace_back();
+                    if (!string(out.keys.back())) return false;
+                    space();
+                    if (!at(':')) return false;
+                    i_++;
+                    space();
+                }
+                out.items.emplace_back();
+                if (!value(out.items.back(), depth + 1)) return false;
+                space();
+            }
+            i_++;
+            out.text = s_.substr(start, i_ - start);
+            return true;
+        }
+        if (at('"')) {
+            out.kind = Pasted::Text;
+            return string(out.text);
+        }
+        if (word("true") || word("false")) {
+            out.kind = Pasted::Bool;
+            out.text = s_.substr(start, i_ - start);
+            return true;
+        }
+        if (word("null")) {
+            out.kind = Pasted::Null;
+            return true;
+        }
+        out.kind = Pasted::Number;
+        return number(out.text);
+    }
+
+    bool number(std::string& out)
+    {
+        const size_t start = i_;
+        if (at('-')) i_++;
+        const size_t whole = i_;
+        while (digit()) i_++;
+        if (i_ == whole || (s_[whole] == '0' && i_ - whole > 1)) return false;
+        if (at('.')) {
+            const size_t frac = ++i_;
+            while (digit()) i_++;
+            if (i_ == frac) return false;
+        }
+        if (at('e') || at('E')) {
+            i_++;
+            if (at('+') || at('-')) i_++;
+            const size_t exp = i_;
+            while (digit()) i_++;
+            if (i_ == exp) return false;
+        }
+        out = s_.substr(start, i_ - start);
+        return true;
+    }
+
+    bool hex4(uint32_t& code)
+    {
+        code = 0;
+        for (int k = 0; k < 4; k++, i_++) {
+            const int d = i_ < s_.size() ? hex_digit(s_[i_]) : -1;
+            if (d < 0) return false;
+            code = code * 16 + (uint32_t)d;
+        }
+        return true;
+    }
+
+    static void utf8(uint32_t code, std::string& out)
+    {
+        if (code < 0x80) {
+            out += (char)code;
+        } else if (code < 0x800) {
+            out += (char)(0xC0 | code >> 6);
+            out += (char)(0x80 | (code & 0x3F));
+        } else if (code < 0x10000) {
+            out += (char)(0xE0 | code >> 12);
+            out += (char)(0x80 | (code >> 6 & 0x3F));
+            out += (char)(0x80 | (code & 0x3F));
+        } else {
+            out += (char)(0xF0 | code >> 18);
+            out += (char)(0x80 | (code >> 12 & 0x3F));
+            out += (char)(0x80 | (code >> 6 & 0x3F));
+            out += (char)(0x80 | (code & 0x3F));
+        }
+    }
+
+    bool string(std::string& out)
+    {
+        if (!at('"')) return false;
+        i_++;
+        out.clear();
+        while (i_ < s_.size()) {
+            const char c = s_[i_++];
+            if (c == '"') return true;
+            if (c != '\\') {
+                out += c;
+                continue;
+            }
+            if (i_ >= s_.size()) return false;
+            switch (const char e = s_[i_++]) {
+            case '"': case '\\': case '/': out += e; break;
+            case 'b': out += '\b'; break;
+            case 'f': out += '\f'; break;
+            case 'n': out += '\n'; break;
+            case 'r': out += '\r'; break;
+            case 't': out += '\t'; break;
+            case 'u': {
+                uint32_t code = 0, low = 0;
+                if (!hex4(code)) return false;
+                /* a character past the first plane comes as a surrogate pair */
+                if (code >= 0xD800 && code < 0xDC00 && s_.compare(i_, 2, "\\u") == 0) {
+                    i_ += 2;
+                    if (!hex4(low) || low < 0xDC00 || low > 0xDFFF) return false;
+                    code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                }
+                utf8(code, out);
+                break;
+            }
+            default: return false;
+            }
+        }
+        return false;
+    }
+};
+
+Pasted number_of(const std::string& literal)
+{
+    Pasted out;
+    out.kind = Pasted::Number;
+    out.text = literal;
+    return out;
+}
+
+std::string trimmed(const std::string& text)
+{
+    const size_t first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return {};
+    return text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
+}
+
+/* Bytes in hex as their numbers, false unless they are exactly count of them. */
+bool hex_bytes(const std::string& hex, size_t count, Pasted& out)
+{
+    if (hex.size() != count * 2) return false;
+    for (size_t k = 0; k < hex.size(); k += 2) {
+        const int high = hex_digit(hex[k]), low = hex_digit(hex[k + 1]);
+        if (high < 0 || low < 0) return false;
+        out.items.push_back(number_of(std::to_string(high * 16 + low)));
+    }
+    return true;
+}
+
+/* A standard type's copy_text form read into the shape its field has: #rrggbb or #rrggbbaa,
+   "lat, lon", 8-4-4-4-12 hex and ISO 8601 UTC. False for any other text. */
+bool read_standard(const std::string& std_name, const std::string& text, Pasted& out)
+{
+    const std::string t = trimmed(text);
+    out = Pasted();
+    if (std_name == "Color") {
+        const std::string hex = !t.empty() && t[0] == '#' ? t.substr(1) : t;
+        if (!hex_bytes(hex, 3, out) && !hex_bytes(hex, 4, out)) return false;
+        if (out.items.size() == 3) out.items.push_back(number_of("255"));
+        out.kind = Pasted::Object;
+        out.keys = { "r", "g", "b", "a" };
+        return true;
+    }
+    if (std_name == "GeoPoint") {
+        const size_t comma = t.find(',');
+        if (comma == std::string::npos) return false;
+        for (const std::string& part : { trimmed(t.substr(0, comma)), trimmed(t.substr(comma + 1)) }) {
+            char* end = nullptr;
+            std::strtod(part.c_str(), &end);
+            if (part.empty() || *end) return false;
+            out.items.push_back(number_of(part));
+        }
+        out.kind = Pasted::Object;
+        out.keys = { "lat", "lon" };
+        return true;
+    }
+    if (std_name == "Uuid") {
+        std::string hex;
+        for (const char c : t)
+            if (c != '-') hex += c;
+        out.kind = Pasted::List;
+        return hex_bytes(hex, 16, out);
+    }
+    int64_t us = 0;
+    if (std_name == "Timestamp" && parse_iso_time(t, us)) {
+        out = number_of(std::to_string(us));
+        return true;
+    }
+    return false;
+}
+
+/* Whether two values of one field are equal as written, a float at its own width. */
+bool same(const ValueNode& a, const ValueNode& b)
+{
+    if (a.kind == ValueNode::Text) return a.text == b.text;
+    if (a.kind == ValueNode::Bool) return (a.number != 0) == (b.number != 0);
+    if (a.kind == ValueNode::Number && a.is_float)
+        return a.type == "f32" ? (float)a.number == (float)b.number : a.number == b.number;
+    return a.integer == b.integer;
+}
+
+/* Walks a pasted value and the nodes it lands on together. */
+struct Paster {
+    const std::vector<ValueNode>& nodes;
+    const std::string&            root_std;
+    bool                          resizable;
+    PastePlan&                    out;
+    std::string&                  error;
+
+    bool fail(const std::string& why)
+    {
+        error = why;
+        return false;
+    }
+
+    std::string where(int index) const
+    {
+        if (index < 0 || nodes[index].path.empty()) return "the value";
+        return nodes[index].kind == ValueNode::Part ? nodes[index].name : nodes[index].path;
+    }
+
+    static std::string what(const Pasted& value)
+    {
+        switch (value.kind) {
+        case Pasted::Bool:   return "true or false";
+        case Pasted::Number: return "a number";
+        case Pasted::Text:   return "text";
+        case Pasted::List:   return "a list";
+        default:             return "an object";
+        }
+    }
+
+    bool at(int index, const Pasted& value)
+    {
+        if (value.kind == Pasted::Null) return true;   /* null leaves a field as it is */
+        index = unwrap(nodes, index);
+        Pasted standard;
+        if (value.kind == Pasted::Text && read_standard(index < 0 ? root_std : nodes[index].std_name, value.text, standard))
+            return at(index, standard);
+        if (!is_container(index, nodes)) return leaf(index, value);
+        return index >= 0 && nodes[index].kind == ValueNode::Array ? list(index, value) : fields(index, value);
+    }
+
+    /* A struct takes the members named as its fields and keeps the rest, but one at least. */
+    bool fields(int index, const Pasted& value)
+    {
+        if (value.kind != Pasted::Object) return fail(where(index) + " takes an object, not " + what(value));
+        const std::vector<int> inside = members(nodes, index);
+        int matched = 0;
+        for (const int k : inside) {
+            const auto key = std::find(value.keys.begin(), value.keys.end(), nodes[k].name);
+            if (nodes[k].kind == ValueNode::Gap || key == value.keys.end()) continue;
+            matched++;
+            if (!at(k, value.items[key - value.keys.begin()])) return false;
+        }
+        if (inside.empty() || matched) return true;
+        return fail("no field of " + where(index) + " is in the clipboard");
+    }
+
+    /* A variable array outside any array of structs is the one kind that can change length. */
+    bool list(int index, const Pasted& value)
+    {
+        const ValueNode& node = nodes[index];
+        if (value.kind != Pasted::List) return fail(where(index) + " takes a list, not " + what(value));
+        if (value.items.size() != node.count) {
+            if (resizable && is_variable_array(node) && node.elems.empty()) {
+                out.lengths.emplace_back(node.field, (uint32_t)value.items.size());
+                return true;
+            }
+            return fail(where(index) + " takes " + std::to_string(node.count) + " elements, not " +
+                        std::to_string(value.items.size()));
+        }
+        for (const int k : children_of(nodes, index)) {
+            if (nodes[k].kind == ValueNode::Gap) continue;
+            const size_t element = std::strtoul(nodes[k].name.c_str() + 1, nullptr, 10);
+            if (element < value.items.size() && !at(k, value.items[element])) return false;
+        }
+        return true;
+    }
+
+    /* A leaf takes the text its editor takes. An enum also takes an option's number, and a
+       Duration seconds, as Copy cell writes them. */
+    bool leaf(int index, const Pasted& value)
+    {
+        const ValueNode& node = nodes[index];
+        if (editor_for(node).empty()) return fail(where(index) + " cannot be edited");
+        if (node.kind != ValueNode::Text && (value.kind == Pasted::List || value.kind == Pasted::Object))
+            return fail(where(index) + " takes one value, not " + what(value));
+        std::string text = value.text;
+        if (node.kind == ValueNode::Enum && value.kind == Pasted::Number)
+            for (size_t k = 0; k < node.options.size() && k < node.option_values.size(); k++)
+                if (std::to_string(node.option_values[k]) == text) text = node.options[k];
+        if (node.std_name == "Duration" && value.kind == Pasted::Number && text.find_first_of(".eE") != std::string::npos) {
+            const double seconds = std::strtod(text.c_str(), nullptr);
+            if (std::abs(seconds) < 9e12) text = std::to_string(std::llround(seconds * 1e6));
+        }
+        ValueNode to;
+        if (!parse_value(node, text, to)) {
+            const std::string shown = text.size() > 24 ? text.substr(0, 24) + "..." : text;
+            return fail(where(index) + " is " + node.type + ", which cannot hold " + shown);
+        }
+        if (same(to, node)) return true;
+        /* shown rounded as every value is, and written exact */
+        FieldEdit edit;
+        edit.text  = edit_text(to);
+        edit.value = to;
+        out.edits.push_back(edit);
+        return true;
+    }
+};
+
+} /* namespace */
+
+Pasted read_pasted(const std::string& text)
+{
+    Pasted out;
+    if (JsonReader(text).read(out)) return out;
+    out      = Pasted();
+    out.kind = Pasted::Text;
+    out.text = text;
+    while (!out.text.empty() && (out.text.back() == '\n' || out.text.back() == '\r')) out.text.pop_back();
+    return out;
+}
+
+bool plan_paste(const std::vector<ValueNode>& nodes, const Capture::WatchView& view, const std::string& path,
+                const Pasted& value, bool resizable, PastePlan& out, std::string& error)
+{
+    out = PastePlan();
+    error.clear();
+    const int index = find_node(nodes, view, path);
+    if (index < -1) {
+        error = path.empty() ? "there is no value yet" : "there is no " + path;
+        return false;
+    }
+    Paster paster{ nodes, view.root_std, resizable, out, error };
+    return paster.at(index, value);
 }

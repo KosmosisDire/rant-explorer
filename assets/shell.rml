@@ -154,10 +154,10 @@
 						data-event-drag="drag_sidebar('right')"></div>
 				</div>
 
-				<div class="sidebar right" data-attr-topic="topic.key" path="">
-					<div class="pane-head">
+				<div class="sidebar right">
+					<div class="pane-head" data-attr-topic="topic.key" path="" paste="">
 						<span class="section" data-if="value_type == ''">Value</span>
-						<span class="head-type mono" copy="" data-if="value_type != ''">{{value_type}}</span>
+						<span class="head-type mono" copy="type" data-if="value_type != ''">{{value_type}}</span>
 						<span class="head-note"
 							data-if="value_note != ''">{{value_note}}</span>
 						<span class="icon-button" data-if="value_writable" data-class-off="value_edit_count == 0"
@@ -212,15 +212,15 @@
 						<span class="tt-cell share c-value section" col="value">Value</span>
 						<span class="tt-cell toggle"></span>
 					</div>
-					<div id="value-tree" class="pane-body tt-body">
+					<div id="value-tree" class="pane-body tt-body" data-attr-topic="topic.key" paste="">
 						<div class="placeholder" data-if="!has_topic">select a topic</div>
 						<div class="placeholder" data-if="has_topic &amp;&amp; value_total == 0">{{value_status}}</div>
 						<div data-style-height="value_top"></div>
 						<div data-for="r, i : value_rows">
 							<div class="tt-row value-row" row="" data-class-branch="r.branch" data-class-gap="r.gap"
 								data-class-odd="r.odd" data-class-part="r.part" data-class-blank="r.blank"
-								data-class-add="r.add" data-attr-subtree="r.branch ? r.path : ''"
-								data-event-click="fold_value(r.path, r.branch || r.gap)">
+								data-class-add="r.add" data-attr-subtree="r.branch || r.part ? r.path : ''"
+								data-attr-field="r.path" data-event-click="fold_value(r.path, r.branch || r.gap)">
 								<span class="tt-cell share c-field tt-tree" cell="" data-class-scrub="r.scrub"
 									data-event-dragstart="scrub_value(r.path)" data-event-drag="scrub_value(r.path)"
 									data-event-click="add_element(r.path, r.add)">

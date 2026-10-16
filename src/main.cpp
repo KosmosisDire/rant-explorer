@@ -188,12 +188,16 @@ struct MenuItem {
     bool        header = false;
 };
 
-/* One line on one line, cut to fit a menu or the status bar. */
+/* A text on one line, each run of white space one space, cut to fit a menu or the status bar. */
 Rml::String shorten(const std::string& text, size_t most)
 {
-    std::string line = text.substr(0, text.find('\n'));
-    if (line.size() > most || line.size() < text.size()) line = line.substr(0, most) + "...";
-    std::replace(line.begin(), line.end(), '\t', ' ');
+    std::string line;
+    for (const char c : text) {
+        const bool space = c == ' ' || c == '\t' || c == '\n' || c == '\r';
+        if (!space) line += c;
+        else if (!line.empty() && line.back() != ' ') line += ' ';
+    }
+    if (line.size() > most) line = line.substr(0, most) + "...";
     return line;
 }
 
@@ -878,9 +882,15 @@ int main(int argc, char** argv)
         ui.menu_open = false;
         model.DirtyVariable("menu_open");
     };
-    /* A topic's newest value by key, arrays whole, and the view it came with. Null when it has none. */
-    auto value_of = [&capture](const std::string& key, const std::vector<Capture::ValueNode>*& nodes)
+    /* A topic's value by key, arrays whole, and the view it came with: the watched one as its
+       tree shows it, any other's newest. Null when it has none. */
+    Capture::WatchView shown_value;
+    auto value_of = [&capture, &editor, &shown_value](const std::string& key, const std::vector<Capture::ValueNode>*& nodes)
         -> const Capture::WatchView* {
+        if (key == capture.watched().key && editor.shown_value(shown_value)) {
+            nodes = &shown_value.nodes;
+            return &shown_value;
+        }
         const Capture::WatchView* view = key == capture.watched().key ? &capture.watched() : capture.view(key);
         if (!view) return nullptr;
         const std::vector<Capture::ValueNode>& whole = capture.whole(key);
@@ -1485,6 +1495,18 @@ int main(int argc, char** argv)
                     close_menu();
                     return;
                 }
+                if (action == "paste") {
+                    Rml::String clip;
+                    Rml::GetSystemInterface()->GetClipboardText(clip);
+                    std::string error;
+                    const int pasted = editor.paste(picked.path, clip, error);
+                    ui.note = pasted < 0 ? error
+                            : pasted ? Rml::CreateString("pasted %d %s", pasted, pasted == 1 ? "field" : "fields")
+                            : Rml::String("pasted, nothing changed");
+                    ui.note_frames = 150;
+                    close_menu();
+                    return;
+                }
                 if (ui.menu_kind == "columns") {
                     if (action == "reset") {
                         for (auto& column : ui.columns) column.second = 0;
@@ -1701,11 +1723,15 @@ int main(int argc, char** argv)
 
          Copy image           a picture under the pointer
          Copy cell            the cell under the pointer
-         Copy                 a lone value, marked copy
+         Copy                 a lone value, marked copy, or copy="what" for Copy what
          Copy subtree         the branch of the row under the pointer, marked subtree
          Copy table           the table the pointer is in: marked copy-table and read from
-         Copy table as JSON   its rows, a value marked topic and path read from the mesh, or
-                              a windowed tree marked table, read from its source by name
+         Copy table as JSON   its rows, or a windowed tree marked table, read from its source
+         Copy field           the subtree of a row under an element marked topic, as JSON and
+                              as a table, read from the mesh
+         Copy value           what an element marked topic and path shows, the same way
+         Paste field, value   under an element marked paste: the row marked field, and the
+                              element's own path when it has one
 
        Every line reads the element it names, so no table or list needs code of its own. */
     const std::map<std::string, std::function<Table(const std::string&)>> table_sources = {
@@ -1713,7 +1739,7 @@ int main(int argc, char** argv)
               return topic_table(capture, branch, ui.topic_filter, (unsigned)ui.topic_cats);
           } },
     };
-    Listener right_click([&ui, &editor, context, open_menu, value_of, &table_sources](Rml::Event& event) {
+    Listener right_click([&ui, &capture, &editor, context, open_menu, value_of, &table_sources](Rml::Event& event) {
         if (event.GetParameter<int>("button", 0) != 1) return;
         std::vector<MenuItem> lines;
 
@@ -1769,7 +1795,8 @@ int main(int argc, char** argv)
                 if (at->HasAttribute("copy")) {
                     std::string text;
                     shown_text(at, text);
-                    if (!text.empty()) lines.push_back(copy_item("Copy", text));
+                    const Rml::String what = at->GetAttribute<Rml::String>("copy", "");
+                    if (!text.empty()) lines.push_back(copy_item(what.empty() ? "Copy" : "Copy " + what, text));
                     break;
                 }
 
@@ -1796,26 +1823,29 @@ int main(int argc, char** argv)
                     table_lines(found->second(""), "Copy table", "Copy table as JSON");
                 }
             } else if (source) {
+                /* A value copies as JSON, which pastes back, and as a table: the field of the
+                   row under the pointer, else what a source with a path shows. */
                 std::string topic;
                 const std::vector<Capture::ValueNode>* nodes = nullptr;
+                const bool shows = source->HasAttribute("path");
                 const std::string path = source->GetAttribute<Rml::String>("path", "");
                 const Capture::WatchView* view = value_at(source, topic, nodes);
-                const int index = view ? find_node(*nodes, *view, path) : -2;
+                const int index = view && shows ? find_node(*nodes, *view, path) : -2;
                 const std::string std_name = index == -1 ? view->root_std : index >= 0 ? (*nodes)[index].std_name : "";
+                const std::string noun = path.empty() ? "value" : "field";
                 MenuItem json;
-                json.label  = "Copy table as JSON";
+                json.label  = "Copy " + noun;
                 json.action = "json";
                 json.path   = path;
                 ui.menu_topic = topic;
-                /* a branch field under the pointer copies as a table of its own */
                 if (view && !subtree.empty() && subtree != path) {
                     Table branch = table_of(*nodes, *view, subtree);
                     if (!branch.rows.empty()) {
                         MenuItem branch_json = json;
-                        branch_json.label = "Copy subtree as JSON";
+                        branch_json.label = "Copy field";
                         branch_json.path  = subtree;
-                        lines.push_back(table_item(ui.menu_pending_tables, std::move(branch), "Copy subtree"));
                         lines.push_back(branch_json);
+                        lines.push_back(table_item(ui.menu_pending_tables, std::move(branch), "Copy field as table"));
                     }
                 }
                 if (std_name == "Image" || std_name == "VideoFrame") {
@@ -1829,13 +1859,36 @@ int main(int argc, char** argv)
                 } else if (index >= -1) {
                     Table table = table_of(*nodes, *view, path);
                     if (!table.rows.empty()) {
-                        lines.push_back(table_item(ui.menu_pending_tables, std::move(table), "Copy table"));
                         lines.push_back(json);
+                        lines.push_back(table_item(ui.menu_pending_tables, std::move(table), ("Copy " + noun + " as table").c_str()));
                     } else if (!cell) {
                         const std::string text = copy_text(*nodes, *view, path);
-                        if (!text.empty()) lines.push_back(copy_item("Copy", text));
+                        if (!text.empty()) lines.push_back(copy_item(json.label, text));
                     }
                 }
+            }
+
+            /* An element marked paste takes the clipboard over the row's field, or over its own
+               path, each offered only where it fits. */
+            Rml::Element* tree = event.GetTargetElement();
+            while (tree && !tree->HasAttribute("paste")) tree = tree->GetParentNode();
+            Rml::String clip;
+            if (tree) Rml::GetSystemInterface()->GetClipboardText(clip);
+            if (tree && tree->GetAttribute<Rml::String>("topic", "") == capture.watched().key && !clip.empty()) {
+                Rml::Element* row = event.GetTargetElement();
+                while (row && row != tree && !row->HasAttribute("field")) row = row->GetParentNode();
+                const std::string field = row && row != tree ? row->GetAttribute<Rml::String>("field", "") : std::string();
+                auto paste_line = [&lines, &editor, &clip](const char* label, const std::string& at) {
+                    if (!editor.fits(at, clip)) return;
+                    MenuItem item;
+                    item.label  = label;
+                    item.action = "paste";
+                    item.path   = at;
+                    item.hint   = shorten(clip, 24);
+                    lines.push_back(item);
+                };
+                if (!field.empty()) paste_line("Paste field", field);
+                if (tree->HasAttribute("path")) paste_line("Paste value", tree->GetAttribute<Rml::String>("path", ""));
             }
         }
         /* A card that draws what came before offers to draw only the newest value. */
@@ -2118,7 +2171,7 @@ int main(int argc, char** argv)
         ValueView& view = editor.view();
         seed_view(view, watch);
         editor.repeat();
-        const bool can_compose = !watch.writable && watch.kind == Capture::Kind::Topic && watch.draftable;
+        const bool can_compose = editor.can_compose();
         const bool callable    = Capture::is_call(watch.kind);
         /* A composed tree shows the frozen draft, so a new message moves nothing in it. */
         const std::vector<Capture::ValueNode>& shown = editor.shown();

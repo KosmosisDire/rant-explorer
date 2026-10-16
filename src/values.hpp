@@ -62,9 +62,7 @@ struct ValueView {
 
     /* A topic being composed: the message it froze, which the edits are written over. */
     bool                            composing = false;
-    std::vector<Capture::ValueNode> frozen;
-    std::vector<uint8_t>            frozen_message;
-    uint64_t                        frozen_schema = 0;
+    Capture::Draft                  draft;
     bool                            repeat = false;      /* Send repeats at the rate until Stop */
     bool                            repeating = false;
     double                          next_send = 0;
@@ -138,6 +136,26 @@ Table table_of(const std::vector<Capture::ValueNode>& nodes, const Capture::Watc
 /* Rows as JSON, every cell a string: objects keyed by the header when there is one, one
    object of names to values for two columns, else arrays. */
 std::string table_json(const Table& table);
+
+/* The clipboard read for a paste: JSON when all of it parses, else the text less its line
+   breaks at the end. A number keeps its literal, a list or object its JSON for a string. */
+struct Pasted {
+    enum Kind : uint8_t { Null, Bool, Number, Text, List, Object };
+    Kind                     kind = Null;
+    std::string              text;
+    std::vector<Pasted>      items;   /* a list's elements, an object's values */
+    std::vector<std::string> keys;    /* an object's names, parallel to items */
+};
+Pasted read_pasted(const std::string& text);
+
+/* The edits pasting a value over the field at path makes, all or none: false with the reason
+   in error. When resizable, a variable array given a new length goes in lengths, unentered. */
+struct PastePlan {
+    std::vector<std::pair<uint16_t, uint32_t>> lengths;   /* field and its new length */
+    std::vector<FieldEdit>                     edits;
+};
+bool plan_paste(const std::vector<Capture::ValueNode>& nodes, const Capture::WatchView& view, const std::string& path,
+                const Pasted& value, bool resizable, PastePlan& out, std::string& error);
 
 /* Which editor a node takes when its value can be written, empty for none. */
 std::string editor_for(const Capture::ValueNode& node);

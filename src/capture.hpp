@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -248,6 +249,8 @@ public:
         std::vector<uint8_t>   message;
         uint64_t               schema = 0;
         std::vector<ValueNode> nodes;
+        std::string            root_std;   /* as WatchView's */
+        bool                   root_struct = false;
     };
 
     explicit Capture(const Options& opts);
@@ -328,9 +331,11 @@ public:
     std::vector<uint8_t> encode(const std::vector<uint8_t>& base, uint64_t schema,
                                 const std::vector<ValueNode>& edits, std::string& error) const;
 
-    /* The draft's variable array at field with a copy of its last element added, or zeros,
-       or the element at remove taken out. False with the reason in error. */
-    bool resize(Draft& draft, uint16_t field, int remove, std::string& error) const;
+    /* The draft's variable array at field cut to length elements from its end, or grown to it
+       with copies of its last element, or zeros. False with the reason in error. */
+    bool resize(Draft& draft, uint16_t field, uint32_t length, std::string& error) const;
+    /* The draft's variable array at field without the element at index. */
+    bool remove(Draft& draft, uint16_t field, uint32_t index, std::string& error) const;
 
     /* Writes the watched variable. Empty on success, else why it was refused. */
     std::string set(const std::vector<uint8_t>& value);
@@ -380,6 +385,10 @@ private:
     std::unique_ptr<Impl> impl_;
 
     void build_mesh(uint64_t now_us);
+    /* Rewrites the draft's variable array at field: change gets its element bytes and the
+       element size. */
+    bool rewrite(Draft& draft, uint16_t field, const std::function<void(std::vector<uint8_t>&, size_t)>& change,
+                 std::string& error) const;
 
     std::vector<MachineRow>  machines_;
     int                      node_count_ = 0;

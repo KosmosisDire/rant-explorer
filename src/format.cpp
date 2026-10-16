@@ -108,6 +108,39 @@ std::string format_iso_time(int64_t us)
                  t.tm_min, t.tm_sec, (long long)frac);
 }
 
+bool parse_iso_time(const std::string& text, int64_t& us)
+{
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0, used = 0;
+    char split = 0;
+    if (std::sscanf(text.c_str(), "%4d-%2d-%2d%c%2d:%2d:%2d%n", &year, &month, &day, &split, &hour, &minute, &second,
+                    &used) != 7 || (split != 'T' && split != ' '))
+        return false;
+    static const int days_in[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    const bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    if (month < 1 || month > 12 || day < 1 || day > days_in[month - 1] + (month == 2 && leap) || hour < 0 ||
+        hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 60)
+        return false;
+    int64_t frac = 0;
+    size_t at = (size_t)used;
+    if (at < text.size() && text[at] == '.') {
+        int digits = 0;
+        for (at++; at < text.size() && text[at] >= '0' && text[at] <= '9'; at++, digits++)
+            if (digits < 6) frac = frac * 10 + (text[at] - '0');
+        if (!digits) return false;
+        for (; digits < 6; digits++) frac *= 10;
+    }
+    if (at < text.size() && text[at] == 'Z') at++;
+    if (at != text.size()) return false;
+    /* days since the epoch of a proleptic Gregorian date, Howard Hinnant's days_from_civil */
+    const int64_t y   = year - (month <= 2);
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int64_t yoe = y - era * 400;
+    const int64_t doy = (153 * (month > 2 ? month - 3 : month + 9) + 2) / 5 + day - 1;
+    const int64_t days = era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
+    us = ((days * 24 + hour) * 60 + minute) * 60 * 1000000 + (int64_t)second * 1000000 + frac;
+    return true;
+}
+
 std::string format_span(int64_t us)
 {
     const bool negative = us < 0;

@@ -45,6 +45,14 @@ public:
     void toggle_repeat();
     /* A topic's draft: frozen from the newest message, or the schema's default before one. */
     void compose(bool on);
+    bool can_compose() const;
+    /* The watched value as the tree shows it, every element and every edit in it, for copying.
+       False when that is the newest value as it came. */
+    bool shown_value(Capture::WatchView& out);
+    /* Whether pasting text over the field at path works, and pasting it, which starts a draft
+       first where one can start. The fields it changed, or -1 with the reason in error. */
+    bool fits(const std::string& path, const std::string& text);
+    int  paste(const std::string& path, const std::string& text, std::string& error);
     /* A draft's variable array grows by one element at its end, or loses the element at
        path. Edits and folds past a removed element move up with it. */
     void add_element(const std::string& array);
@@ -70,11 +78,18 @@ public:
     bool take_cells() { return take(cells_dirty_); }
 
 private:
+    /* What a paste does: the draft it starts or resizes, and its edits. */
+    struct Pasting {
+        bool                   start = false, resized = false;
+        Capture::Draft         draft;
+        std::vector<FieldEdit> edits;
+    };
+    bool plan(const std::string& path, const Pasted& value, Pasting& out, std::string& error);
     bool edited(std::vector<Capture::ValueNode>& out);
     void push();
     void send_draft();
     void set_edits();
-    bool resize(uint16_t field, int remove);
+    bool take_draft(bool ok, Capture::Draft& draft, const std::string& error);
     static bool take(bool& flag)
     {
         const bool was = flag;

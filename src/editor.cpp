@@ -8,7 +8,7 @@ using ValueNode = Capture::ValueNode;
 const std::vector<ValueNode>& Editor::shown()
 {
     const ValueView& v = view();
-    return v.composing ? v.frozen : capture_.watched().nodes;
+    return v.composing ? v.draft.nodes : capture_.watched().nodes;
 }
 
 const ValueNode* Editor::node(const std::string& path)
@@ -29,6 +29,9 @@ void Editor::apply(const std::string& path, const std::string& text)
     if (n->kind == ValueNode::Enum && !n->options.empty() &&
         std::find(n->options.begin(), n->options.end(), text) == n->options.end())
         return;
+    /* An editor reports the text it was given too, which would round a pasted value. */
+    const auto now = v.edits.find(path);
+    if (now != v.edits.end() && now->second.text == text) return;
     FieldEdit edit;
     edit.text = text;
     edit.bad  = !parse_value(*n, text, edit.value);
@@ -140,15 +143,126 @@ void Editor::compose(bool on)
     v.sent = 0;
     error_.clear();
     Capture::Draft draft;
-    if (on) {
-        if (!capture_.draft(draft)) return;
-        v.frozen         = draft.nodes;
-        v.frozen_message = draft.message;
-        v.frozen_schema  = draft.schema;
-    }
+    if (on && !capture_.draft(draft)) return;
+    v.draft     = std::move(draft);
     v.composing = on;
-    capture_.compose(on, draft.schema);
+    capture_.compose(on, v.draft.schema);
     rows_dirty_ = true;
+}
+
+bool Editor::can_compose() const
+{
+    const Capture::WatchView& watch = capture_.watched();
+    return !watch.writable && watch.kind == Capture::Kind::Topic && watch.draftable;
+}
+
+bool Editor::shown_value(Capture::WatchView& out)
+{
+    const ValueView& v = view();
+    if (!v.composing && v.edits.empty()) return false;
+    const Capture::WatchView& watch = capture_.watched();
+    out = watch;
+    if (v.composing) {
+        out.nodes       = v.draft.nodes;
+        out.message     = v.draft.message;
+        out.root_std    = v.draft.root_std;
+        out.root_struct = v.draft.root_struct;
+    } else if (!capture_.whole(watch.key).empty()) {
+        out.nodes = capture_.whole(watch.key);
+    }
+    for (ValueNode& n : out.nodes) {
+        const auto edit = v.edits.find(n.path);
+        if (edit == v.edits.end() || edit->second.bad) continue;
+        n.number  = edit->second.value.number;
+        n.integer = edit->second.value.integer;
+        n.text    = edit->second.value.text;
+    }
+    return true;
+}
+
+/* A draft takes arrays of any length, so it plans twice: once for the lengths, then again
+   over the resized draft for the values. */
+bool Editor::plan(const std::string& path, const Pasted& value, Pasting& out, std::string& error)
+{
+    const Capture::WatchView& watch = capture_.watched();
+    const ValueView& v = view();
+    out = Pasting();
+    PastePlan planned;
+    if (v.composing || can_compose()) {
+        out.start = !v.composing;
+        if (v.composing) out.draft = v.draft;
+        else if (!capture_.draft(out.draft)) {
+            error = "nothing to compose from yet";
+            return false;
+        }
+        Capture::WatchView root;   /* only its root is read */
+        root.root_std    = out.draft.root_std;
+        root.root_struct = out.draft.root_struct;
+        if (!plan_paste(out.draft.nodes, root, path, value, true, planned, error)) return false;
+        for (const auto& length : planned.lengths)
+            if (!capture_.resize(out.draft, length.first, length.second, error)) return false;
+        out.resized = !planned.lengths.empty();
+        if (out.resized && !plan_paste(out.draft.nodes, root, path, value, false, planned, error)) return false;
+    } else {
+        /* the whole value, so a paste reaches past a long array's gap */
+        const std::vector<ValueNode>& whole = capture_.whole(watch.key);
+        const std::vector<ValueNode>& nodes = whole.empty() ? watch.nodes : whole;
+        const int at = find_node(nodes, watch, path);
+        if (!watch.writable && !(at >= 0 && nodes[at].input)) {
+            error = "only a request or a goal takes a paste";
+            return false;
+        }
+        if (!plan_paste(nodes, watch, path, value, false, planned, error)) return false;
+    }
+    out.edits = std::move(planned.edits);
+    return true;
+}
+
+bool Editor::fits(const std::string& path, const std::string& text)
+{
+    Pasting p;
+    std::string error;
+    return plan(path, read_pasted(text), p, error);
+}
+
+namespace {
+
+/* Whether the field at key lies in the one at path, a part's heading being its prefix and an @. */
+bool covers(const std::string& path, const std::string& key)
+{
+    const std::string at = !path.empty() && path[0] == '@' ? path.substr(1) : path;
+    if (at.empty()) return true;
+    if (key.compare(0, at.size(), at) != 0) return false;
+    return key.size() == at.size() || key[at.size()] == '.' || key[at.size()] == '[';
+}
+
+} /* namespace */
+
+/* A paste replaces every edit under its field. A draft is planned again once started, since
+   it may freeze a newer message than the one planned on. */
+int Editor::paste(const std::string& path, const std::string& text, std::string& error)
+{
+    const Pasted value = read_pasted(text);
+    Pasting p;
+    if (!plan(path, value, p, error)) return -1;
+    if (p.start) {
+        compose(true);
+        if (!plan(path, value, p, error)) return -1;
+    }
+    ValueView& v = view();
+    if (p.resized) {
+        v.draft     = std::move(p.draft);
+        rows_dirty_ = true;
+    }
+    for (auto it = v.edits.begin(); it != v.edits.end();) it = covers(path, it->first) ? v.edits.erase(it) : std::next(it);
+    for (const FieldEdit& edit : p.edits) v.edits[edit.value.path] = edit;
+    error_.clear();
+    cells_dirty_ = true;
+    if (v.repeating) {
+        v.next_send = Capture::now_s();
+        push();
+    }
+    return (int)p.edits.size();
 }
 
 namespace {
@@ -173,7 +287,10 @@ int shift(const std::string& key, const std::string& array, int k, std::string& 
 void Editor::add_element(const std::string& array)
 {
     const ValueNode* n = node(array);
-    if (n && view().composing) resize(n->field, -1);
+    if (!n || !view().composing) return;
+    Capture::Draft draft = view().draft;
+    std::string error;
+    take_draft(capture_.resize(draft, n->field, n->count + 1, error), draft, error);
 }
 
 void Editor::remove_element(const std::string& path)
@@ -186,7 +303,9 @@ void Editor::remove_element(const std::string& path)
     if (!a) return;
     const int    k     = std::atoi(path.c_str() + open + 1);
     const size_t level = a->elems.size();   /* where a struct array's index sits in a member's elems */
-    if (!resize(n->field, k)) return;
+    Capture::Draft draft = view().draft;
+    std::string error;
+    if (!take_draft(capture_.remove(draft, n->field, (uint32_t)k, error), draft, error)) return;
 
     ValueView& v = view();
     std::map<std::string, FieldEdit> edits;
@@ -216,22 +335,13 @@ void Editor::remove_element(const std::string& path)
     v.open.swap(folds);
 }
 
-bool Editor::resize(uint16_t field, int remove)
+bool Editor::take_draft(bool ok, Capture::Draft& draft, const std::string& error)
 {
-    ValueView& v = view();
-    Capture::Draft draft;
-    draft.message = v.frozen_message;
-    draft.schema  = v.frozen_schema;
-    std::string error;
     cells_dirty_ = true;
-    if (!capture_.resize(draft, field, remove, error)) {
-        error_ = error;
-        return false;
-    }
-    error_.clear();
-    v.frozen_message = std::move(draft.message);
-    v.frozen         = std::move(draft.nodes);
-    rows_dirty_      = true;
+    error_       = ok ? std::string() : error;
+    if (!ok) return false;
+    view().draft = std::move(draft);
+    rows_dirty_  = true;
     return true;
 }
 
@@ -320,7 +430,7 @@ void Editor::send_draft()
     std::vector<ValueNode> nodes;
     if (!v.composing || !edited(nodes)) return;
     std::string error;
-    const std::vector<uint8_t> bytes = capture_.encode(v.frozen_message, v.frozen_schema, nodes, error);
+    const std::vector<uint8_t> bytes = capture_.encode(v.draft.message, v.draft.schema, nodes, error);
     if (error.empty()) error = capture_.publish(bytes);
     error_ = error;
     if (error.empty()) v.sent++;

@@ -7,7 +7,13 @@ out the UI from RML and RCSS.
 
 ```
 ./rant_explorer [--domain N] [--group IP] [--port N] [--if IP] [--name STR]
+./rant_explorer --web-server [--port N] [--bind IP] [--log-file PATH]
 ```
+
+`--web-server` opens no window. It serves the explorer as a web page, by default on port
+8090 of every address, for any browser on the network. The page reaches the mesh through a
+Rant bridge, which it looks for on port 7480 of the same host. `rant web enable` runs the
+server as a service.
 
 `F12` toggles the RmlUi debugger and `F5` reloads the assets. `RANT_UI_ZOOM` scales the
 whole UI. The exe carries its `assets/` embedded, so a copy runs on its own. An exe built
@@ -36,10 +42,21 @@ Rant release pinned in `CMakeLists.txt` plus FreeType, SDL3, RmlUi and the video
 `-local` presets build against the `../rant` working tree instead. Set `CPM_SOURCE_CACHE`
 to share the downloads between build trees.
 
+The web page is its own build, with the emsdk in `EMSDK`. It lands in `bin/web`. A desktop
+build embeds it for `--web-server` when `EXPLORER_WEB_DIR` points there:
+
+```
+cmake --preset web
+cmake --build --preset web
+cmake --preset windows -DEXPLORER_WEB_DIR=bin/web
+cmake --build --preset windows
+```
+
 ## Release
 
-`.github/workflows/ci.yml` builds Windows, Linux and macOS on every push. To release, bump
-`VERSION` and push the tag `v<VERSION>`: the workflow attaches the exe of each platform.
+`.github/workflows/ci.yml` builds the page, then Windows, Linux and macOS with it embedded,
+on every push. To release, bump `VERSION` and push the tag `v<VERSION>`: the workflow
+attaches the exe of each platform and a zip of the page.
 
 ## Status
 

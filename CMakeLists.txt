@@ -212,7 +212,8 @@ target_include_directories(rant_explorer PRIVATE "${RMLUI_BACKENDS}" "${DEPS}/in
 # reloads in the running window. A copied exe elsewhere will not find the path and uses
 # the embedded copy.
 target_compile_definitions(rant_explorer PRIVATE
-  RANT_UI_SOURCE_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets")
+  RANT_UI_SOURCE_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets"
+  RANT_EXPLORER_VERSION="${RANT_EXPLORER_VERSION}")
 
 # The SDL platform half compiles against either SDL major version and picks by this.
 target_compile_definitions(rant_explorer PRIVATE RMLUI_SDL_VERSION_MAJOR=3)
@@ -228,9 +229,48 @@ endif()
 target_sources(rant_explorer PRIVATE "${rant_SOURCE_DIR}/dist/rant.cpp")   # the one RANT_IMPLEMENTATION anchor
 target_link_libraries(rant_explorer PRIVATE rant::rant_platform)
 
+# A web build's bin/web, embedded so --web-server serves the page with nothing beside the
+# exe. Left empty, the exe has no page to serve. A new file in it needs a reconfigure.
+set(EXPLORER_WEB_DIR "" CACHE PATH "A web build's bin/web for --web-server to serve")
+set(WEB_FILES "")
+set(_web "")
+if(EXPLORER_WEB_DIR)
+  get_filename_component(_web "${EXPLORER_WEB_DIR}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+  file(GLOB_RECURSE WEB_FILES CONFIGURE_DEPENDS "${_web}/*")
+  list(FILTER WEB_FILES EXCLUDE REGEX "\\.(d\\.ts|map)$")
+  if(NOT WEB_FILES)
+    message(FATAL_ERROR "EXPLORER_WEB_DIR ${_web} holds no web build, build the web preset first")
+  endif()
+endif()
+set(WEB_EMBEDDED "${CMAKE_BINARY_DIR}/web_embedded.cpp")
+string(REPLACE ";" "$<SEMICOLON>" _web_list "${WEB_FILES}")
+add_custom_command(OUTPUT "${WEB_EMBEDDED}"
+  COMMAND "${CMAKE_COMMAND}" "-DOUTPUT=${WEB_EMBEDDED}" "-DFILES=${_web_list}" -DPREFIX=web
+          "-DBASE=${_web}" -DGZIP=ON -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed.cmake"
+  DEPENDS ${WEB_FILES} "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed.cmake"
+  COMMENT "embedding the web page"
+  VERBATIM)
+
+# cpp-httplib serves it. Its header alone, since its CMake links any OpenSSL, zlib or Brotli
+# it finds on the system.
+CPMAddPackage(NAME httplib
+  GITHUB_REPOSITORY yhirose/cpp-httplib
+  VERSION 0.58.0
+  DOWNLOAD_ONLY YES)
+target_sources(rant_explorer PRIVATE src/output.cpp src/web_server.cpp "${WEB_EMBEDDED}")
+target_include_directories(rant_explorer PRIVATE "${httplib_SOURCE_DIR}")
+
 if(WIN32)
   target_sources(rant_explorer PRIVATE rant_explorer.rc)   # the exe file icon, Logo.ico
   target_link_libraries(rant_explorer PRIVATE dwmapi)       # frame.cpp asks for rounded corners
+  # Windowless, so a double click or a service start opens no console. It attaches to the
+  # terminal that starts it by hand.
+  set_target_properties(rant_explorer PROPERTIES WIN32_EXECUTABLE TRUE)
+  if(MSVC)
+    target_link_options(rant_explorer PRIVATE /ENTRY:mainCRTStartup)
+  else()
+    target_link_options(rant_explorer PRIVATE -mwindows)
+  endif()
 else()
   # The OpenGL 3 renderer loads libGL through dlopen.
   target_link_libraries(rant_explorer PRIVATE ${CMAKE_DL_LIBS})

@@ -19,6 +19,10 @@
 #include "tiling.hpp"
 #include "touch.hpp"
 #include "viz.hpp"
+#include "web_server.hpp"
+#ifndef __EMSCRIPTEN__
+#include "output.hpp"
+#endif
 
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Factory.h>
@@ -821,10 +825,17 @@ Rml::ElementDocument* reload_document(Rml::Context* context, Rml::ElementDocumen
     return fresh;
 }
 
-void usage(const char* exe)
+void usage(const char* path)
 {
+    const char* exe = path;
+    for (const char* c = path; *c; c++)
+        if (*c == '/' || *c == '\\') exe = c + 1;
     std::fprintf(stderr,
-        "usage: %s [--domain N] [--group IP] [--port N] [--if IP] [--name STR]\n", exe);
+        "usage: %s [--domain N] [--group IP] [--port N] [--if IP] [--name STR]\n"
+        "       %s --web-server [--port N] [--bind IP] [--log-file PATH]\n"
+        "       %s --version\n"
+        "--web-server serves the web explorer instead of opening a window, on port 8090 of\n"
+        "every address unless told otherwise.\n", exe, exe, exe);
 }
 
 } /* namespace */
@@ -832,16 +843,37 @@ void usage(const char* exe)
 int main(int argc, char** argv)
 {
     Capture::Options cap_opts;
+    WebServerOptions web;
+    const char* port = nullptr;   /* the discovery port of a window, the HTTP port of a server */
+    bool serve = false, node_flag = false, server_flag = false, version = false, help = false, bad = false;
     for (int i = 1; i < argc; i++) {
         const char* arg  = argv[i];
         const char* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
-        if      (!std::strcmp(arg, "--domain") && next) cap_opts.domain              = (uint16_t)std::atoi(argv[++i]);
-        else if (!std::strcmp(arg, "--group")  && next) cap_opts.discovery_group     = argv[++i];
-        else if (!std::strcmp(arg, "--port")   && next) cap_opts.discovery_port      = (uint16_t)std::atoi(argv[++i]);
-        else if (!std::strcmp(arg, "--if")     && next) cap_opts.multicast_interface = argv[++i];
-        else if (!std::strcmp(arg, "--name")   && next) cap_opts.name                = argv[++i];
-        else { usage(argv[0]); return 2; }
+        if      (!std::strcmp(arg, "--domain") && next) { cap_opts.domain = (uint16_t)std::atoi(argv[++i]); node_flag = true; }
+        else if (!std::strcmp(arg, "--group")  && next) { cap_opts.discovery_group = argv[++i]; node_flag = true; }
+        else if (!std::strcmp(arg, "--if")     && next) { cap_opts.multicast_interface = argv[++i]; node_flag = true; }
+        else if (!std::strcmp(arg, "--name")   && next) { cap_opts.name = argv[++i]; node_flag = true; }
+        else if (!std::strcmp(arg, "--port")   && next) port = argv[++i];
+        else if (!std::strcmp(arg, "--bind")     && next) { web.bind = argv[++i]; server_flag = true; }
+        else if (!std::strcmp(arg, "--log-file") && next) { web.log_file = argv[++i]; server_flag = true; }
+        else if (!std::strcmp(arg, "--web-server")) serve = true;
+        else if (!std::strcmp(arg, "--version")) version = true;
+        else if (!std::strcmp(arg, "--help") || !std::strcmp(arg, "-h")) help = true;
+        else bad = true;
     }
+#ifndef __EMSCRIPTEN__
+    route_output(web.log_file);
+#endif
+    if (help) { usage(argv[0]); return 0; }
+    if (bad || (serve && node_flag) || (!serve && server_flag)) { usage(argv[0]); return 2; }
+    if (version) { std::printf("%s\n", RANT_EXPLORER_VERSION); return 0; }
+#ifndef __EMSCRIPTEN__
+    if (serve) {
+        if (port) web.port = std::atoi(port);
+        return web_server(web);
+    }
+#endif
+    if (port) cap_opts.discovery_port = (uint16_t)std::atoi(port);
 
     SDL_SetMainReady();
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");   /* the click that focuses the window also lands */

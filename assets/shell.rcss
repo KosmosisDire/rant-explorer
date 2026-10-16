@@ -384,7 +384,8 @@ body.compact .sidebar.left > * { width: 100%; }
 body.compact .sidebar.left { border-radius: 0dp 16dp 16dp 0dp; }
 body.compact #tabs { border-radius: 0dp 16dp 0dp 0dp; }
 
-/* The sheet: the right sidebar along the bottom, at the height main.cpp sets. */
+/* The sheet: the right sidebar along the bottom, at the height main.cpp sets. No border,
+   since RmlUi dots the corner where a one sided border meets a radius. */
 body.compact .sidebar.right, body.compact.right-closed .sidebar.right {
 	position: absolute;
 	left: 0dp;
@@ -392,13 +393,12 @@ body.compact .sidebar.right, body.compact.right-closed .sidebar.right {
 	bottom: 0dp;
 	width: auto;
 	height: var(--sheet);
-	border-top: 1dp var(--border2);
 	border-radius: 16dp 16dp 0dp 0dp;
 	transition: height 0.22s cubic-out;
 	z-index: 500;
 }
 
-body.compact.right-closed .sidebar.right { height: 0dp; border-top-width: 0dp; }
+body.compact.right-closed .sidebar.right { height: 0dp; }
 body.compact .sidebar.right > * { width: 100%; }
 body.compact .sidebar.right > .pane-head { border-radius: 16dp 16dp 0dp 0dp; padding-top: 10dp; height: auto; min-height: var(--bar); }
 body.compact .sidebar.right > .tt-head { display: none; }

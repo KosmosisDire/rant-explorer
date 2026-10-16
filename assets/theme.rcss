@@ -52,6 +52,7 @@ body {
 	--red-bg:   rgba(210, 87, 75, 41);
 
 	--shadow-color: rgba(10, 0, 0, 100);
+	--float-shadow: rgba(0, 0, 0, 150);   /* under what floats over the detail */
 
 	/* Every other row of a tree, barely there. */
 	--stripe: rgba(0,0,0,20);
@@ -137,6 +138,7 @@ body.light {
 	--red-bg:   rgba(207, 59, 45, 26);
 
 	--shadow-color: rgba(5, 0, 0, 25);
+	--float-shadow: rgba(0, 0, 0, 45);
 
 	--stripe: rgba(0, 0, 0, 6);
 	--cell-hover: rgba(0, 0, 0, 10);

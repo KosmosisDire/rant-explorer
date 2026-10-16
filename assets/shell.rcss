@@ -396,8 +396,10 @@ body.compact .sidebar.left { border-radius: 0dp 16dp 16dp 0dp; }
 
 /* Neither the drawer nor the sheet clips: a round box that clips makes every clip inside it
    a stencil mask, redrawn per cell. The drawer slides whole, and the sheet stands on the
-   screen's bottom edge, which cuts what it does not show. */
-body.compact .sidebar { overflow: visible; }
+   screen's bottom edge, which cuts what it does not show. Both float, so their shadow is
+   wider and darker, and a filter: RmlUi draws a box sized by two edges too big under a box
+   shadow, past its corners. */
+body.compact .sidebar { overflow: visible; box-shadow: none; filter: drop-shadow(var(--float-shadow) 0dp 0dp 24dp); }
 body.compact #tabs { border-radius: 0dp 16dp 0dp 0dp; }
 
 /* The sheet: the right sidebar along the bottom, at the height main.cpp sets. No border,
@@ -410,7 +412,6 @@ body.compact .sidebar.right, body.compact.right-closed .sidebar.right {
 	width: auto;
 	height: var(--sheet);
 	border-radius: 16dp 16dp 0dp 0dp;
-	box-shadow: none;   /* RmlUi draws a stretched box's fill too wide under its shadow */
 	transition: height 0.22s cubic-out;
 	z-index: 500;
 }

@@ -12,8 +12,10 @@
 #include <cmath>
 #include <functional>
 #include <map>
+#include <iterator>
 #include <set>
 #include <tuple>
+#include <vector>
 
 namespace {
 
@@ -659,10 +661,10 @@ private:
             y0 = std::min(y0, b.p.y - BOX_H / 2);
             y1 = std::max(y1, b.p.y + BOX_H / 2);
         }
-        const float margin = 40, w = c.w() / ratio_, h = c.h() / ratio_ - 24;   /* the legend's strip */
+        const float margin = 40, w = c.w() / ratio_, h = c.h() / ratio_ - legend_;
         const float zoom = std::max(ZOOM_MIN, std::min(FIT_MAX, std::min((w - 2 * margin) / std::max(1.f, x1 - x0),
                                                                           (h - 2 * margin) / std::max(1.f, y1 - y0))));
-        const Rml::Vector2f centre((x0 + x1) / 2, (y0 + y1) / 2 + 12 / zoom);
+        const Rml::Vector2f centre((x0 + x1) / 2, (y0 + y1) / 2 + legend_ / 2 / zoom);
         st.centre += (centre - st.centre) * 0.2f;
         st.zoom   += (zoom - st.zoom) * 0.2f;
     }
@@ -815,33 +817,53 @@ private:
         }
     }
 
-    /* What each colour means, and how much is shown, along the bottom. */
+    /* What each colour means, and how much is shown, along the bottom. A narrow graph wraps
+       it onto lines above, and the count ends the last line, or takes its own under it. */
     void draw_legend(Canvas& c)
     {
-        float x = c.dp(12);
-        const float y = c.h() - c.dp(12);
+        enum Mark { Line, Dashes, Dot };
         const struct {
             const char*  word;
             Rml::Colourb colour;
-        } kinds[] = { { "topic", ink.dim }, { "function", ink.accent }, { "variable", ink.amber }, { "task", ink.green } };
-        for (const auto& k : kinds) {
-            c.line(x, y - c.dp(3.5f), x + c.dp(14), y - c.dp(3.5f), k.colour, 2);
-            x += c.dp(19);
-            c.text(k.word, x, y, Canvas::Left, ink.dim, 10);
-            x += c.text_width(k.word, 10) + c.dp(14);
-        }
-        for (float t = 0; t < 14; t += 6) c.line(x + c.dp(t), y - c.dp(3.5f), x + c.dp(std::min(14.f, t + 3)), y - c.dp(3.5f), ink.dim, 1.2f);
-        x += c.dp(19);
-        c.text("no counters", x, y, Canvas::Left, ink.dim, 10);
-        x += c.text_width("no counters", 10) + c.dp(14);
-        c.dot(x + c.dp(5), y - c.dp(3.5f), ink.red, 5);
-        x += c.dp(15);
-        c.text("not received", x, y, Canvas::Left, ink.dim, 10);
+            Mark         mark;
+        } entries[] = { { "topic", ink.dim, Line },       { "function", ink.accent, Line }, { "variable", ink.amber, Line },
+                        { "task", ink.green, Line },      { "no counters", ink.dim, Dashes }, { "not received", ink.red, Dot } };
+        const auto width = [&](int i) { return c.dp(entries[i].mark == Dot ? 15 : 19) + c.text_width(entries[i].word, 10); };
 
         const int total = (int)source->mesh().nodes.size(), shown = (int)st.shown.size();
         std::string count = shown == total ? std::to_string(total) + " nodes" : std::to_string(shown) + " of " + std::to_string(total) + " nodes";
         count += ", " + std::to_string(st.links) + (st.links == 1 ? " link" : " links");
-        c.text(count, c.w() - c.dp(12), y, Canvas::Right, ink.faint, 10);
+
+        const float room = c.w() - c.dp(24), gap = c.dp(14);
+        std::vector<std::vector<int>> lines(1);
+        float used = 0;
+        for (int i = 0; i < (int)std::size(entries); i++) {
+            if (used > 0 && used + width(i) > room) {
+                lines.emplace_back();
+                used = 0;
+            }
+            lines.back().push_back(i);
+            used += width(i) + gap;
+        }
+        const bool own_line = used + c.text_width(count, 10) > room;
+        const int  rows     = (int)lines.size() + (own_line ? 1 : 0);
+        legend_ = 24.f + (rows - 1) * 16.f;
+
+        const float bottom = c.h() - c.dp(12);
+        for (int r = 0; r < (int)lines.size(); r++) {
+            float       x = c.dp(12);
+            const float y = bottom - (rows - 1 - r) * c.dp(16);
+            for (const int i : lines[r]) {
+                const auto& e = entries[i];
+                if (e.mark == Line) c.line(x, y - c.dp(3.5f), x + c.dp(14), y - c.dp(3.5f), e.colour, 2);
+                if (e.mark == Dashes)
+                    for (float t = 0; t < 14; t += 6) c.line(x + c.dp(t), y - c.dp(3.5f), x + c.dp(std::min(14.f, t + 3)), y - c.dp(3.5f), e.colour, 1.2f);
+                if (e.mark == Dot) c.dot(x + c.dp(5), y - c.dp(3.5f), e.colour, 5);
+                c.text(e.word, x + c.dp(e.mark == Dot ? 15 : 19), y, Canvas::Left, ink.dim, 10);
+                x += width(i) + gap;
+            }
+        }
+        c.text(count, c.w() - c.dp(12), bottom, Canvas::Right, ink.faint, 10);
     }
 
     /* What is under a point: a box first, then the nearest arrow within reach. */
@@ -880,6 +902,7 @@ private:
     Rml::Mesh  shapes_;
     View       view_;
     float      ratio_ = 1;
+    float      legend_ = 24;   /* the legend's strip along the bottom in dp, as last drawn */
     std::vector<std::vector<Rml::Vector2f>> paths_;   /* each edge's arrow as last drawn */
     std::vector<Box> boxes_;                          /* each box as last drawn, in draw order */
     int           hover_node_ = -1, hover_edge_ = -1, grabbed_ = -1;

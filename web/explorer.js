@@ -1,7 +1,7 @@
 // The page around the web explorer. It opens a tunnel to a Rant bridge, then starts the wasm
 // build, whose Rant node runs on the sockets the bridge lends.
 
-import { TunnelNet } from "./rant/tunnel.js";
+import { TunnelNet, findBridges } from "./rant/tunnel.js";
 import createExplorer from "./rant_explorer.js";
 
 // The wasm downloads and compiles while the bridge connects, so the two waits overlap. A
@@ -127,6 +127,28 @@ globalThis.rantSwitch = () => {
     address.searchParams.set("ask", "");
     location.assign(address);
 };
+
+// Every bridge answers rant-bridges.local and lists the others on its network, so that name finds
+// them all. Where the name does not resolve, the address typed asks the bridge there.
+const findButton = document.getElementById("find");
+const found = document.getElementById("found");
+findButton.addEventListener("click", async () => {
+    findButton.textContent = "Looking for bridges...";
+    let list = [];
+    for (const url of ["ws://rant-bridges.local:7480", ...candidates(field("bridge").value)]) {
+        try { list = await findBridges(url); } catch { continue; }
+        if (list.length) break;
+    }
+    if (!list.length) {
+        findButton.textContent = "No bridge answered, type its address";
+        return;
+    }
+    found.replaceChildren(new Option(`${list.length} found, pick one`, ""),
+                          ...list.map((b) => new Option(`${b.name}  ${b.url.replace(/^ws:\/\//, "")}`, b.url)));
+    findButton.hidden = true;
+    found.hidden = false;
+});
+found.addEventListener("change", () => { if (found.value) field("bridge").value = found.value; });
 
 form.addEventListener("submit", (e) => {
     e.preventDefault();

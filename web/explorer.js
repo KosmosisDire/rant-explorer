@@ -19,7 +19,10 @@ const params = new URLSearchParams(location.search);
 let saved = {};
 try { saved = JSON.parse(localStorage.getItem("rant-explorer") ?? "{}"); } catch { /* none kept */ }
 
-field("bridge").value = params.get("bridge") ?? saved.bridge ?? `ws://${location.hostname || "127.0.0.1"}:7480`;
+// A page the bridge's machine serves points at that machine. A hosted one has no bridge of its
+// own, so it starts at this computer's.
+const home = location.protocol === "https:" ? "localhost" : location.hostname || "127.0.0.1";
+field("bridge").value = params.get("bridge") ?? saved.bridge ?? `ws://${home}:7480`;
 field("domain").value = params.get("domain") ?? saved.domain ?? "0";
 field("passphrase").value = saved.passphrase ?? "";
 
@@ -32,6 +35,25 @@ function show(text, bad = false) {
 const name = params.get("name") ?? "explorer-web";
 // A node pinned to an interface, 127.0.0.1 for one on the bridge's loopback.
 const iface = params.get("if");
+
+// "192.168.1.20" or "cell7.local" is a bridge on the LAN, over ws:// on port 7480. A public
+// name is a bridge behind a TLS proxy, over wss://. An address with its scheme stays as typed.
+function bridgeUrl(text) {
+    const t = text.trim();
+    if (/^wss?:\/\//i.test(t)) return t;
+    const host = t.replace(/:\d+$/, "");
+    const local = /^(localhost|\d+\.\d+\.\d+\.\d+|.+\.local)$/i.test(host);
+    const url = new URL(`${local ? "ws" : "wss"}://${t}`);
+    if (local && !url.port) url.port = "7480";
+    return url.href.replace(/\/$/, "");
+}
+
+// Why a secure page could not reach a bridge on the LAN, which the browser's own message hides.
+function blocked(url) {
+    return location.protocol === "https:" && url.startsWith("ws:")
+        ? ". A secure page needs the browser's leave to reach this network: Chrome asks for it, other browsers may refuse. The bridge's machine can also serve this page itself (rant explore web)."
+        : "";
+}
 
 async function connect(settings) {
     show("connecting to " + settings.bridge);
@@ -49,7 +71,7 @@ async function start(settings) {
     try {
         net = await connect(settings);
     } catch (e) {
-        show(e?.message ?? String(e), true);
+        show((e?.message ?? String(e)) + blocked(settings.bridge), true);
         form.hidden = false;
         return;
     }
@@ -87,9 +109,9 @@ globalThis.rantSwitch = () => {
 
 form.addEventListener("submit", (e) => {
     e.preventDefault();
-    start({ bridge: field("bridge").value.trim(), domain: field("domain").value.trim(),
+    start({ bridge: bridgeUrl(field("bridge").value), domain: field("domain").value.trim(),
             passphrase: field("passphrase").value });
 });
 
-if (saved.passphrase && !params.has("ask")) start({ bridge: field("bridge").value, domain: field("domain").value, passphrase: saved.passphrase });
+if (saved.passphrase && !params.has("ask")) start({ bridge: bridgeUrl(field("bridge").value), domain: field("domain").value, passphrase: saved.passphrase });
 else form.hidden = false;

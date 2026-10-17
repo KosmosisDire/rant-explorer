@@ -42,12 +42,13 @@ function(web_target target)
     "-sEXPORTED_RUNTIME_METHODS=HEAPU8")
   # The page and the net objects copy on every build, not only when the wasm links, so an
   # edit to the page alone still lands. The page runs Rant in its own wasm, so of the package
-  # it takes only the tunnel and the module that tunnel imports.
+  # it takes only the tunnel and the modules that tunnel imports.
   add_custom_target(${target}_page ALL
     COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_out}/rant"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${_out}/rant"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_web}/index.html" "${_web}/explorer.js"
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/Logo.png" "${_out}/"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${WEB_NET}/tunnel.js" "${WEB_NET}/net.js" "${_out}/rant/"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${WEB_NET}/tunnel.js" "${WEB_NET}/net.js" "${WEB_NET}/proof.js"
+            "${_out}/rant/"
     VERBATIM)
 endfunction()

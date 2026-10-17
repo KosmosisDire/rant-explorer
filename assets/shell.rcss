@@ -436,7 +436,6 @@ body.compact .sidebar.right, body.compact.right-closed .sidebar.right {
 body.compact.right-closed .sidebar.right { height: 0dp; }
 body.compact .sidebar.right > * { width: 100%; }
 body.compact .sidebar.right > .tt-head { display: none; }
-body.compact .c-topic-value, body.compact .c-topic-jitter, body.compact .c-topic-age,
 body.compact .c-type { display: none; }
 
 /* A phone stacks a panel's pairs one to a line and leaves out whatever is marked more: a

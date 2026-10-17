@@ -551,6 +551,15 @@ Rml::Vector<MenuItem> column_menu(Rml::Element* head, const Ui& ui)
     return items;
 }
 
+/* Shows every column but those a size starts without: a phone leaves the topic tree's names
+   their room, and its header menu can still turn the rest on. */
+void default_columns(std::map<std::string, bool>& hidden, const Rml::String& size)
+{
+    for (auto& column : hidden) column.second = false;
+    if (size == "compact")
+        for (const char* column : { "topic-value", "topic-jitter", "topic-age" }) hidden[column] = true;
+}
+
 /* The menu's size in shell.rcss and components.rcss, which keeps it inside the window. */
 constexpr float MENU_W_DP    = 200.f;
 constexpr float MENU_ITEM_DP = 26.f;
@@ -1889,7 +1898,7 @@ int main(int argc, char** argv)
                 if (ui.menu_kind == "columns") {
                     if (action == "reset") {
                         for (auto& column : ui.columns) column.second = 0;
-                        for (auto& column : ui.hidden_columns) column.second = false;
+                        default_columns(ui.hidden_columns, ui.size);
                         close_menu();
                     } else {
                         MenuItem& item = ui.menu_items[at];
@@ -2475,7 +2484,7 @@ int main(int argc, char** argv)
         if (ui.note_frames && --ui.note_frames == 0) ui.note.clear();
 
         /* The size follows the window in dp, so the zoom counts. Every size starts with the
-           left sidebar open, to pick from, and a narrower one with the right closed. */
+           left sidebar open, to pick from, a narrower one with the right closed, and its columns. */
         {
             const float dp = context->GetDimensions().x / context->GetDensityIndependentPixelRatio();
             const Rml::String size = dp < 600.f ? "compact" : dp < 1000.f ? "medium" : "wide";
@@ -2484,6 +2493,7 @@ int main(int argc, char** argv)
                 if (size != ui.size) {
                     ui.left_open  = true;
                     ui.right_open = size == "wide";
+                    default_columns(ui.hidden_columns, size);
                 }
                 ui.size  = size;
                 ui.touch = touch;

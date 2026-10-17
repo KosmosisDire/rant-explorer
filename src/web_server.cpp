@@ -81,8 +81,17 @@ void write_state(const std::string& url)
         << "started: " << (long long)std::time(nullptr) << "\n";
 }
 
+/* Only while the state is still ours: a server started as this one was ending owns it then. */
 void remove_state()
 {
+    long pid = 0;
+    {
+        std::ifstream in(state_path());
+        std::string line;
+        while (std::getline(in, line))
+            if (line.rfind("pid: ", 0) == 0) pid = std::atol(line.c_str() + 5);
+    }
+    if (pid != self_pid()) return;
     std::error_code ec;
     fs::remove(state_path(), ec);
 }

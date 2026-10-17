@@ -37,26 +37,23 @@ const name = params.get("name") ?? "explorer-web";
 const iface = params.get("if");
 
 const IP = /^\d+\.\d+\.\d+\.\d+$/;
-const LAN_NAME = /^(localhost|[^.]+|.+\.(local|lan|home|internal|localdomain|home\.arpa))$/i;
+const LAN_NAME = /^([^.]+|.+\.(lan|home|internal|localdomain|home\.arpa))$/i;
 
-// "192.168.1.20", "karbon.lan" or "cell7.local" is a bridge on the LAN, over ws:// on port 7480.
-// A public name is a bridge behind a TLS proxy, over wss://. An address with its scheme stays as typed.
-function bridgeUrl(text) {
+// Where a typed address may be, tried in order. An IP or a .local name is a bridge on the LAN,
+// over ws:// on port 7480. A LAN name such as "karbon.lan" almost always is too, so it is tried
+// there first and then as a public name, a bridge behind a TLS proxy over wss://. A secure page
+// may open ws:// only to an IP or a .local name, so there it goes by its .local twin. An address
+// with its scheme stays as typed.
+function candidates(text) {
     const t = text.trim();
-    if (/^wss?:\/\//i.test(t)) return t;
-    const host = t.replace(/:\d+$/, "");
-    const local = IP.test(host) || LAN_NAME.test(host);
-    const url = new URL(`${local ? "ws" : "wss"}://${t}`);
-    if (local && !url.port) url.port = "7480";
-    return url.href.replace(/\/$/, "");
-}
-
-// A secure page may open ws:// only to an IP or a .local name: Chrome refuses "karbon.lan" outright.
-function unsupported(url) {
-    if (location.protocol !== "https:" || !url.startsWith("ws:")) return "";
-    const host = new URL(url).hostname;
-    if (IP.test(host) || /^localhost$|\.local$/i.test(host)) return "";
-    return `a secure page reaches a bridge on the LAN only by its IP or a .local name, such as ${host.split(".")[0]}.local`;
+    if (/^wss?:\/\//i.test(t)) return [t];
+    const port = t.match(/:(\d+)$/)?.[1];
+    const host = port ? t.slice(0, -port.length - 1) : t;
+    const ws = (h) => `ws://${h}:${port ?? 7480}`;
+    const wss = (h) => `wss://${h}${port ? ":" + port : ""}`;
+    if (IP.test(host) || /^localhost$|\.local$/i.test(host)) return [ws(host)];
+    if (LAN_NAME.test(host)) return [ws(location.protocol === "https:" ? host.split(".")[0] + ".local" : host), wss(host)];
+    return [wss(host)];
 }
 
 // Why a bridge was never reached, which the browser's own message hides. One that answered said
@@ -69,10 +66,10 @@ function unreached(url, e) {
     return why;
 }
 
-async function connect(settings) {
-    show("connecting to " + settings.bridge);
-    const net = await TunnelNet.connect(settings.bridge, {
-        passphrase: settings.passphrase,
+async function connect(url, passphrase) {
+    show("connecting to " + url);
+    const net = await TunnelNet.connect(url, {
+        passphrase,
         name,
         address: iface === "127.0.0.1" ? iface : "0.0.0.0",
     });
@@ -81,13 +78,21 @@ async function connect(settings) {
 }
 
 async function start(settings) {
-    let net;
-    try {
-        const why = unsupported(settings.bridge);
-        if (why) throw new Error(why);
-        net = await connect(settings);
-    } catch (e) {
-        show((e?.message ?? String(e)) + unreached(settings.bridge, e), true);
+    // The next place is tried only when this one was never reached: a bridge that answered and
+    // refused was the one meant.
+    let net = null, first = null;
+    for (const url of candidates(settings.bridge)) {
+        try {
+            net = await connect(url, settings.passphrase);
+            settings = { ...settings, bridge: url };
+            break;
+        } catch (e) {
+            first ??= { url, e };
+            if (!/^cannot reach/.test(e?.message ?? "")) { first = { url, e }; break; }
+        }
+    }
+    if (!net) {
+        show((first.e?.message ?? String(first.e)) + unreached(first.url, first.e), true);
         form.hidden = false;
         return;
     }
@@ -125,9 +130,9 @@ globalThis.rantSwitch = () => {
 
 form.addEventListener("submit", (e) => {
     e.preventDefault();
-    start({ bridge: bridgeUrl(field("bridge").value), domain: field("domain").value.trim(),
+    start({ bridge: field("bridge").value.trim(), domain: field("domain").value.trim(),
             passphrase: field("passphrase").value });
 });
 
-if (saved.passphrase && !params.has("ask")) start({ bridge: bridgeUrl(field("bridge").value), domain: field("domain").value, passphrase: saved.passphrase });
+if (saved.passphrase && !params.has("ask")) start({ bridge: field("bridge").value.trim(), domain: field("domain").value, passphrase: saved.passphrase });
 else form.hidden = false;

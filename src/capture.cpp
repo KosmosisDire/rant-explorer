@@ -15,14 +15,8 @@
 #include <utility>
 
 #include <rant.hpp>
-
-/* A page has no sockets, so on the web the node is a client of the Rant bridge. The values
-   are Rant's either way. */
 #ifdef __EMSCRIPTEN__
-#include "bridge.hpp"
-namespace net = bridge;
-#else
-namespace net = rant;
+#include <rant_web.h>
 #endif
 
 namespace {
@@ -599,7 +593,7 @@ struct Capture::Impl {
     };
     std::vector<TrafficReply> traffic_inbox;
 
-    net::Node node;
+    rant::Node node;
 
     /* UI thread only below here. */
     struct Track {
@@ -652,7 +646,7 @@ struct Capture::Impl {
     bool                           graph_dirty = true;
 
     /* Asks one node for its counters, one ask in flight per node. */
-    void ask_traffic(net::Reflection& mesh, const std::string& id, uint32_t peer, uint64_t now)
+    void ask_traffic(rant::Reflection& mesh, const std::string& id, uint32_t peer, uint64_t now)
     {
         Traffic& t = traffic[id];
         if (now - t.asked_us < (t.pending ? TRAFFIC_TIMEOUT_US : TRAFFIC_PERIOD_US)) return;
@@ -769,14 +763,14 @@ struct Capture::Impl {
 
     /* One live handle on a name: a topic subscription, a remote variable, function or task. */
     struct Handle {
-        net::Subscriber<rant::Bytes>                           topic;
-        net::RemoteVariable<rant::Bytes>                       variable;
-        net::RemoteFunction<rant::Bytes, rant::Bytes>          function;
-        net::RemoteTask<rant::Bytes, rant::Bytes, rant::Bytes> task;
+        rant::Subscriber<rant::Bytes>                           topic;
+        rant::RemoteVariable<rant::Bytes>                       variable;
+        rant::RemoteFunction<rant::Bytes, rant::Bytes>          function;
+        rant::RemoteTask<rant::Bytes, rant::Bytes, rant::Bytes> task;
         std::string                       name;
         bool                              reliable = false;   /* a topic's QoS */
         bool                              writable = false;   /* a variable opened to set */
-        net::Publisher<rant::Bytes>      publisher;          /* a composed topic's other role */
+        rant::Publisher<rant::Bytes>      publisher;          /* a composed topic's other role */
         uint64_t                          typed = 0;          /* the schema a composed topic took */
 
         bool valid() const { return topic.valid() || variable.valid() || function.valid() || task.valid(); }
@@ -961,7 +955,7 @@ struct Capture::Impl {
 
     Impl(const std::string& name, const rant::NodeOptions& opts) : node(name, opts)
     {
-        node.on_event([this](const net::Event& e) {
+        node.on_event([this](const rant::Event& e) {
             std::lock_guard<std::mutex> lock(mutex);
             last_event = e.to_string();
         });
@@ -984,7 +978,7 @@ struct Capture::Impl {
     Providers providers(const std::string& name) const
     {
         Providers out;
-        net::Reflection mesh = node.reflection();
+        rant::Reflection mesh = node.reflection();
         for (const rant::Peer& p : mesh.peers()) {
             if (!p.active) continue;
             for (const rant::Entity& e : mesh.entities(p.id)) {
@@ -1057,7 +1051,7 @@ struct Capture::Impl {
                 opts.reflect_from_mesh = writable;
                 h.variable = node.remote_variable<rant::Bytes>(name, opts);
                 /* on_change replays the current value at once, then fires on every change */
-                h.variable.on_change([weak](const net::VariableUpdate& u) {
+                h.variable.on_change([weak](const rant::VariableUpdate& u) {
                     if (auto in = weak.lock()) in->push(u.value(), u.raw_schema(), u.recv_us());
                 });
             } else {
@@ -1068,7 +1062,7 @@ struct Capture::Impl {
                 const auto found = typed ? schemas.find(typed) : schemas.end();
                 const rant::Schema schema = found != schemas.end() ? found->second : rant::Schema();
                 h.topic = node.subscriber<rant::Bytes>(name,
-                    [weak](const net::MessageView& m) {
+                    [weak](const rant::MessageView& m) {
                         if (auto in = weak.lock()) in->push(m.data(), m.raw_schema(), m.recv_us());
                     }, qos, schema);
                 if (schema && h.topic.valid()) {
@@ -1487,6 +1481,10 @@ Capture::Capture(const Options& opts)
     node_opts.recv_buffer_bytes   = 8u << 20;
     /* Never stall the UI thread waiting for a match. */
     node_opts.match_wait          = std::chrono::milliseconds(-1);
+#ifdef __EMSCRIPTEN__
+    /* A page has one thread and never blocks, so the node is polled by hand whenever it has work. */
+    node_opts.threading           = rant::Threading::Manual;
+#endif
 
     try {
         impl_ = std::make_unique<Impl>(opts.name, node_opts);
@@ -1499,6 +1497,12 @@ Capture::Capture(const Options& opts)
         impl_.reset();
         return;
     }
+
+#ifdef __EMSCRIPTEN__
+    /* A page's capture lives as long as the page, so its drive never outlives it. */
+    rant_web_drive([](void* impl) { static_cast<Impl*>(impl)->node.poll(std::chrono::milliseconds(60000)); },
+                   impl_.get());
+#endif
 
     discovery_group_ = opts.discovery_group.empty()
                      ? "239.255.0." + std::to_string(opts.domain)
@@ -1808,7 +1812,7 @@ std::string Capture::call(const std::vector<uint8_t>& request)
     if (s->call_state == Impl::CallState::Waiting) return "a call is in flight";
     auto box = std::make_shared<Impl::CallBox>();
     const std::weak_ptr<Impl::CallBox> weak = box;
-    auto on_response = [weak](const net::ResponseView<rant::Bytes>& r) {
+    auto on_response = [weak](const rant::ResponseView<rant::Bytes>& r) {
         auto b = weak.lock();
         if (!b) return;
         if (r.data().size()) b->reply.push(r.data(), r.raw_schema(), 0);
@@ -1820,7 +1824,7 @@ std::string Capture::call(const std::vector<uint8_t>& request)
     rant::SendStatus st;
     if (s->live.task.valid()) {
         const rant::TaskCall tc = s->live.task.call_async(rant::Bytes(request),
-            [weak](const net::ProgressView<rant::Bytes>& p) {
+            [weak](const rant::ProgressView<rant::Bytes>& p) {
                 auto b = weak.lock();
                 if (!b) return;
                 if (p.has_value()) b->progress.push(p.data(), p.raw_schema(), p.recv_us());
@@ -1902,7 +1906,7 @@ void Capture::poll()
     if (!impl_) return;
 
     const uint64_t now_steady = steady_us();
-    net::Reflection mesh = impl_->node.reflection();
+    rant::Reflection mesh = impl_->node.reflection();
     const std::vector<rant::Peer> peers = mesh.peers();
     const uint32_t mesh_epoch = mesh.epoch();
 
@@ -2238,6 +2242,11 @@ void Capture::poll()
             log_.push_back(Impl::row(*it));
         }
     }
+#ifdef __EMSCRIPTEN__
+    /* The page polls only when Rant asks, so what this frame's input asked of the node, a
+       write or a new handle, leaves now rather than at its next timer. */
+    impl_->node.poll(std::chrono::milliseconds(0));
+#endif
 }
 
 double Capture::traffic_hz(const std::string& key) const

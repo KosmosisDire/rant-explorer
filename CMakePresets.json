@@ -52,7 +52,7 @@
     {
       "name": "web",
       "displayName": "Web (Emscripten)",
-      "description": "Ninja and the emsdk in EMSDK, Rant and rant-client from the pinned releases",
+      "description": "Ninja and the emsdk in EMSDK, Rant and its web package from the pinned release",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
@@ -61,11 +61,10 @@
     {
       "name": "web-local",
       "inherits": "web",
-      "displayName": "Web (Emscripten), local Rant and client",
-      "description": "Rant from ../rant, rant-client from ../bridge-rant/client/dist",
+      "displayName": "Web (Emscripten), local Rant",
+      "description": "Rant and its net objects from ../rant",
       "cacheVariables": {
-        "CPM_rant_SOURCE": "${sourceDir}/../rant",
-        "RANT_CLIENT_DIR": "${sourceDir}/../bridge-rant/client/dist"
+        "CPM_rant_SOURCE": "${sourceDir}/../rant"
       }
     }
   ],

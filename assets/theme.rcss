@@ -84,7 +84,7 @@ body {
 
 	/* The shell slots, so a tab never hard codes a width. A splitter drag overrides them
 	   inline on body. */
-	--sidebar-left:  470dp;
+	--sidebar-left:  530dp;
 	--sidebar-right: 340dp;
 	--sheet:         220dp;   /* a phone's sheet, moved inline as it is dragged */
 	--grip:          28dp;    /* the handle atop the sheet, all of it a closed sheet shows */
@@ -95,6 +95,7 @@ body {
 	--c-topic-value:  110;
 	--c-topic-rate:   58;
 	--c-topic-jitter: 62;
+	--c-topic-age:    58;
 	--c-field:        120;
 	--c-type:         84;
 	--c-value:        104;

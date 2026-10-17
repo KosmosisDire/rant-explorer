@@ -730,6 +730,7 @@ struct Capture::Impl {
         std::vector<uint8_t> data;
         uint64_t             schema_hash = 0;   /* 0 for an untyped writer */
         uint64_t             recv_us = 0;
+        uint64_t             stamp_us = 0;      /* as WatchView's */
     };
     struct Inbox {
         std::mutex                                  mutex;
@@ -737,12 +738,13 @@ struct Capture::Impl {
         std::map<uint64_t, std::vector<uint8_t>>    wires;   /* each schema's wire, by hash */
 
         /* One value off the service thread, with the schema it was written in. */
-        void push(rant::Bytes data, const rant::detail::RantSchema* raw, uint64_t recv_us)
+        void push(rant::Bytes data, const rant::detail::RantSchema* raw, uint64_t recv_us, uint64_t stamp_us)
         {
             Sample sample;
             sample.data.assign(data.begin(), data.end());
             sample.schema_hash = raw ? rant::detail::rant_schema_hash(raw) : 0;
             sample.recv_us     = recv_us;
+            sample.stamp_us    = stamp_us;
             std::lock_guard<std::mutex> lock(mutex);
             if (sample.schema_hash && !wires.count(sample.schema_hash)) {
                 const rant::detail::RantBytes wire = rant::detail::rant_schema_wire(raw);
@@ -1052,7 +1054,7 @@ struct Capture::Impl {
                 h.variable = node.remote_variable<rant::Bytes>(name, opts);
                 /* on_change replays the current value at once, then fires on every change */
                 h.variable.on_change([weak](const rant::VariableUpdate& u) {
-                    if (auto in = weak.lock()) in->push(u.value(), u.raw_schema(), u.recv_us());
+                    if (auto in = weak.lock()) in->push(u.value(), u.raw_schema(), u.recv_us(), u.written_us());
                 });
             } else {
                 rant::Qos qos;
@@ -1063,7 +1065,8 @@ struct Capture::Impl {
                 const rant::Schema schema = found != schemas.end() ? found->second : rant::Schema();
                 h.topic = node.subscriber<rant::Bytes>(name,
                     [weak](const rant::MessageView& m) {
-                        if (auto in = weak.lock()) in->push(m.data(), m.raw_schema(), m.recv_us());
+                        if (auto in = weak.lock())
+                            in->push(m.data(), m.raw_schema(), m.recv_us(), m.capture_us() ? m.capture_us() : m.written_us());
                     }, qos, schema);
                 if (schema && h.topic.valid()) {
                     h.typed     = typed;
@@ -1287,6 +1290,7 @@ struct Capture::Impl {
         v.schema    = last.schema_hash;
         v.draftable = !variable;
         v.last_s    = arrival_s(s, last.recv_us);
+        v.stamp_us  = last.stamp_us;
         add_trace_points(s, v.nodes, v.last_s);
         add_packets(s, v.nodes, v.message);
         trim_traces(s);
@@ -1810,7 +1814,7 @@ std::string Capture::call(const std::vector<uint8_t>& request)
     auto on_response = [weak](const rant::ResponseView<rant::Bytes>& r) {
         auto b = weak.lock();
         if (!b) return;
-        if (r.data().size()) b->reply.push(r.data(), r.raw_schema(), 0);
+        if (r.data().size()) b->reply.push(r.data(), r.raw_schema(), 0, r.written_us());
         std::lock_guard<std::mutex> lock(b->mutex);
         b->done    = true;
         b->status  = r.status();
@@ -1822,7 +1826,7 @@ std::string Capture::call(const std::vector<uint8_t>& request)
             [weak](const rant::ProgressView<rant::Bytes>& p) {
                 auto b = weak.lock();
                 if (!b) return;
-                if (p.has_value()) b->progress.push(p.data(), p.raw_schema(), p.recv_us());
+                if (p.has_value()) b->progress.push(p.data(), p.raw_schema(), p.recv_us(), p.written_us());
                 std::lock_guard<std::mutex> lock(b->mutex);
                 b->running = true;
             }, on_response);
@@ -1870,6 +1874,13 @@ const std::deque<Capture::TracePoint>* Capture::trace_of(const std::string& key,
 double Capture::now_s()
 {
     return (double)steady_us() / 1e6;
+}
+
+double Capture::age_s(const WatchView& view)
+{
+    if (!view.stamp_us) return -1;
+    const uint64_t now = wall_us();
+    return now > view.stamp_us ? (double)(now - view.stamp_us) / 1e6 : 0.0;
 }
 
 bool Capture::ok() const

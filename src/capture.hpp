@@ -233,6 +233,9 @@ public:
         /* Arrivals per second over the last window, the p90 spread of their spacing in ms,
            and when the newest landed, on now_s(). Negative until measured. */
         double      rate_hz = -1, jitter_ms = -1, last_s = -1;
+        /* The newest message's capture time, else its write time, on the publisher's wall
+           clock in UTC microseconds. 0 when it carries neither. */
+        uint64_t    stamp_us = 0;
 
         /* A function's request or a task's goal: the default message the form edits. */
         std::vector<uint8_t> request;
@@ -307,6 +310,8 @@ public:
     const std::deque<TracePoint>* trace_of(const std::string& key, const std::string& path) const;
     /* The clock trace points are on, in seconds. */
     static double now_s();
+    /* How old a view's stamp_us is on this host's wall clock, negative without one. */
+    static double age_s(const WatchView& view);
 
     /* One frame of a standard VideoFrame: its fields and a copy of its bitstream. */
     struct Packet {

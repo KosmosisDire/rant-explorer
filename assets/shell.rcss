@@ -267,6 +267,7 @@ body.touch .pane-head { padding: 0dp var(--pad); }
 .tt-cell.c-topic-value  { flex-grow: var(--c-topic-value); }
 .tt-cell.c-topic-rate   { flex-grow: var(--c-topic-rate); }
 .tt-cell.c-topic-jitter { flex-grow: var(--c-topic-jitter); }
+.tt-cell.c-topic-age    { flex-grow: var(--c-topic-age); }
 .tt-cell.c-field        { flex-grow: var(--c-field); }
 .tt-cell.c-type         { flex-grow: var(--c-type); }
 .tt-cell.c-value        { flex-grow: var(--c-value); }
@@ -274,6 +275,7 @@ body.touch .pane-head { padding: 0dp var(--pad); }
 body.hide-topic-value .c-topic-value,
 body.hide-topic-rate .c-topic-rate,
 body.hide-topic-jitter .c-topic-jitter,
+body.hide-topic-age .c-topic-age,
 body.hide-type .c-type,
 body.hide-value .c-value { display: none; }
 
@@ -434,7 +436,8 @@ body.compact .sidebar.right, body.compact.right-closed .sidebar.right {
 body.compact.right-closed .sidebar.right { height: 0dp; }
 body.compact .sidebar.right > * { width: 100%; }
 body.compact .sidebar.right > .tt-head { display: none; }
-body.compact .c-topic-value, body.compact .c-topic-jitter, body.compact .c-type { display: none; }
+body.compact .c-topic-value, body.compact .c-topic-jitter, body.compact .c-topic-age,
+body.compact .c-type { display: none; }
 
 /* A phone stacks a panel's pairs one to a line and leaves out whatever is marked more: a
    table's extra columns, the mesh head's hops, focus and shuffle. */

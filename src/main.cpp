@@ -194,12 +194,12 @@ struct TreeCell {
     bool        preview = false;   /* only while it is watched */
     bool        active = false;    /* messages are arriving */
     bool        meta = false;      /* the rate is what the nodes report, not what arrives here */
-    Rml::String value, rate, jitter;
+    Rml::String value, rate, jitter, age;
 
     bool operator==(const TreeCell& o) const
     {
         return dot == o.dot && sub == o.sub && preview == o.preview && active == o.active && meta == o.meta &&
-               value == o.value && rate == o.rate && jitter == o.jitter;
+               value == o.value && rate == o.rate && jitter == o.jitter && age == o.age;
     }
 };
 
@@ -646,23 +646,24 @@ std::vector<std::string> subtree(const Capture& capture, const std::string& bran
     return keys;
 }
 
-/* A topic's value, rate and jitter as its tree row shows them. Unsubscribed, the rate is
-   what its nodes report, meta says so, and the rest is a dash. A function or task has calls
-   per second only. */
+/* A topic's value, rate, jitter and the age of its newest message as its tree row shows
+   them. Unsubscribed, the rate is what its nodes report, meta says so, and the rest is a
+   dash. A function or task has calls per second only. */
 void topic_columns(const Capture& capture, const Capture::TopicRow& topic, std::string& value,
-                   std::string& rate, std::string& jitter, bool& meta)
+                   std::string& rate, std::string& jitter, std::string& age, bool& meta)
 {
     const Capture::WatchView* sub = subscribable(topic) ? capture.view(topic.key) : nullptr;
     if (sub && (capture.subscribed(topic.key) || topic.key == capture.watched().key)) {
         value  = preview_text(*sub);
         rate   = format_rate(sub->rate_hz);
         jitter = format_ms(sub->jitter_ms);
+        age    = format_age(Capture::age_s(*sub));
         return;
     }
     const double hz = capture.traffic_hz(topic.key);
     meta = hz >= 0;
     rate = format_rate(hz);
-    if (subscribable(topic)) jitter = DASH;
+    if (subscribable(topic)) jitter = age = DASH;
 }
 
 /* The topics the filter shows under a tree path, every one when it is empty, as the tree's
@@ -678,12 +679,12 @@ Table topic_table(const Capture& capture, const std::string& branch, const std::
     std::sort(topics.begin(), topics.end());
     Table table;
     table.header = true;
-    table.rows.push_back({ "Topic", "Value", "Rate", "Jitter" });
+    table.rows.push_back({ "Topic", "Value", "Rate", "Jitter", "Age" });
     for (const auto& entry : topics) {
-        std::string value, rate, jitter;
+        std::string value, rate, jitter, age;
         bool        meta = false;
-        topic_columns(capture, *entry.second, value, rate, jitter, meta);
-        table.rows.push_back({ entry.second->name, value, rate, jitter });
+        topic_columns(capture, *entry.second, value, rate, jitter, age, meta);
+        table.rows.push_back({ entry.second->name, value, rate, jitter, age });
     }
     return table;
 }
@@ -1139,7 +1140,9 @@ int main(int argc, char** argv)
             return a.empty() ? Rml::Variant() : Rml::Variant(format_duration(a[0].Get<double>()));
         });
         ctor.RegisterTransformFunc("age", [](const Rml::VariantList& a) -> Rml::Variant {
-            return a.empty() ? Rml::Variant() : Rml::Variant(format_age(a[0].Get<double>()));
+            if (a.empty()) return Rml::Variant();
+            const double seconds = a[0].Get<double>();
+            return Rml::Variant(seconds < 0 ? Rml::String(DASH) : format_age(seconds) + " ago");
         });
         ctor.RegisterTransformFunc("bytes", [](const Rml::VariantList& a) -> Rml::Variant {
             return a.empty() ? Rml::Variant() : Rml::Variant(format_bytes(a[0].Get<double>()));
@@ -1315,6 +1318,7 @@ int main(int argc, char** argv)
             cell.RegisterMember("value",   &TreeCell::value);
             cell.RegisterMember("rate",    &TreeCell::rate);
             cell.RegisterMember("jitter",  &TreeCell::jitter);
+            cell.RegisterMember("age",     &TreeCell::age);
         }
         ctor.RegisterArray<Rml::Vector<TreeCell>>();
 
@@ -2597,7 +2601,9 @@ int main(int argc, char** argv)
                     cell.preview = cell.dot && capture.previewing(topic.key);
                     cell.sub     = cell.preview || (cell.dot && capture.subscribed(topic.key));
                     cell.active  = cell.sub && view && view->rate_hz > 0;
-                    topic_columns(capture, topic, cell.value, cell.rate, cell.jitter, cell.meta);
+                    topic_columns(capture, topic, cell.value, cell.rate, cell.jitter, cell.age, cell.meta);
+                    /* The age moves every frame, so another tab leaves it blank and dirties nothing. */
+                    if (ui.tab != "topics") cell.age.clear();
                 }
                 cells.push_back(std::move(cell));
             }

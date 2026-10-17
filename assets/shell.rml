@@ -70,6 +70,9 @@
 						<span class="edge c-topic-rate"><span class="grip" data-event-dragstart="drag_column"
 								data-event-drag="drag_column"></span></span>
 						<span class="tt-cell share c-topic-jitter section" col="topic-jitter">Jitter</span>
+						<span class="edge c-topic-jitter"><span class="grip" data-event-dragstart="drag_column"
+								data-event-drag="drag_column"></span></span>
+						<span class="tt-cell share c-topic-age section" col="topic-age">Age</span>
 					</div>
 					<div id="topic-tree" class="pane-body tt-body" table="topics">
 						<div class="placeholder" data-if="tree_total == 0 &amp;&amp; topic_count == 0">no topics
@@ -105,6 +108,7 @@
 									data-class-meta="tree_cells[i].meta">{{tree_cells[i].rate}}</span>
 								<span class="tt-cell share c-topic-jitter num mono"
 									cell="">{{tree_cells[i].jitter}}</span>
+								<span class="tt-cell share c-topic-age num mono" cell="">{{tree_cells[i].age}}</span>
 							</div>
 						</div>
 						<div data-style-height="tree_bottom"></div>

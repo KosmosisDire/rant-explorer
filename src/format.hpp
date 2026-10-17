@@ -10,7 +10,7 @@
 extern const char* const DASH;
 
 std::string format_duration(double seconds);   /* "9s", "3m 24s", "4h 12m" */
-std::string format_age(double seconds);        /* "0.4s ago", "12s ago", "3m ago" */
+std::string format_age(double seconds);        /* "38 ms", "4.2 s", "3 m", "2 h", "5 d" */
 std::string format_bytes(double bytes);        /* "512 B", "12 KB", "1.5 MB" */
 std::string format_ms(double ms);              /* "0.42 ms", "120 ms" */
 std::string format_number(double value);       /* thousands separated: "12,345" */

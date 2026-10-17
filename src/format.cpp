@@ -48,10 +48,12 @@ std::string format_duration(double seconds)
 std::string format_age(double seconds)
 {
     if (seconds < 0) return DASH;
-    if (seconds < 10)   return print("%.1fs ago", seconds);
-    if (seconds < 60)   return print("%ds ago", (int)seconds);
-    if (seconds < 3600) return print("%dm ago", (int)seconds / 60);
-    return print("%dh ago", (int)seconds / 3600);
+    if (seconds < 1)     return print("%d ms", (int)(seconds * 1000));
+    if (seconds < 10)    return print("%.1f s", seconds);
+    if (seconds < 60)    return print("%d s", (int)seconds);
+    if (seconds < 3600)  return print("%d m", (int)seconds / 60);
+    if (seconds < 86400) return print("%d h", (int)seconds / 3600);
+    return print("%d d", (int)(seconds / 86400));
 }
 
 std::string format_bytes(double bytes)

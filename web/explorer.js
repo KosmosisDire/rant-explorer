@@ -49,8 +49,9 @@ function bridgeUrl(text) {
 }
 
 // Why a secure page could not reach a bridge on the LAN, which the browser's own message hides.
-function blocked(url) {
-    return location.protocol === "https:" && url.startsWith("ws:")
+// Only for a bridge never reached: one that answered said what was wrong itself.
+function blocked(url, e) {
+    return location.protocol === "https:" && url.startsWith("ws:") && /^cannot reach/.test(e?.message ?? "")
         ? ". A secure page needs the browser's leave to reach this network: Chrome asks for it, other browsers may refuse. The bridge's machine can also serve this page itself (rant explore web)."
         : "";
 }
@@ -71,7 +72,7 @@ async function start(settings) {
     try {
         net = await connect(settings);
     } catch (e) {
-        show((e?.message ?? String(e)) + blocked(settings.bridge), true);
+        show((e?.message ?? String(e)) + blocked(settings.bridge, e), true);
         form.hidden = false;
         return;
     }

@@ -36,24 +36,37 @@ const name = params.get("name") ?? "explorer-web";
 // A node pinned to an interface, 127.0.0.1 for one on the bridge's loopback.
 const iface = params.get("if");
 
-// "192.168.1.20" or "cell7.local" is a bridge on the LAN, over ws:// on port 7480. A public
-// name is a bridge behind a TLS proxy, over wss://. An address with its scheme stays as typed.
+const IP = /^\d+\.\d+\.\d+\.\d+$/;
+const LAN_NAME = /^(localhost|[^.]+|.+\.(local|lan|home|internal|localdomain|home\.arpa))$/i;
+
+// "192.168.1.20", "karbon.lan" or "cell7.local" is a bridge on the LAN, over ws:// on port 7480.
+// A public name is a bridge behind a TLS proxy, over wss://. An address with its scheme stays as typed.
 function bridgeUrl(text) {
     const t = text.trim();
     if (/^wss?:\/\//i.test(t)) return t;
     const host = t.replace(/:\d+$/, "");
-    const local = /^(localhost|\d+\.\d+\.\d+\.\d+|.+\.local)$/i.test(host);
+    const local = IP.test(host) || LAN_NAME.test(host);
     const url = new URL(`${local ? "ws" : "wss"}://${t}`);
     if (local && !url.port) url.port = "7480";
     return url.href.replace(/\/$/, "");
 }
 
-// Why a secure page could not reach a bridge on the LAN, which the browser's own message hides.
-// Only for a bridge never reached: one that answered said what was wrong itself.
-function blocked(url, e) {
-    return location.protocol === "https:" && url.startsWith("ws:") && /^cannot reach/.test(e?.message ?? "")
-        ? ". A secure page needs the browser's leave to reach this network: Chrome asks for it, other browsers may refuse. The bridge's machine can also serve this page itself (rant explore web)."
-        : "";
+// A secure page may open ws:// only to an IP or a .local name: Chrome refuses "karbon.lan" outright.
+function unsupported(url) {
+    if (location.protocol !== "https:" || !url.startsWith("ws:")) return "";
+    const host = new URL(url).hostname;
+    if (IP.test(host) || /^localhost$|\.local$/i.test(host)) return "";
+    return `a secure page reaches a bridge on the LAN only by its IP or a .local name, such as ${host.split(".")[0]}.local`;
+}
+
+// Why a bridge was never reached, which the browser's own message hides. One that answered said
+// what was wrong itself.
+function unreached(url, e) {
+    if (!/^cannot reach/.test(e?.message ?? "")) return "";
+    let why = ". Check that it listens on the network (bind: 0.0.0.0 in its bridge.yaml, then rant bridge restart) and that its firewall lets the port in.";
+    if (location.protocol === "https:" && url.startsWith("ws:"))
+        why += " A secure page also needs the browser's leave to reach this network: Chrome asks for it, other browsers may refuse.";
+    return why;
 }
 
 async function connect(settings) {
@@ -70,9 +83,11 @@ async function connect(settings) {
 async function start(settings) {
     let net;
     try {
+        const why = unsupported(settings.bridge);
+        if (why) throw new Error(why);
         net = await connect(settings);
     } catch (e) {
-        show((e?.message ?? String(e)) + blocked(settings.bridge, e), true);
+        show((e?.message ?? String(e)) + unreached(settings.bridge, e), true);
         form.hidden = false;
         return;
     }

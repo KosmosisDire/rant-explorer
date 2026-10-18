@@ -354,8 +354,8 @@
 								<div class="kv-row">
 									<div class="kv"><span class="k">Unicast locator</span><span
 											class="v mono">{{sel.address}}</span></div>
-									<div class="kv"><span class="k">Discovery group</span><span
-											class="v mono">{{discovery_group}}</span></div>
+									<div class="kv"><span class="k">Fragment size</span><span
+											class="v mono">{{sel.fragment_size | bytes}}</span></div>
 								</div>
 								<div class="kv-row">
 									<div class="kv"><span class="k">Last announce</span><span
@@ -366,8 +366,6 @@
 								<div class="kv-row">
 									<div class="kv"><span class="k">Announce updates</span><span
 											class="v mono">{{sel.updates}}</span></div>
-									<div class="kv"><span class="k">Fragment size</span><span
-											class="v mono">{{sel.fragment_size | bytes}}</span></div>
 								</div>
 							</div>
 

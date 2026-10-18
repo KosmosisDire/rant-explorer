@@ -16,7 +16,6 @@ class Capture {
 public:
     struct Options {
         std::string name = "explorer";
-        std::string discovery_group;
         std::string multicast_interface;
         uint16_t    domain = 0;
         uint16_t    discovery_port = 0;
@@ -262,8 +261,6 @@ public:
     bool               ok()    const;
     const std::string& error() const { return error_; }
 
-    /* The discovery group this node actually joined, for the DISCOVERY panel. */
-    const std::string& discovery_group() const { return discovery_group_; }
 
     /* Refresh everything below. Once per frame. */
     void poll();
@@ -406,7 +403,6 @@ private:
 
     std::string selected_id_;
     std::string error_;
-    std::string discovery_group_;
     unsigned    log_mask_ = 0x7;
 };
 

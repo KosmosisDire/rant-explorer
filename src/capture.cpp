@@ -1472,7 +1472,6 @@ Capture::Capture(const Options& opts)
 {
     rant::NodeOptions node_opts;
     node_opts.domain              = opts.domain;
-    node_opts.discovery_group     = opts.discovery_group;
     node_opts.discovery_port      = opts.discovery_port;
     node_opts.multicast_interface = opts.multicast_interface;
     /* The explorer watches every topic on the mesh, so it needs every peer's schemas. */
@@ -1503,10 +1502,6 @@ Capture::Capture(const Options& opts)
     rant_web_drive([](void* impl) { static_cast<Impl*>(impl)->node.poll(std::chrono::milliseconds(60000)); },
                    impl_.get());
 #endif
-
-    discovery_group_ = opts.discovery_group.empty()
-                     ? "239.255.0." + std::to_string(opts.domain)
-                     : opts.discovery_group;
 
     impl_->node.on_log([this](const rant::LogLine& line) {
         Impl::RawLog row;

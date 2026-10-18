@@ -22,7 +22,7 @@ try { saved = JSON.parse(localStorage.getItem("rant-explorer") ?? "{}"); } catch
 // A page the bridge's machine serves points at that machine. A hosted one has no bridge of its
 // own, so it starts at this computer's.
 const home = location.protocol === "https:" ? "localhost" : location.hostname || "127.0.0.1";
-field("bridge").value = params.get("bridge") ?? saved.bridge ?? `ws://${home}:7480`;
+field("bridge").value = params.get("bridge") ?? saved.bridge ?? `ws://${home}:6731`;
 field("domain").value = params.get("domain") ?? saved.domain ?? "0";
 field("passphrase").value = saved.passphrase ?? "";
 
@@ -40,7 +40,7 @@ const IP = /^\d+\.\d+\.\d+\.\d+$/;
 const LAN_NAME = /^([^.]+|.+\.(lan|home|internal|localdomain|home\.arpa))$/i;
 
 // Where a typed address may be, tried in order. An IP or a .local name is a bridge on the LAN,
-// over ws:// on port 7480. A LAN name such as "karbon.lan" almost always is too, so it is tried
+// over ws:// on port 6731. A LAN name such as "karbon.lan" almost always is too, so it is tried
 // there first and then as a public name, a bridge behind a TLS proxy over wss://. A secure page
 // may open ws:// only to an IP or a .local name, so there it goes by its .local twin. An address
 // with its scheme stays as typed.
@@ -49,7 +49,7 @@ function candidates(text) {
     if (/^wss?:\/\//i.test(t)) return [t];
     const port = t.match(/:(\d+)$/)?.[1];
     const host = port ? t.slice(0, -port.length - 1) : t;
-    const ws = (h) => `ws://${h}:${port ?? 7480}`;
+    const ws = (h) => `ws://${h}:${port ?? 6731}`;
     const wss = (h) => `wss://${h}${port ? ":" + port : ""}`;
     if (IP.test(host) || /^localhost$|\.local$/i.test(host)) return [ws(host)];
     if (LAN_NAME.test(host)) return [ws(location.protocol === "https:" ? host.split(".")[0] + ".local" : host), wss(host)];
@@ -135,7 +135,7 @@ const found = document.getElementById("found");
 findButton.addEventListener("click", async () => {
     findButton.textContent = "Looking for bridges...";
     let list = [];
-    for (const url of ["ws://rant-bridges.local:7480", ...candidates(field("bridge").value)]) {
+    for (const url of ["ws://rant-bridges.local:6731", ...candidates(field("bridge").value)]) {
         try { list = await findBridges(url); } catch { continue; }
         if (list.length) break;
     }

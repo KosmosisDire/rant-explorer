@@ -6,7 +6,7 @@
 #include <string>
 
 struct WebServerOptions {
-    int         port = 8090;
+    int         port = 6732;     /* Rant's ports are 6730 to 6739 */
     std::string bind = "0.0.0.0";
     std::string log_file;          /* empty: the terminal that started the exe, if any */
 };

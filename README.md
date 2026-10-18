@@ -6,13 +6,13 @@ out the UI from RML and RCSS.
 ## Usage
 
 ```
-./rant_explorer [--domain N] [--group IP] [--port N] [--if IP] [--name STR]
+./rant_explorer [--domain N] [--port N] [--if IP] [--name STR]
 ./rant_explorer --web-server [--port N] [--bind IP] [--log-file PATH]
 ```
 
 `--web-server` opens no window. It serves the explorer as a web page, by default on port
-8090 of every address, for any browser on the network. The page reaches the mesh through a
-Rant bridge, which it looks for on port 7480 of the same host. Its plug button goes back
+6732 of every address, for any browser on the network. The page reaches the mesh through a
+Rant bridge, which it looks for on port 6731 of the same host. Its plug button goes back
 to the form to pick another bridge or domain. `rant explore web enable` runs the server as
 a service.
 

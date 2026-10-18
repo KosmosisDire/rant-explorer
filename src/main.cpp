@@ -349,7 +349,6 @@ struct Ui {
     Rml::Vector<Capture::MachineRow> machines;
     bool               has_selection = false;
     Capture::NodeRow   selected;
-    Rml::String        discovery_group;
     Capture::MetaView  meta;
     Rml::Vector<Capture::EndpointRow> publishes, subscribes;
     Rml::Vector<Capture::LogRow>      log;
@@ -880,10 +879,10 @@ void usage(const char* path, FILE* out)
     for (const char* c = path; *c; c++)
         if (*c == '/' || *c == '\\') exe = c + 1;
     std::fprintf(out,
-        "usage: %s [--domain N] [--group IP] [--port N] [--if IP] [--name STR]\n"
+        "usage: %s [--domain N] [--port N] [--if IP] [--name STR]\n"
         "       %s --web-server [--port N] [--bind IP] [--log-file PATH]\n"
         "       %s --version\n"
-        "--web-server serves the web explorer instead of opening a window, on port 8090 of\n"
+        "--web-server serves the web explorer instead of opening a window, on port 6732 of\n"
         "every address unless told otherwise.\n", exe, exe, exe);
 }
 
@@ -899,7 +898,6 @@ int main(int argc, char** argv)
         const char* arg  = argv[i];
         const char* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
         if      (!std::strcmp(arg, "--domain") && next) { cap_opts.domain = (uint16_t)std::atoi(argv[++i]); node_flag = true; }
-        else if (!std::strcmp(arg, "--group")  && next) { cap_opts.discovery_group = argv[++i]; node_flag = true; }
         else if (!std::strcmp(arg, "--if")     && next) { cap_opts.multicast_interface = argv[++i]; node_flag = true; }
         else if (!std::strcmp(arg, "--name")   && next) { cap_opts.name = argv[++i]; node_flag = true; }
         else if (!std::strcmp(arg, "--port")   && next) port = argv[++i];
@@ -1025,7 +1023,6 @@ int main(int argc, char** argv)
     Editor  editor(capture);
 
     Ui ui;
-    ui.discovery_group = capture.discovery_group();
     ui.status          = capture.ok() ? "" : ("node failed: " + Rml::String(capture.error()));
     ui.status_level    = capture.ok() ? 2 : 0;
 
@@ -1374,7 +1371,6 @@ int main(int argc, char** argv)
         ctor.Bind("machines",        &ui.machines);
         ctor.Bind("has_selection",   &ui.has_selection);
         ctor.Bind("sel",             &ui.selected);
-        ctor.Bind("discovery_group", &ui.discovery_group);
         ctor.Bind("meta",            &ui.meta);
         ctor.Bind("publishes",       &ui.publishes);
         ctor.Bind("subscribes",      &ui.subscribes);

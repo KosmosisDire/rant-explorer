@@ -1,8 +1,7 @@
 #include "record.hpp"
 
+#include <cgif.h>
 #include <codec_api.h>
-#define MSF_GIF_IMPL
-#include <msf_gif.h>
 #define MINIMP4_IMPLEMENTATION
 #include <minimp4.h>
 
@@ -26,6 +25,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 
 namespace {
 
@@ -39,6 +39,13 @@ constexpr bool THREADS = true;
 /* Frames a recording takes a second. A GIF counts in hundredths, so 25 keeps its delays even. */
 constexpr double MP4_RATE = 30, GIF_RATE = 25;
 
+/* An MP4 keeps one quality throughout, low enough a QP that text and thin lines stay intact. */
+constexpr int MP4_QP = 18;
+
+/* H.264 keeps one colour per 2 by 2 pixels, so a pixel is coded as 2 by 2 while that still
+   encodes at 20 frames a second. A page encodes on its UI thread, so it never doubles. */
+constexpr int MP4_DOUBLED_MOST = THREADS ? 2560 * 1600 : 0;
+
 class Encoder {
 public:
     virtual ~Encoder() = default;
@@ -47,66 +54,231 @@ public:
     virtual std::vector<uint8_t> end() = 0;
 };
 
+/* A frame's own colours as a GIF palette, never dithered, so a card shows exactly. A frame
+   with more, a camera picture, is cut by median cut weighted by pixel count. */
+class Palette {
+public:
+    /* One entry is left free, for the transparency that skips unchanged pixels. */
+    static constexpr size_t MOST = 255;
+
+    void take(const Image& frame, std::vector<uint8_t>& indices)
+    {
+        entries_.clear();
+        slot_.clear();
+        const uint8_t* px = frame.rgba.data();
+        const size_t   n  = (size_t)frame.width * frame.height;
+        indices.resize(n);
+        uint32_t last = ~0u;
+        uint8_t  last_slot = 0;
+        bool     exact = true;
+        for (size_t i = 0; i < n && exact; i++) {
+            const uint32_t c = colour_at(px, i);
+            if (c != last) {
+                auto found = slot_.find(c);
+                if (found == slot_.end()) {
+                    if (entries_.size() == MOST) {
+                        exact = false;
+                        break;
+                    }
+                    found = slot_.emplace(c, (uint8_t)entries_.size()).first;
+                    entries_.push_back(c);
+                }
+                last      = c;
+                last_slot = found->second;
+            }
+            indices[i] = last_slot;
+        }
+        if (exact) return;
+        entries_.clear();
+        slot_.clear();
+        cut(px, n);
+        last = ~0u;
+        for (size_t i = 0; i < n; i++) {
+            const uint32_t c = colour_at(px, i);
+            if (c != last) {
+                last      = c;
+                last_slot = slot_.at(c);
+            }
+            indices[i] = last_slot;
+        }
+    }
+
+    /* The entries as the RGB triples a GIF stores. */
+    void rgb(std::vector<uint8_t>& out) const
+    {
+        out.clear();
+        for (const uint32_t c : entries_) out.insert(out.end(), { (uint8_t)c, (uint8_t)(c >> 8), (uint8_t)(c >> 16) });
+    }
+
+    size_t size() const { return entries_.size(); }
+
+private:
+    static uint32_t colour_at(const uint8_t* px, size_t i)
+    {
+        return px[4 * i] | (uint32_t)px[4 * i + 1] << 8 | (uint32_t)px[4 * i + 2] << 16;
+    }
+
+    struct Swatch {
+        uint32_t colour, count;
+        int channel(int k) const { return (colour >> (8 * k)) & 0xFF; }
+    };
+    struct Box {
+        size_t begin, end;
+        int    widest = 0, range = 0;
+    };
+
+    void cut(const uint8_t* px, size_t n)
+    {
+        std::unordered_map<uint32_t, uint32_t> counts;
+        for (size_t i = 0; i < n; i++) counts[colour_at(px, i)]++;
+        std::vector<Swatch> swatches;
+        swatches.reserve(counts.size());
+        for (const auto& entry : counts) swatches.push_back(Swatch{ entry.first, entry.second });
+        auto measure = [&swatches](Box& box) {
+            int lo[3] = { 255, 255, 255 }, hi[3] = { 0, 0, 0 };
+            for (size_t i = box.begin; i < box.end; i++)
+                for (int k = 0; k < 3; k++) {
+                    lo[k] = std::min(lo[k], swatches[i].channel(k));
+                    hi[k] = std::max(hi[k], swatches[i].channel(k));
+                }
+            box.range = -1;
+            for (int k = 0; k < 3; k++)
+                if (hi[k] - lo[k] > box.range) {
+                    box.range  = hi[k] - lo[k];
+                    box.widest = k;
+                }
+        };
+        std::vector<Box> boxes{ Box{ 0, swatches.size() } };
+        measure(boxes[0]);
+        while (boxes.size() < MOST) {
+            /* the widest box splits at the colour that halves its pixels */
+            Box* box = nullptr;
+            for (Box& b : boxes)
+                if (b.end - b.begin > 1 && (!box || b.range > box->range)) box = &b;
+            if (!box || box->range == 0) break;
+            const int k = box->widest;
+            std::sort(swatches.begin() + box->begin, swatches.begin() + box->end,
+                      [k](const Swatch& a, const Swatch& b) { return a.channel(k) < b.channel(k); });
+            uint64_t total = 0, half = 0;
+            for (size_t i = box->begin; i < box->end; i++) total += swatches[i].count;
+            size_t split = box->begin + 1;
+            for (size_t i = box->begin; i + 1 < box->end; i++) {
+                half += swatches[i].count;
+                split = i + 1;
+                if (half * 2 >= total) break;
+            }
+            Box upper{ split, box->end };
+            box->end = split;
+            measure(*box);
+            measure(upper);
+            boxes.push_back(upper);
+        }
+        for (const Box& box : boxes) {
+            uint64_t sum[3] = {}, weight = 0;
+            for (size_t i = box.begin; i < box.end; i++) {
+                for (int k = 0; k < 3; k++) sum[k] += (uint64_t)swatches[i].channel(k) * swatches[i].count;
+                weight += swatches[i].count;
+                slot_[swatches[i].colour] = (uint8_t)entries_.size();
+            }
+            uint32_t mean = 0;
+            for (int k = 0; k < 3; k++) mean |= (uint32_t)((sum[k] + weight / 2) / weight) << (8 * k);
+            entries_.push_back(mean);
+        }
+    }
+
+    std::vector<uint32_t>                 entries_;   /* 0xBBGGRR */
+    std::unordered_map<uint32_t, uint8_t> slot_;
+};
+
 class Gif : public Encoder {
 public:
-    Gif(int width, int height) { ok_ = msf_gif_begin(&state_, width, height) != 0; }
+    Gif(int width, int height)
+    {
+        CGIF_Config config{};
+        config.attrFlags = CGIF_ATTR_IS_ANIMATED | CGIF_ATTR_NO_GLOBAL_TABLE;
+        config.width     = (uint16_t)width;
+        config.height    = (uint16_t)height;
+        config.numLoops  = CGIF_INFINITE_LOOP;
+        config.pWriteFn  = write;
+        config.pContext  = &file_;
+        gif_ = cgif_newgif(&config);
+    }
+
     ~Gif() override
     {
-        if (ok_) msf_gif_free(msf_gif_end(&state_));
+        if (gif_) cgif_close(gif_);
     }
 
     bool frame(const Image& frame, double duration) override
     {
+        if (!gif_) return false;
         /* Delays round from the running total, so their error never adds up. */
         shown_ += duration;
         const int cs = std::max(2, (int)std::lround(shown_ * 100) - shown_cs_);
         shown_cs_ += cs;
-        ok_ = ok_ && msf_gif_frame(&state_, const_cast<uint8_t*>(frame.rgba.data()), cs, 16, frame.width * 4);
-        return ok_;
+        palette_.take(frame, indices_);
+        palette_.rgb(rgb_);
+        CGIF_FrameConfig config{};
+        config.pLocalPalette          = rgb_.data();
+        config.numLocalPaletteEntries = (uint16_t)palette_.size();
+        config.pImageData             = indices_.data();
+        config.attrFlags              = CGIF_FRAME_ATTR_USE_LOCAL_TABLE;
+        config.genFlags               = CGIF_FRAME_GEN_USE_TRANSPARENCY | CGIF_FRAME_GEN_USE_DIFF_WINDOW;
+        config.delay                  = (uint16_t)std::min(cs, 0xFFFF);
+        return cgif_addframe(gif_, &config) == CGIF_OK;
     }
 
     std::vector<uint8_t> end() override
     {
-        if (!ok_) return {};
-        ok_ = false;
-        const MsfGifResult result = msf_gif_end(&state_);
-        const uint8_t* data = static_cast<const uint8_t*>(result.data);
-        std::vector<uint8_t> file(data, data + (data ? result.dataSize : 0));
-        msf_gif_free(result);
-        return file;
+        if (!gif_) return {};
+        const bool ok = cgif_close(gif_) == CGIF_OK;
+        gif_ = nullptr;
+        return ok ? std::move(file_) : std::vector<uint8_t>();
     }
 
 private:
-    MsfGifState state_{};
-    bool        ok_ = false;
-    double      shown_ = 0;
-    int         shown_cs_ = 0;
+    static int write(void* context, const uint8_t* data, const size_t size)
+    {
+        std::vector<uint8_t>& file = *static_cast<std::vector<uint8_t>*>(context);
+        file.insert(file.end(), data, data + size);
+        return CGIF_OK;
+    }
+
+    CGIF*                gif_ = nullptr;
+    Palette              palette_;
+    std::vector<uint8_t> indices_, rgb_, file_;
+    double               shown_ = 0;
+    int                  shown_cs_ = 0;
 };
 
 /* H.264 in an MP4, BT.709 at limited range, which every player assumes for a stream that
-   states it. */
+   states it. A frame comes at the card's size and is doubled while it may be. */
 class Mp4 : public Encoder {
 public:
-    Mp4(int width, int height) : width_(width), height_(height)
+    Mp4(int width, int height)
+        : scale_(4 * width * height <= MP4_DOUBLED_MOST ? 2 : 1),
+          width_(scale_ == 2 ? 2 * width : width & ~1), height_(scale_ == 2 ? 2 * height : height & ~1)
     {
         if (WelsCreateSVCEncoder(&encoder_) != 0 || !encoder_) return;
         SEncParamExt p;
         encoder_->GetDefaultParams(&p);
         p.iUsageType       = SCREEN_CONTENT_REAL_TIME;   /* sharp lines and text over flat fills */
-        p.iPicWidth        = width;
-        p.iPicHeight       = height;
-        p.iRCMode          = RC_QUALITY_MODE;
-        p.iTargetBitrate   = std::max(1000000, width * height * 4);
+        p.iPicWidth        = width_;
+        p.iPicHeight       = height_;
+        p.iRCMode          = RC_OFF_MODE;
+        p.iTargetBitrate   = std::max(1000000, width_ * height_ * 4);
         p.iMaxBitrate      = UNSPECIFIED_BIT_RATE;
+        p.bEnableAdaptiveQuant = false;
         p.fMaxFrameRate    = (float)MP4_RATE;
         p.uiIntraPeriod    = (unsigned)(2 * MP4_RATE);   /* a seek point every two seconds */
         p.bEnableFrameSkip = false;
         p.iMultipleThreadIdc = 1;
         p.iSpatialLayerNum = 1;
         SSpatialLayerConfig& layer = p.sSpatialLayers[0];
-        layer.iVideoWidth       = width;
-        layer.iVideoHeight      = height;
+        layer.iVideoWidth       = width_;
+        layer.iVideoHeight      = height_;
         layer.fFrameRate        = (float)MP4_RATE;
+        layer.iDLayerQp         = MP4_QP;
         layer.iSpatialBitrate   = p.iTargetBitrate;
         layer.iMaxSpatialBitrate = UNSPECIFIED_BIT_RATE;
         layer.bVideoSignalTypePresent  = true;
@@ -121,8 +293,8 @@ public:
         encoder_->SetOption(ENCODER_OPTION_DATAFORMAT, &format);
         mux_ = MP4E_open(0, 0, &file_, write);
         if (!mux_) return;
-        mp4_h26x_write_init(&writer_, mux_, width, height, 0);
-        yuv_.resize((size_t)width * height * 3 / 2);
+        mp4_h26x_write_init(&writer_, mux_, width_, height_, 0);
+        yuv_.resize((size_t)width_ * height_ * 3 / 2);
         ok_ = true;
     }
 
@@ -190,30 +362,44 @@ private:
         return 0;
     }
 
-    /* BT.709 at limited range in 8 bit fixed point, chroma from each 2 by 2 block's mean. */
+    /* BT.709 at limited range in 8 bit fixed point. Chroma takes four times a pixel, so its
+       shift is two more, and the offset keeps it positive. */
     void to_i420(const Image& frame, uint8_t* y, uint8_t* u, uint8_t* v) const
     {
-        const uint8_t* rgba = frame.rgba.data();
-        for (int i = 0; i < width_ * height_; i++, rgba += 4)
-            y[i] = (uint8_t)(16 + ((47 * rgba[0] + 157 * rgba[1] + 16 * rgba[2] + 128) >> 8));
+        auto luma = [](const uint8_t* p) { return (uint8_t)(16 + ((47 * p[0] + 157 * p[1] + 16 * p[2] + 128) >> 8)); };
+        auto cb   = [](int r, int g, int b) { return (uint8_t)((-26 * r - 87 * g + 112 * b + (128 << 10) + 512) >> 10); };
+        auto cr   = [](int r, int g, int b) { return (uint8_t)((112 * r - 102 * g - 10 * b + (128 << 10) + 512) >> 10); };
+        const int      cw  = width_ / 2;
+        const uint8_t* src = frame.rgba.data();
+        if (scale_ == 2) {
+            for (int row = 0; row < frame.height; row++)
+                for (int col = 0; col < frame.width; col++) {
+                    const uint8_t* p = src + ((size_t)row * frame.width + col) * 4;
+                    const uint8_t  l = luma(p);
+                    uint8_t* top = y + (size_t)row * 2 * width_ + col * 2;
+                    top[0] = top[1] = top[width_] = top[width_ + 1] = l;
+                    u[(size_t)row * cw + col] = cb(4 * p[0], 4 * p[1], 4 * p[2]);
+                    v[(size_t)row * cw + col] = cr(4 * p[0], 4 * p[1], 4 * p[2]);
+                }
+            return;
+        }
+        for (int row = 0; row < height_; row++)
+            for (int col = 0; col < width_; col++) y[(size_t)row * width_ + col] = luma(src + ((size_t)row * frame.width + col) * 4);
         for (int row = 0; row < height_ / 2; row++)
-            for (int col = 0; col < width_ / 2; col++) {
+            for (int col = 0; col < cw; col++) {
                 int r = 0, g = 0, b = 0;
                 for (int k = 0; k < 4; k++) {
-                    const uint8_t* p = frame.rgba.data() + (((size_t)(row * 2 + k / 2) * width_ + col * 2 + k % 2) * 4);
+                    const uint8_t* p = src + ((size_t)(row * 2 + k / 2) * frame.width + col * 2 + k % 2) * 4;
                     r += p[0];
                     g += p[1];
                     b += p[2];
                 }
-                /* The sums are four times the mean, so the shift is two more. The offset keeps
-                   the sum positive before it shifts. */
-                const size_t at = (size_t)row * (width_ / 2) + col;
-                u[at] = (uint8_t)((-26 * r - 87 * g + 112 * b + (128 << 10) + 512) >> 10);
-                v[at] = (uint8_t)((112 * r - 102 * g - 10 * b + (128 << 10) + 512) >> 10);
+                u[(size_t)row * cw + col] = cb(r, g, b);
+                v[(size_t)row * cw + col] = cr(r, g, b);
             }
     }
 
-    int                  width_, height_;
+    int                  scale_, width_, height_;
     ISVCEncoder*         encoder_ = nullptr;
     MP4E_mux_t*          mux_ = nullptr;
     mp4_h26x_writer_t    writer_{};
@@ -350,10 +536,9 @@ struct Recording::Impl {
 Recording::Recording(FileKind kind, int width, int height) : impl_(new Impl)
 {
     Impl& im = *impl_;
-    im.kind = kind;
-    /* H.264 subsamples chroma by two both ways. */
-    im.width  = kind == FileKind::Mp4 ? width & ~1 : width;
-    im.height = kind == FileKind::Mp4 ? height & ~1 : height;
+    im.kind   = kind;
+    im.width  = width;
+    im.height = height;
     im.pace   = 1.0 / (kind == FileKind::Gif ? GIF_RATE : MP4_RATE);
     if (kind == FileKind::Gif) im.encoder.reset(new Gif(im.width, im.height));
     else im.encoder.reset(new Mp4(im.width, im.height));

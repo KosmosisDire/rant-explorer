@@ -44,7 +44,7 @@ cmake --build --preset windows
 Use `linux` on Linux and `macos` on macOS. The executable lands in `bin/`. CPM fetches the
 Rant release pinned in `CMakeLists.txt` plus FreeType, SDL3, RmlUi, the video decoders
 (openh264, dav1d, libde265) and what records a card (the openh264 encoder, minimp4,
-msf_gif), all built static from source. libde265 is LGPL 3. The
+cgif), all built static from source. libde265 is LGPL 3. The
 `-local` presets build against the `../rant` working tree instead. Set `CPM_SOURCE_CACHE`
 to share the downloads between build trees.
 

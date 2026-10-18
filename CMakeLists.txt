@@ -208,7 +208,7 @@ add_executable(rant_explorer
   "${RMLUI_BACKENDS}/RmlUi_Renderer_GL3.cpp")
 
 target_include_directories(rant_explorer PRIVATE "${RMLUI_BACKENDS}" "${DEPS}/include" src
-                           "${msf_gif_SOURCE_DIR}" "${minimp4_SOURCE_DIR}")
+                           "${minimp4_SOURCE_DIR}")
 
 # The assets this tree was built from. A build here reads them directly so an edited RCSS
 # reloads in the running window. A copied exe elsewhere will not find the path and uses
@@ -221,7 +221,7 @@ target_compile_definitions(rant_explorer PRIVATE
 target_compile_definitions(rant_explorer PRIVATE RMLUI_SDL_VERSION_MAJOR=3)
 
 target_link_libraries(rant_explorer PRIVATE
-  RmlUi::Core RmlUi::Debugger SDL3::SDL3 rant::rant openh264_decoder openh264_encoder dav1d de265)
+  RmlUi::Core RmlUi::Debugger SDL3::SDL3 rant::rant openh264_decoder openh264_encoder cgif dav1d de265)
 
 if(EMSCRIPTEN)
   web_target(rant_explorer)

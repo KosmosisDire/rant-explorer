@@ -20,7 +20,7 @@ const char* file_extension(FileKind kind);
 
 class Recording {
 public:
-    /* Every frame is fitted to the first one's size, an even one for a video. */
+    /* Every frame is fitted to the first one's size. */
     Recording(FileKind kind, int width, int height);
     ~Recording();
 

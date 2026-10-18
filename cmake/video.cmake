@@ -43,13 +43,20 @@ if(NOT MSVC)
   target_link_libraries(openh264_common PUBLIC Threads::Threads)
 endif()
 
-# A recorded card's file formats: GIF frames, and the MP4 box around the encoder's H.264.
-# Each is one header. msf_gif is MIT, minimp4 CC0, and it has no release tags.
-CPMAddPackage(NAME msf_gif
-  GITHUB_REPOSITORY notnullnotvoid/msf_gif
-  GIT_TAG v2.4
-  VERSION 2.4
+# A recorded card's file formats: GIF frames from palettes the recorder picks, and the MP4
+# box around the encoder's H.264. cgif is MIT, minimp4 CC0 and one header with no release tags.
+CPMAddPackage(NAME cgif
+  GITHUB_REPOSITORY dloebl/cgif
+  GIT_TAG v0.5.4
+  VERSION 0.5.4
   DOWNLOAD_ONLY YES)
+add_library(cgif STATIC "${cgif_SOURCE_DIR}/src/cgif.c" "${cgif_SOURCE_DIR}/src/cgif_raw.c")
+target_include_directories(cgif PUBLIC "${cgif_SOURCE_DIR}/inc")
+if(MSVC)
+  target_compile_options(cgif PRIVATE /W0)
+else()
+  target_compile_options(cgif PRIVATE -w)
+endif()
 CPMAddPackage(NAME minimp4
   GITHUB_REPOSITORY lieff/minimp4
   GIT_TAG 2a3014a7753cfcba4442adeb469431967238fe6a

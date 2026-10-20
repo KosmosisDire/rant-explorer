@@ -46,6 +46,33 @@ bool stop_requested()
     return g_stop || (g_stop_event && WaitForSingleObject(g_stop_event, 0) == WAIT_OBJECT_0);
 }
 long self_pid() { return (long)GetCurrentProcessId(); }
+
+LRESULT CALLBACK on_window(HWND w, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_CLOSE) {
+        g_stop = true;
+        return 0;
+    }
+    return DefWindowProcW(w, msg, wp, lp);
+}
+
+/* rant stop, as taskkill does, asks a program with no console to close its windows, so a
+   hidden one stands for the server. */
+void close_on_window()
+{
+    std::thread([] {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc   = on_window;
+        wc.hInstance     = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"rant-explorer-web";
+        RegisterClassW(&wc);
+        if (!CreateWindowExW(0, wc.lpszClassName, L"rant-explorer-web", 0, 0, 0, 0, 0, nullptr, nullptr,
+                             wc.hInstance, nullptr))
+            return;
+        MSG m;
+        while (GetMessageW(&m, nullptr, 0, 0) > 0) DispatchMessageW(&m);
+    }).detach();
+}
 #else
 void on_signal(int) { g_stop = true; }
 bool stop_requested() { return g_stop.load(); }
@@ -188,6 +215,7 @@ int web_server(const WebServerOptions& options)
     g_stop_event = CreateEventW(nullptr, TRUE, FALSE, L"Local\\rant-explorer-web-stop");
     if (g_stop_event) ResetEvent(g_stop_event);   /* a stop left over from before */
     SetConsoleCtrlHandler(on_console, TRUE);
+    close_on_window();
 #else
     std::signal(SIGTERM, on_signal);
     std::signal(SIGINT, on_signal);

@@ -66,7 +66,7 @@ attaches the exe of each platform and a zip of the page.
 
 ## Status
 
-The Topics, Nodes and Mesh tabs: discovery, the node's meta and log, the topic tree with
+The Topics, Nodes and Mesh tabs: discovery, the node's status, meta and log, the topic tree with
 subscriptions and each name's rate as its nodes report it, the value tree with editing,
 publishing and calls, a visual card per field, and a graph of the nodes and the names
 between them with their traffic.

@@ -50,6 +50,7 @@ public:
         int         updates = 0;         /* announce changes we have counted */
         int         fragment_size = -1;
         int         publishes = 0, subscribes = 0;
+        int         worst = 0;           /* its most serious condition's rant::Level, 0 = none */
     };
 
     /* The left list groups nodes by the host they run on. */
@@ -156,16 +157,33 @@ public:
     };
     static constexpr double ACTIVE_S = 10, LOST_S = 6;
 
+    /* rant::Level's values, which a LogRow and a StatusRow carry */
+    enum class Level : int { Debug = 1, Info, Warn, Error };
+
     /* One line off the mesh wide @rant/log stream, already filtered to the selection. */
     struct LogRow {
-        int         level = 2;   /* 0 error, 1 warn, 2 info */
+        int         level = 2;   /* a rant::Level, 1 debug to 4 error */
+        bool        rant = false;   /* Rant's own line, not the node's */
         std::string time;        /* local HH:MM:SS */
         std::string node;
         std::string text;
 
         bool operator==(const LogRow& o) const
         {
-            return level == o.level && time == o.time && node == o.node && text == o.text;
+            return level == o.level && rant == o.rant && time == o.time && node == o.node && text == o.text;
+        }
+    };
+
+    /* One condition active on the selected node, the most serious first. */
+    struct StatusRow {
+        int         level = 2;      /* a rant::Level */
+        bool        rant = false;   /* raised by Rant itself, so kind is its kind */
+        std::string kind;           /* the app's key, or Rant's kind before its id */
+        std::string text;
+
+        bool operator==(const StatusRow& o) const
+        {
+            return level == o.level && rant == o.rant && kind == o.kind && text == o.text;
         }
     };
 
@@ -363,7 +381,7 @@ public:
     std::string call(const std::vector<uint8_t>& request);
     std::string cancel();
 
-    /* Which log levels reach log(). Bit 0 error, 1 warn, 2 info. */
+    /* Which log levels reach log(): bit n passes rant::Level n. */
     void     set_log_levels(unsigned mask) { log_mask_ = mask; }
 
     const std::vector<MachineRow>&  machines()   const { return machines_; }
@@ -372,6 +390,7 @@ public:
     const std::vector<EndpointRow>& subscribes() const { return subscribes_; }
     const MetaView&                 meta()       const { return meta_; }
     const std::vector<LogRow>&      log()        const { return log_; }
+    const std::vector<StatusRow>&   status()     const { return status_; }
     const std::vector<TopicRow>&    topics()     const { return topics_; }
     /* Bumps when topics() was rebuilt, so a tree over it is rebuilt only then. */
     uint32_t                        topics_epoch() const { return topics_epoch_; }
@@ -403,6 +422,7 @@ private:
     MetaView                 meta_;
     std::vector<LogRow>      log_;
     LogRow                   latest_log_;
+    std::vector<StatusRow>   status_;
     std::vector<TopicRow>    topics_;
     uint32_t                 topics_epoch_ = 0;
     MeshView                 mesh_;
@@ -413,7 +433,7 @@ private:
 
     std::string selected_id_;
     std::string error_;
-    unsigned    log_mask_ = 0x7;
+    unsigned    log_mask_ = 0x1E;   /* every level, debug to error */
 };
 
 #endif /* CAPTURE_HPP */

@@ -949,6 +949,7 @@ scrollbarvertical sliderarrowinc {
 }
 
 .feed-time { font-size: 10dp; color: var(--faint); }
+.feed-time .tag { margin-left: 6dp; }   /* Rant's own line or condition */
 .feed-text { font-size: 11dp; color: var(--text); }
 
 /* --------------------------------------------------------------- detail heading */

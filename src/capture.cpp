@@ -561,7 +561,8 @@ struct Decoder {
    they touch are declared before the node and guarded. */
 struct Capture::Impl {
     struct RawLog {
-        int         level = 2;
+        int         level = (int)rant::Level::Info;
+        bool        rant = false;
         uint64_t    wall_us = 0;
         std::string node;
         std::string text;
@@ -570,6 +571,7 @@ struct Capture::Impl {
     {
         LogRow out;
         out.level = raw.level;
+        out.rant  = raw.rant;
         out.time  = format_clock(raw.wall_us);
         out.node  = raw.node;
         out.text  = raw.text.empty() ? "(empty line)" : raw.text;
@@ -579,6 +581,7 @@ struct Capture::Impl {
     std::mutex         mutex;
     std::string        last_event;
     std::deque<RawLog> log_ring;
+    std::map<uint32_t, std::vector<StatusRow>> status;   /* each node's latest set, by peer id */
     rant::MetaSnapshot meta;
     bool               meta_fresh   = false;
     uint64_t           meta_at_us   = 0;   /* our steady clock when the reply landed */
@@ -1527,12 +1530,33 @@ Capture::Capture(const Options& opts)
     impl_->node.on_log([this](const rant::LogLine& line) {
         Impl::RawLog row;
         row.level   = (int)line.level;
+        row.rant    = line.origin == rant::Origin::Rant;
         row.wall_us = line.wall_us;
         row.node.assign(line.node.data(), line.node.size());
         row.text.assign(line.text.data(), line.text.size());
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->log_ring.push_back(std::move(row));
         while (impl_->log_ring.size() > LOG_RING) impl_->log_ring.pop_front();
+    });
+    /* Each set replaces that node's last, and a node that leaves sends an empty one. */
+    impl_->node.on_status([this](const rant::StatusUpdate& update) {
+        std::vector<StatusRow> rows;
+        for (const rant::Condition& c : update.conditions) {
+            StatusRow row;
+            row.level = (int)c.level;
+            row.rant  = c.origin == rant::Origin::Rant;
+            /* Rant's keys are its kind, then an id that only keeps two problems apart */
+            const std::string_view kind = row.rant ? c.key.substr(0, c.key.find('/')) : c.key;
+            row.kind.assign(kind.data(), kind.size());
+            row.text.assign(c.text.data(), c.text.size());
+            rows.push_back(std::move(row));
+        }
+        std::stable_sort(rows.begin(), rows.end(), [](const StatusRow& a, const StatusRow& b) {
+            return a.level != b.level ? a.level > b.level : a.text < b.text;
+        });
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (rows.empty()) impl_->status.erase(update.node_id);
+        else impl_->status[update.node_id] = std::move(rows);
     });
 }
 
@@ -1967,6 +1991,12 @@ void Capture::poll()
 
     for (auto& entry : impl_->tracks) entry.second.seen = false;
 
+    std::map<uint32_t, std::vector<StatusRow>> status;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        status = impl_->status;
+    }
+
     /* Group by host. A handful of hosts, so a linear find beats a map. */
     machines_.clear();
     node_count_ = 0;
@@ -2025,6 +2055,10 @@ void Capture::poll()
         row.fragment_size = p.fragment_size ? (int)p.fragment_size : -1;
         row.publishes     = track.publishes;
         row.subscribes    = track.subscribes;
+        {
+            const auto it = status.find(p.id);
+            row.worst = it == status.end() || it->second.empty() ? 0 : it->second.front().level;
+        }
 
         if (id == selected_id_) {
             selected_peer  = p.id;
@@ -2278,6 +2312,13 @@ void Capture::poll()
     }
 
     latest_log_ = lines.empty() ? LogRow() : Impl::row(lines.back());
+
+    /* The selected node's conditions, already in order. */
+    status_.clear();
+    if (have_selection) {
+        const auto it = status.find(selected_peer);
+        if (it != status.end()) status_ = it->second;
+    }
 
     /* The log sidebar: this node's lines, newest first, filtered by the level pills. */
     log_.clear();

@@ -344,7 +344,7 @@ struct Ui {
     /* shell */
     /* The status bar line: the newest log line off the mesh, or why our node failed. */
     Rml::String status, tab = "topics";
-    int         status_level = 2, peer_count = 0;   /* 0 error, 1 warn, 2 info */
+    int         status_level = 2, peer_count = 0;   /* a rant::Level, 1 debug to 4 error */
 
     /* nodes tab */
     Rml::Vector<Capture::MachineRow> machines;
@@ -353,7 +353,8 @@ struct Ui {
     Capture::MetaView  meta;
     Rml::Vector<Capture::EndpointRow> publishes, subscribes;
     Rml::Vector<Capture::LogRow>      log;
-    bool log_error = true, log_warn = true, log_info = true;
+    Rml::Vector<Capture::StatusRow>   conditions;
+    bool log_error = true, log_warn = true, log_info = true, log_debug = true;
 
     /* mesh tab: the head's filters, and the sidebar for the selection */
     Rml::String mesh_filter;
@@ -864,8 +865,8 @@ Rml::String machines_signature(const Rml::Vector<Capture::MachineRow>& machines)
         out += m.host;
         out += '|';
         for (const Capture::NodeRow& n : m.nodes)
-            out += Rml::CreateString("%s;%d;%d;%s|", n.name.c_str(), (int)n.alive,
-                                     n.rtt_samples, format_ms(n.rtt_ms).c_str());
+            out += Rml::CreateString("%s;%d;%d;%s;%d|", n.name.c_str(), (int)n.alive,
+                                     n.rtt_samples, format_ms(n.rtt_ms).c_str(), n.worst);
     }
     return out;
 }
@@ -1036,7 +1037,7 @@ int main(int argc, char** argv)
 
     Ui ui;
     ui.status          = capture.ok() ? "" : ("node failed: " + Rml::String(capture.error()));
-    ui.status_level    = capture.ok() ? 2 : 0;
+    ui.status_level    = capture.ok() ? (int)Capture::Level::Info : (int)Capture::Level::Error;
 
     /* The whole topic tree, rebuilt when the mesh, the filter or the expanded set moves.
        The document holds a window of it, see window_tree. */
@@ -1193,6 +1194,7 @@ int main(int argc, char** argv)
             node_row.RegisterMember("fragment_size", &Capture::NodeRow::fragment_size);
             node_row.RegisterMember("publishes",     &Capture::NodeRow::publishes);
             node_row.RegisterMember("subscribes",    &Capture::NodeRow::subscribes);
+            node_row.RegisterMember("worst",         &Capture::NodeRow::worst);
         }
         ctor.RegisterArray<Rml::Vector<Capture::NodeRow>>();
 
@@ -1344,10 +1346,19 @@ int main(int argc, char** argv)
 
         if (auto log_row = ctor.RegisterStruct<Capture::LogRow>()) {
             log_row.RegisterMember("level", &Capture::LogRow::level);
+            log_row.RegisterMember("rant",  &Capture::LogRow::rant);
             log_row.RegisterMember("time",  &Capture::LogRow::time);
             log_row.RegisterMember("text",  &Capture::LogRow::text);
         }
         ctor.RegisterArray<Rml::Vector<Capture::LogRow>>();
+
+        if (auto status_row = ctor.RegisterStruct<Capture::StatusRow>()) {
+            status_row.RegisterMember("level", &Capture::StatusRow::level);
+            status_row.RegisterMember("rant",  &Capture::StatusRow::rant);
+            status_row.RegisterMember("kind",  &Capture::StatusRow::kind);
+            status_row.RegisterMember("text",  &Capture::StatusRow::text);
+        }
+        ctor.RegisterArray<Rml::Vector<Capture::StatusRow>>();
 
         if (auto row = ctor.RegisterStruct<MeshRow>()) {
             row.RegisterMember("key",    &MeshRow::key);
@@ -1391,9 +1402,11 @@ int main(int argc, char** argv)
         ctor.Bind("publishes",       &ui.publishes);
         ctor.Bind("subscribes",      &ui.subscribes);
         ctor.Bind("log",             &ui.log);
+        ctor.Bind("conditions",      &ui.conditions);
         ctor.Bind("log_error",       &ui.log_error);
         ctor.Bind("log_warn",        &ui.log_warn);
         ctor.Bind("log_info",        &ui.log_info);
+        ctor.Bind("log_debug",       &ui.log_debug);
         ctor.Bind("note",            &ui.note);
         ctor.Bind("recording",       &ui.recording);
         ctor.Bind("topic_filter",    &ui.topic_filter);
@@ -2113,10 +2126,14 @@ int main(int argc, char** argv)
                 switch (args[0].Get<int>()) {
                 case 0: ui.log_error = !ui.log_error; handle.DirtyVariable("log_error"); break;
                 case 1: ui.log_warn  = !ui.log_warn;  handle.DirtyVariable("log_warn");  break;
-                default: ui.log_info = !ui.log_info;  handle.DirtyVariable("log_info");  break;
+                case 2: ui.log_info  = !ui.log_info;  handle.DirtyVariable("log_info");  break;
+                default: ui.log_debug = !ui.log_debug; handle.DirtyVariable("log_debug"); break;
                 }
-                capture.set_log_levels((ui.log_error ? 1u : 0u) | (ui.log_warn ? 2u : 0u) |
-                                       (ui.log_info ? 4u : 0u));
+                /* bit n passes rant::Level n */
+                capture.set_log_levels((ui.log_error ? 1u << (int)Capture::Level::Error : 0u) |
+                                       (ui.log_warn  ? 1u << (int)Capture::Level::Warn  : 0u) |
+                                       (ui.log_info  ? 1u << (int)Capture::Level::Info  : 0u) |
+                                       (ui.log_debug ? 1u << (int)Capture::Level::Debug : 0u));
             });
 
         model = ctor.GetModelHandle();
@@ -2527,6 +2544,7 @@ int main(int argc, char** argv)
         sync(model, "publishes", ui.publishes, capture.publishes());
         sync(model, "subscribes", ui.subscribes, capture.subscribes());
         sync(model, "log", ui.log, capture.log());
+        sync(model, "conditions", ui.conditions, capture.status());
         ui.meta = capture.meta();
         if (capture.ok() && !capture.latest_log().text.empty()) {
             const Capture::LogRow& latest = capture.latest_log();

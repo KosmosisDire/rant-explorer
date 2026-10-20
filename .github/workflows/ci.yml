@@ -1,6 +1,7 @@
 # Builds the web page, then the explorer on Windows, Linux and macOS with the page embedded,
 # for every push to main and every pull request. A pushed tag v<VERSION> also attaches the
-# exe of each platform and a zip of the page to a GitHub Release.
+# exe of each platform, the archives rant install unpacks and a zip of the page to a GitHub
+# Release.
 name: ci
 
 on:
@@ -93,13 +94,20 @@ jobs:
           cmake --preset ${{ matrix.preset }} -DEXPLORER_WEB_DIR=page
           cmake --build --preset ${{ matrix.preset }}
 
-      # The assets and the page are embedded, so the exe is the whole program.
+      # The assets and the page are embedded, so the exe is the whole program. The archive
+      # holds the package as the repo does: package.rant, the group and bin/.
       - name: Name the exe
         shell: bash
         run: |
-          mkdir out
+          mkdir -p out pkg/bin
           name="rant-explorer-$(cat VERSION)-${{ matrix.name }}"
-          if [ -f bin/rant_explorer.exe ]; then cp bin/rant_explorer.exe "out/$name.exe"; else cp bin/rant_explorer "out/$name"; fi
+          exe=rant_explorer
+          if [ -f bin/rant_explorer.exe ]; then exe=rant_explorer.exe; fi
+          cp "bin/$exe" "out/$name${exe#rant_explorer}"
+          cp "bin/$exe" pkg/bin/
+          cp package.rant WebExplorer.run pkg/
+          tar -czf "out/$name.tar.gz" -C pkg package.rant WebExplorer.run bin
+          tar -tzvf "out/$name.tar.gz"
           ls -l out
 
       - uses: actions/upload-artifact@v7

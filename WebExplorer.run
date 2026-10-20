@@ -1,0 +1,16 @@
+description = "The explorer served as a page to browsers on this network"
+
+param "port" {
+  type        = int
+  default     = 6732
+  description = "The port it serves on"
+}
+
+param "bind" {
+  default     = "0.0.0.0"
+  description = "The address it listens on, 127.0.0.1 for this computer only"
+}
+
+node "explorer/web_explorer" {
+  args = ["--port", "${param.port}", "--bind", param.bind]
+}

@@ -1,0 +1,12 @@
+name        = "explorer"
+description = "The Rant mesh explorer, in a window or served as a page to browsers"
+archive     = "rant-explorer-${version}-${platform}.tar.gz"
+
+node "explorer" {
+  run = "${path.package}/bin/rant_explorer"
+}
+
+node "web_explorer" {
+  run         = ["${path.package}/bin/rant_explorer", "--web-server"]
+  expect_mesh = false
+}

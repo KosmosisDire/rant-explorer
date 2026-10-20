@@ -39,8 +39,8 @@ void Editor::apply(const std::string& path, const std::string& text)
     else v.edits[path] = edit;
     error_.clear();
     cells_dirty_ = true;
-    /* While repeating an edit goes out at once, not on the next tick. */
-    if (v.repeating && !edit.bad) {
+    /* While live an edit goes out at once, not on the next tick. */
+    if (v.live && !edit.bad) {
         v.next_send = Capture::now_s();
         push();
     }
@@ -101,44 +101,36 @@ void Editor::undo()
 void Editor::commit()
 {
     if (Capture::is_call(capture_.watched().kind)) call();
-    else if (!view().repeating) push();
+    else if (!view().live) push();
 }
 
-void Editor::send()
+/* A variable's live edits are on the mesh by now, so turning live off settles them as the
+   main button would. A variable with nothing edited is not written when live turns on. */
+void Editor::toggle_live()
 {
     ValueView& v = view();
-    if (!v.repeat) {
-        push();
-        return;
-    }
-    v.repeating = true;
-    v.next_send = Capture::now_s();
-    if (!v.composing) push();
-    rows_dirty_ = true;
+    v.live       = !v.live;
+    v.next_send  = Capture::now_s();
+    cells_dirty_ = true;
+    if (v.live && (v.composing || !v.edits.empty())) push();
+    else if (!v.live && !v.composing) write(false);
 }
 
-/* A variable's edits are on the mesh by now, so stopping settles them as a Set would. */
-void Editor::stop()
+void Editor::force()
 {
-    ValueView& v = view();
-    v.repeating = false;
-    if (!v.composing) set_edits();
-    rows_dirty_ = true;
+    write(true);
 }
 
-/* The flag only arms Send or Set, so it is locked while repeating. */
-void Editor::toggle_repeat()
+void Editor::release()
 {
-    ValueView& v = view();
-    if (v.repeating) return;
-    v.repeat    = !v.repeat;
-    rows_dirty_ = true;
+    error_       = capture_.release();
+    cells_dirty_ = true;
 }
 
 void Editor::compose(bool on)
 {
     ValueView& v = view();
-    v.repeating = false;
+    v.live = false;
     v.edits.clear();
     v.sent = 0;
     error_.clear();
@@ -258,7 +250,7 @@ int Editor::paste(const std::string& path, const std::string& text, std::string&
     for (const FieldEdit& edit : p.edits) v.edits[edit.value.path] = edit;
     error_.clear();
     cells_dirty_ = true;
-    if (v.repeating) {
+    if (v.live) {
         v.next_send = Capture::now_s();
         push();
     }
@@ -349,7 +341,7 @@ void Editor::end_draft()
 {
     ValueView& v = view();
     v.composing = false;
-    v.repeating = false;
+    v.live      = false;
     v.edits.clear();
 }
 
@@ -380,9 +372,7 @@ void Editor::cancel()
 void Editor::repeat()
 {
     const ValueView& v = view();
-    if (!v.repeating || !v.composing || Capture::now_s() < v.next_send) return;
-    push();
-    if (!v.repeating) rows_dirty_ = true;
+    if (v.live && v.composing && Capture::now_s() >= v.next_send) push();
 }
 
 void Editor::settle(bool new_message)
@@ -411,19 +401,19 @@ bool Editor::edited(std::vector<ValueNode>& out)
     return true;
 }
 
-/* One write of the watch as it is edited. A repeat restarts its clock from here, so a
-   live edit is not sent twice. */
+/* One write of the watch as it is edited. A live topic restarts its clock from here, so an
+   edit is not sent twice. */
 void Editor::push()
 {
     ValueView& v = view();
     if (v.composing) send_draft();
-    else set_edits();
+    else write(false);
     const double hz = std::min(1000.0, std::max(0.1, std::atof(rate.c_str())));
     v.next_send     = std::max(v.next_send + 1.0 / hz, Capture::now_s());
 }
 
 /* The frozen message with every edit in it, encoded fresh each time, so an edit made while
-   repeating goes out on the next send. */
+   live goes out on the next send. */
 void Editor::send_draft()
 {
     ValueView& v = view();
@@ -434,25 +424,25 @@ void Editor::send_draft()
     if (error.empty()) error = capture_.publish(bytes);
     error_ = error;
     if (error.empty()) v.sent++;
-    else v.repeating = false;
+    else v.live = false;
     cells_dirty_ = true;
 }
 
-/* The owner's newest value with every edit in it. While repeating the edits stay for the
-   next write, else they wait outlined for the echo. */
-void Editor::set_edits()
+/* The owner's newest value with every edit in it, forced while it is forced. Live keeps the
+   edits and writes even with none, since an edit typed back to the shown value drops itself. */
+void Editor::write(bool force)
 {
     ValueView& v = view();
     std::vector<ValueNode> nodes;
-    if ((v.edits.empty() && !v.repeating) || !edited(nodes)) return;
+    if ((v.edits.empty() && !v.live && !force) || !edited(nodes)) return;
     std::string error;
     const Capture::WatchView& watch = capture_.watched();
     const std::vector<uint8_t> bytes = capture_.encode(watch.message, watch.schema, nodes, error);
-    if (error.empty()) error = capture_.set(bytes);
+    if (error.empty()) error = force || watch.forced ? capture_.force(bytes) : capture_.set(bytes);
     error_ = error;
     if (!error.empty()) {
-        v.repeating = false;
-    } else if (!v.repeating) {
+        v.live = false;
+    } else if (!v.live) {
         for (const auto& entry : v.edits) v.writing[entry.first] = entry.second.text;
         v.writing_since = Capture::now_s();
         v.edits.clear();

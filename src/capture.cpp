@@ -59,6 +59,7 @@ std::string entity_note(const rant::Entity& e)
         note += word;
     };
     if (e.kind == rant::EntityKind::Variable) add(e.writable ? "writable" : "read-only");
+    if (e.kind == rant::EntityKind::Variable && e.writable && e.forceable) add("forceable");
     if (e.incomplete) add("half advertised");
     return note;
 }
@@ -731,6 +732,7 @@ struct Capture::Impl {
         uint64_t             schema_hash = 0;   /* 0 for an untyped writer */
         uint64_t             recv_us = 0;
         uint64_t             stamp_us = 0;      /* as WatchView's */
+        bool                 forced = false;    /* a variable's value that is a force */
     };
     struct Inbox {
         std::mutex                                  mutex;
@@ -738,13 +740,15 @@ struct Capture::Impl {
         std::map<uint64_t, std::vector<uint8_t>>    wires;   /* each schema's wire, by hash */
 
         /* One value off the service thread, with the schema it was written in. */
-        void push(rant::Bytes data, const rant::detail::RantSchema* raw, uint64_t recv_us, uint64_t stamp_us)
+        void push(rant::Bytes data, const rant::detail::RantSchema* raw, uint64_t recv_us, uint64_t stamp_us,
+                  bool forced = false)
         {
             Sample sample;
             sample.data.assign(data.begin(), data.end());
             sample.schema_hash = raw ? rant::detail::rant_schema_hash(raw) : 0;
             sample.recv_us     = recv_us;
             sample.stamp_us    = stamp_us;
+            sample.forced      = forced;
             std::lock_guard<std::mutex> lock(mutex);
             if (sample.schema_hash && !wires.count(sample.schema_hash)) {
                 const rant::detail::RantBytes wire = rant::detail::rant_schema_wire(raw);
@@ -875,6 +879,16 @@ struct Capture::Impl {
 
     /* The watched key's sub, null while nothing is watched or the node failed. */
     static Sub* watched(Impl* im) { return im ? im->find(im->watch_key) : nullptr; }
+
+    /* The watched variable opened to set, else null with the reason in error. */
+    static rant::RemoteVariable<rant::Bytes>* settable(Impl* im, std::string& error)
+    {
+        Sub* s = watched(im);
+        if (!s || !s->live.variable.valid()) error = "no variable is watched";
+        else if (!s->live.writable) error = "the variable is read only";
+        else return &s->live.variable;
+        return nullptr;
+    }
 
     const rant::Entity* entity(const std::string& key) const
     {
@@ -1054,7 +1068,8 @@ struct Capture::Impl {
                 h.variable = node.remote_variable<rant::Bytes>(name, opts);
                 /* on_change replays the current value at once, then fires on every change */
                 h.variable.on_change([weak](const rant::VariableUpdate& u) {
-                    if (auto in = weak.lock()) in->push(u.value(), u.raw_schema(), u.recv_us(), u.written_us());
+                    if (auto in = weak.lock())
+                        in->push(u.value(), u.raw_schema(), u.recv_us(), u.written_us(), u.forced());
                 });
             } else {
                 rant::Qos qos;
@@ -1248,6 +1263,7 @@ struct Capture::Impl {
         if (may_create(name, s, epoch)) create_live(name, s, variable, reliable, writable, typed, epoch);
         WatchView& v = s.view;
         v.writable   = s.live.valid() && s.live.writable;
+        v.forceable  = v.writable && e && e->forceable;
         v.publishing = s.live.valid() && s.live.publisher.valid();
         v.draftable  = !variable && (s.last_hash || (e && e->schema));
         if (v.nodes.empty() && e) v.type = root_type(e->schema);
@@ -1288,6 +1304,7 @@ struct Capture::Impl {
         decode(last.data, last.schema_hash, v, false, {}, &s.revealed);
         s.last_hash = last.schema_hash;
         v.schema    = last.schema_hash;
+        v.forced    = last.forced;
         v.draftable = !variable;
         v.last_s    = arrival_s(s, last.recv_us);
         v.stamp_us  = last.stamp_us;
@@ -1680,19 +1697,42 @@ std::vector<uint8_t> Capture::encode(const std::vector<uint8_t>& base, uint64_t 
     return buf;
 }
 
-std::string Capture::set(const std::vector<uint8_t>& value)
+namespace {
+
+/* Why a write to a variable was refused, empty when it went out. role is what BadRole means. */
+std::string write_error(rant::SendStatus st, const char* role)
 {
-    Impl::Sub* s = Impl::watched(impl_.get());
-    if (!s || !s->live.variable.valid()) return "no variable is watched";
-    if (!s->live.writable) return "the variable is read only";
-    switch (s->live.variable.set(rant::Bytes(value))) {
+    switch (st) {
     case rant::SendStatus::Ok:       return {};
     case rant::SendStatus::NoTopic:  return "no owner matched";
     case rant::SendStatus::TooBig:   return "the value is too big";
-    case rant::SendStatus::BadRole:  return "the owner takes no sets";
+    case rant::SendStatus::BadRole:  return role;
     case rant::SendStatus::Schema:   return "the owner's schema differs";
-    default:                         return "the set was refused";
+    default:                         return "the write was refused";
     }
+}
+
+} /* namespace */
+
+std::string Capture::set(const std::vector<uint8_t>& value)
+{
+    std::string error;
+    auto* v = Impl::settable(impl_.get(), error);
+    return v ? write_error(v->set(rant::Bytes(value)), "the owner takes no sets") : error;
+}
+
+std::string Capture::force(const std::vector<uint8_t>& value)
+{
+    std::string error;
+    auto* v = Impl::settable(impl_.get(), error);
+    return v ? write_error(v->force(rant::Bytes(value)), "the owner does not allow force") : error;
+}
+
+std::string Capture::release()
+{
+    std::string error;
+    auto* v = Impl::settable(impl_.get(), error);
+    return v ? write_error(v->unforce(), "the owner does not allow force") : error;
 }
 
 void Capture::reveal(const std::string& path)

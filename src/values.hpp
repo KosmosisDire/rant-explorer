@@ -59,12 +59,12 @@ struct ValueView {
     std::map<std::string, FieldEdit>   edits;     /* by path, until they are written or reset */
     std::map<std::string, std::string> writing;   /* by path, the text written until the echo */
     double                      writing_since = 0;
+    bool                        live = false;     /* each edit goes out as it is made */
 
-    /* A topic being composed: the message it froze, which the edits are written over. */
+    /* A topic being composed: the message it froze, which the edits are written over. While
+       live it also sends at the rate. */
     bool                            composing = false;
     Capture::Draft                  draft;
-    bool                            repeat = false;      /* Send repeats at the rate until Stop */
-    bool                            repeating = false;
     double                          next_send = 0;
     int                             sent = 0;
 };

@@ -49,6 +49,7 @@ body {
 	--gray:  rgba(116, 116, 124, 255);
 
 	--green-bg: rgba(55, 136, 95, 36);
+	--amber-bg: rgba(207, 154, 58, 38);
 	--red-bg:   rgba(210, 87, 75, 41);
 
 	--shadow-color: rgba(10, 0, 0, 100);
@@ -136,6 +137,7 @@ body.light {
 	--gray:  rgba(154, 154, 154, 255);
 
 	--green-bg: rgba(49, 123, 85, 28);
+	--amber-bg: rgba(169, 121, 31, 28);
 	--red-bg:   rgba(207, 59, 45, 26);
 
 	--shadow-color: rgba(5, 0, 0, 25);

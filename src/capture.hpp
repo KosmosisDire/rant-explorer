@@ -221,6 +221,8 @@ public:
         bool        root_struct = false;   /* the root is a struct, so the tree lists its fields */
         uint64_t    seq = 0;       /* messages received since the watch began */
         bool        writable = false;   /* a variable this node can set */
+        bool        forceable = false;  /* a writable variable whose owner permits force */
+        bool        forced = false;     /* the newest value is a force, whoever made it */
         bool        publishing = false; /* a topic opened to publish, see compose() */
         uint64_t    schema = 0;         /* the newest message's schema hash, 0 while untyped */
         /* The schema and every array's length. When it moves the tree is rebuilt, otherwise
@@ -339,8 +341,11 @@ public:
     /* The draft's variable array at field without the element at index. */
     bool remove(Draft& draft, uint16_t field, uint32_t index, std::string& error) const;
 
-    /* Writes the watched variable. Empty on success, else why it was refused. */
+    /* Writes the watched variable, forces it, or releases a force. A force stands until
+       anyone releases it, even after the explorer quits. Empty on success, else why not. */
     std::string set(const std::vector<uint8_t>& value);
+    std::string force(const std::vector<uint8_t>& value);
+    std::string release();
 
     /* What composing the watched topic starts from. False while neither a message nor an
        advertised schema is known. */

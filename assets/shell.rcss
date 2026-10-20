@@ -34,6 +34,12 @@ body {
 	filter: drop-shadow(var(--shadow-color) 0dp 0dp 10dp);
 }
 
+#app-title {
+	font-size: 14dp;
+	font-weight: 600;
+	color: var(--text);
+}
+
 /* The auto margin pushes everything after the tabs to the right edge. */
 #tabs {
 	display: flex;
@@ -344,7 +350,7 @@ body.compact #topbar {
 	box-shadow: none;
 }
 
-body.compact #logo, body.compact #topbar .bar-button, body.compact #window-buttons,
+body.compact #logo, body.compact #app-title, body.compact #topbar .bar-button, body.compact #window-buttons,
 body.compact #statusbar, body.compact .splitter { display: none; }
 
 /* With the top bar folded away, the theme toggle and a page's bridge switch move to the

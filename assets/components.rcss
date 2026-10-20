@@ -37,11 +37,10 @@ icon.kind.task     { color: var(--green); }
 .dot.warn { background-color: var(--amber); }
 .dot.bad  { background-color: var(--red); }
 
-/* A word carrying status: ALIVE, joining, reliable. */
+/* A word carrying status: ALIVE, JOINING, FORCED. Its colour is its status word's. */
 .badge {
 	font-size: 10dp;
 	font-weight: 600;
-	color: var(--dim);
 }
 
 /* The raised grey box a short value sits in: a tag, a value in its tree, an editor, a chip,
@@ -57,7 +56,8 @@ icon.kind.task     { color: var(--green); }
 	color: var(--faint);
 	padding: 1dp 5dp;
 }
-.tag.bad { color: var(--red); background-color: var(--red-bg); }
+.tag.bad  { color: var(--red); background-color: var(--red-bg); }
+.tag.warn { color: var(--amber); background-color: var(--amber-bg); }
 
 /* A filter toggle: lit while its filter is on. */
 .pill {
@@ -266,6 +266,7 @@ td.held, th.held, .kv.held, [cell].held, viz [cell-path].held { background-color
 .tt-tree .caret icon { font-size: 12dp; }
 .tt-tree icon.kind   { flex: 0 0 auto; }
 .tt-tree icon.fault  { flex: 0 0 auto; }   /* the topic has issues, red by .bad */
+.tt-tree .tag        { flex: 0 0 auto; line-height: 1.4; }   /* off the row's own line height */
 
 .tt-tree .name {
 	display: block;
@@ -396,9 +397,13 @@ body.touch .stepper {
 .value-row:hover .row-remove  { visibility: visible; }
 .row-remove:hover             { color: var(--text); background-color: var(--panel3); }
 
-/* The watched type names the value sidebar, in place of its section word. */
+/* The watched type names the value sidebar, in place of its section word. It gives way
+   first, clipped, so a long one never runs under the words after it. */
 .head-type {
 	margin-right: auto;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
 	font-size: 12dp;
 	font-weight: 600;
 	color: var(--text);
@@ -521,7 +526,8 @@ select.pill-edit selectbox option:checked { color: var(--text); }
 .value-row:hover .edit-mark icon      { display: block; }
 
 /* What a sidebar head says about its edits: how many, sent or writing. */
-.head-note     { font-size: 11dp; white-space: nowrap; color: var(--faint); }
+.head-note     { flex: 0 0 auto; font-size: 11dp; white-space: nowrap; color: var(--faint); }
+.pane-head .badge { flex: 0 0 auto; margin-right: auto; }   /* FORCED stands in for the type */
 
 /* Why a write or a call failed, in full: it wraps, breaking a long path if it must. */
 .error-text {
@@ -560,7 +566,7 @@ select.pill-edit selectbox option:checked { color: var(--text); }
 .icon-button.on { color: var(--accent); }
 
 .button {
-	min-width: 70dp;   /* Send with its repeat glyph, so Send and Stop swap in one width */
+	min-width: 66dp;   /* Release, so Force and Release swap in one width */
 	padding: 0dp 10dp;
 	font-size: 12dp;
 	font-weight: 600;
@@ -575,11 +581,10 @@ select.pill-edit selectbox option:checked { color: var(--text); }
 .icon-button.off,
 .pill.off             { opacity: 0.35; pointer-events: none; }
 
-/* The repeat flag reads as armed at a glance: accent icon, rate, tint and outline. It
-   cannot flip while repeating, its rate still can. */
-.icon-button.flag           { gap: 4dp; font-size: 11dp; border: 1dp transparent; }
-.icon-button.flag.on        { color: var(--accent); background-color: var(--accent-bg); border-color: var(--accent); }
-.icon-button.flag.locked icon { opacity: 0.35; }
+/* Live is a word and its switch. A composed topic's rate sits beside it, so typing in it
+   never flips the switch. */
+.icon-button.live { gap: 5dp; font-size: 11dp; }
+.head-rate        { display: flex; align-items: center; gap: 2dp; font-size: 11dp; color: var(--dim); }
 .rate {
 	padding: 0dp 2dp;
 	text-align: right;

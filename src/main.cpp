@@ -194,12 +194,13 @@ struct TreeCell {
     bool        preview = false;   /* only while it is watched */
     bool        active = false;    /* messages are arriving */
     bool        meta = false;      /* the rate is what the nodes report, not what arrives here */
+    bool        forced = false;    /* a variable open here whose value is a force */
     Rml::String value, rate, jitter, age;
 
     bool operator==(const TreeCell& o) const
     {
         return dot == o.dot && sub == o.sub && preview == o.preview && active == o.active && meta == o.meta &&
-               value == o.value && rate == o.rate && jitter == o.jitter && age == o.age;
+               forced == o.forced && value == o.value && rate == o.rate && jitter == o.jitter && age == o.age;
     }
 };
 
@@ -390,7 +391,8 @@ struct Ui {
     Rml::String              value_problem;              /* a failed write or call, whole, below the tree */
     bool                     value_can_compose = false;  /* a topic with a typed value to start from */
     bool                     value_composing = false;
-    bool                     value_repeat = false, value_repeating = false;
+    bool                     value_live = false;
+    bool                     value_forceable = false, value_forced = false;
     Capture::Kind            value_kind = Capture::Kind::Topic;
     bool                     value_calling = false;      /* a call or a run is in flight */
     Rml::String              value_progress;             /* a run's bar as a width, empty while none */
@@ -1324,6 +1326,7 @@ int main(int argc, char** argv)
             cell.RegisterMember("preview", &TreeCell::preview);
             cell.RegisterMember("active",  &TreeCell::active);
             cell.RegisterMember("meta",    &TreeCell::meta);
+            cell.RegisterMember("forced",  &TreeCell::forced);
             cell.RegisterMember("value",   &TreeCell::value);
             cell.RegisterMember("rate",    &TreeCell::rate);
             cell.RegisterMember("jitter",  &TreeCell::jitter);
@@ -1424,8 +1427,9 @@ int main(int argc, char** argv)
         ctor.Bind("value_problem",   &ui.value_problem);
         ctor.Bind("value_can_compose", &ui.value_can_compose);
         ctor.Bind("value_composing", &ui.value_composing);
-        ctor.Bind("value_repeat",    &ui.value_repeat);
-        ctor.Bind("value_repeating", &ui.value_repeating);
+        ctor.Bind("value_live",      &ui.value_live);
+        ctor.Bind("value_forceable", &ui.value_forceable);
+        ctor.Bind("value_forced",    &ui.value_forced);
         ctor.Bind("value_hz",        &editor.rate);
         ctor.Bind("value_top",       &ui.value_top);
         ctor.Bind("value_bottom",    &ui.value_bottom);
@@ -2084,14 +2088,14 @@ int main(int argc, char** argv)
             [&editor](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
                 if (!args.empty()) editor.compose(args[0].Get<bool>());
             });
-        ctor.BindEventCallback("toggle_repeat",
-            [&editor](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList&) {
-                if (event.GetTargetElement()->GetTagName() != "input") editor.toggle_repeat();
-            });
-        ctor.BindEventCallback("send",
-            [&editor](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) { editor.send(); });
-        ctor.BindEventCallback("stop",
-            [&editor](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) { editor.stop(); });
+        ctor.BindEventCallback("toggle_live",
+            [&editor](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) { editor.toggle_live(); });
+        ctor.BindEventCallback("commit",
+            [&editor](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) { editor.commit(); });
+        ctor.BindEventCallback("force",
+            [&editor](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) { editor.force(); });
+        ctor.BindEventCallback("release",
+            [&editor](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) { editor.release(); });
         ctor.BindEventCallback("call",
             [&editor](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) { editor.call(); });
         ctor.BindEventCallback("cancel",
@@ -2611,6 +2615,7 @@ int main(int argc, char** argv)
                     cell.preview = cell.dot && capture.previewing(topic.key);
                     cell.sub     = cell.preview || (cell.dot && capture.subscribed(topic.key));
                     cell.active  = cell.sub && view && view->rate_hz > 0;
+                    cell.forced  = cell.sub && view && view->forced;
                     topic_columns(capture, topic, cell.value, cell.rate, cell.jitter, cell.age, cell.meta);
                     /* The age moves every frame, so another tab leaves it blank and dirties nothing. */
                     if (ui.tab != "topics") cell.age.clear();
@@ -2639,8 +2644,6 @@ int main(int argc, char** argv)
             value_shape = watch.shape;
             value_dirty = false;
             sync(model, "value_composing", ui.value_composing, view.composing);
-            sync(model, "value_repeat", ui.value_repeat, view.repeat);
-            sync(model, "value_repeating", ui.value_repeating, view.repeating);
             value_rows = build_value_rows(shown, view, watch.writable || view.composing || callable);
             sync(model, "value_total", ui.value_total, (int)value_rows.size());
             /* The head holds the root's toggle only when the root has no row of its own. */
@@ -2749,16 +2752,19 @@ int main(int argc, char** argv)
                 count += entry.second.mine ? 1 : 0;
                 bad = bad || entry.second.bad;
             }
-            /* A draft counts what it sent, a variable what waits to be set. */
+            /* A draft counts what it sent, a variable what waits to be set, which live never does. */
             const Rml::String note = view.composing ? (view.sent ? std::to_string(view.sent) + " sent" : Rml::String())
                                    : !view.writing.empty() ? Rml::String("writing")
-                                   : count ? std::to_string(count) + " edited" : Rml::String();
+                                   : count && !view.live ? std::to_string(count) + " edited" : Rml::String();
             sync(model, "value_edit_count", ui.value_edit_count, count);
             sync(model, "value_bad", ui.value_bad, bad);
             sync(model, "value_note", ui.value_note, note);
             sync(model, "value_problem", ui.value_problem, !editor.error().empty() ? editor.error() : watch.error);
         }
         sync(model, "value_calling", ui.value_calling, watch.calling);
+        sync(model, "value_live", ui.value_live, view.live);
+        sync(model, "value_forceable", ui.value_forceable, watch.forceable);
+        sync(model, "value_forced", ui.value_forced, watch.forced);
         sync(model, "value_progress", ui.value_progress,
              watch.progress >= 0 ? Rml::CreateString("%.1f%%", watch.progress * 100) : Rml::String());
         sync(model, "value_type", ui.value_type, watch.type);

@@ -14,6 +14,7 @@
 				data-class-off="tab == 'mesh' &amp;&amp; layout != 'compact'"
 				data-event-click="toggle_sidebar('left')"><icon name="panel-left" /></div>
 			<img id="logo" src="Logo.png" window-drag="" />
+			<span id="app-title" window-drag="">Explorer</span>
 			<div id="tabs" window-drag="">
 				<div class="tab" data-class-on="tab == 'topics'" data-event-click="set_tab('topics')">
 					<icon name="radio" /><span>Topics</span><span class="count mono">{{topic_count}}</span>
@@ -101,6 +102,7 @@
 										data-class-function="r.kind == 'function'"
 										data-class-variable="r.kind == 'variable'" data-class-task="r.kind == 'task'" />
 									<span class="name mono">{{r.name}}{{r.branch ? '/' : ''}}</span>
+									<span class="tag warn" data-if="tree_cells[i].forced">forced</span>
 									<icon class="fault bad" name="triangle-alert" data-if="r.fault" />
 								</span>
 								<span class="tt-cell share c-topic-value mono" cell="">{{tree_cells[i].value}}</span>
@@ -184,39 +186,39 @@
 					<div class="sheet-grip" data-event-click="step_sheet" data-event-dragstart="drag_sheet" data-event-drag="drag_sheet" data-event-dragend="drag_sheet"><div></div></div>
 					<div class="pane-head" data-attr-topic="topic.key" path="" paste="" data-event-dragstart="drag_sheet" data-event-drag="drag_sheet" data-event-dragend="drag_sheet">
 						<span class="section" data-if="value_type == ''">Value</span>
-						<span class="head-type mono" copy="type" data-if="value_type != ''">{{value_type}}</span>
+						<span class="head-type mono" copy="type"
+							data-if="value_type != '' &amp;&amp; !value_forced">{{value_type}}</span>
+						<span class="badge warn" data-if="value_forced">FORCED</span>
 						<span class="head-note"
-							data-if="value_note != ''">{{value_note}}</span>
+							data-if="value_note != '' &amp;&amp; !value_forced">{{value_note}}</span>
 						<span class="icon-button" data-if="value_writable" data-class-off="value_edit_count == 0"
 							data-event-click="undo_values">
 							<icon name="undo-2" />
 						</span>
-						<span class="icon-button flag" data-if="value_writable" data-class-on="value_repeat"
-							data-class-locked="value_repeating" data-event-click="toggle_repeat">
-							<icon name="repeat" />
+						<span class="icon-button live" data-if="value_writable || value_composing"
+							data-class-on="value_live" data-event-click="toggle_live">
+							<span>Live</span><span class="switch" data-class-on="value_live"><span class="knob"></span></span>
 						</span>
-						<span class="button primary" data-if="value_writable &amp;&amp; !value_repeating"
-							data-class-off="(value_edit_count == 0 &amp;&amp; !value_repeat) || value_bad"
-							data-event-click="send">
-							<icon name="repeat" data-if="value_repeat" /><span>Set</span>
+						<span class="head-rate" data-if="value_composing">
+							<input type="text" class="rate mono" size="3" inputmode="decimal"
+								data-value="value_hz" /><span>Hz</span>
 						</span>
+						<span class="button" data-if="value_forceable &amp;&amp; !value_forced"
+							data-class-off="value_total == 0" data-event-click="force"><span>Force</span></span>
+						<span class="button" data-if="value_forceable &amp;&amp; value_forced"
+							data-event-click="release"><span>Release</span></span>
+						<span class="button primary" data-if="value_writable"
+							data-class-off="value_live || value_edit_count == 0 || value_bad"
+							data-event-click="commit"><span>{{value_forced ? 'Force' : 'Set'}}</span></span>
 						<span class="button iconic" data-if="value_can_compose &amp;&amp; !value_composing"
 							data-event-click="compose(true)">
 							<icon name="pencil" /><span>Compose</span>
 						</span>
-						<span class="icon-button flag" data-if="value_composing" data-class-on="value_repeat"
-							data-class-locked="value_repeating" data-event-click="toggle_repeat">
-							<icon name="repeat" /><input type="text" class="rate mono" size="3" inputmode="decimal"
-								data-value="value_hz" /><span>Hz</span>
-						</span>
 						<span class="icon-button" data-if="value_composing" data-event-click="compose(false)">
 							<icon name="x" />
 						</span>
-						<span class="button primary" data-if="value_composing &amp;&amp; !value_repeating"
-							data-class-off="value_bad" data-event-click="send">
-							<icon name="repeat" data-if="value_repeat" /><span>Send</span>
-						</span>
-						<span class="button" data-if="value_repeating" data-event-click="stop"><span>Stop</span></span>
+						<span class="button primary" data-if="value_composing"
+							data-class-off="value_live || value_bad" data-event-click="commit"><span>Send</span></span>
 						<span class="button primary" data-if="value_kind == 'function'"
 							data-class-off="value_bad || value_calling" data-event-click="call"><span>Call</span></span>
 						<span class="button primary" data-if="value_kind == 'task' &amp;&amp; !value_calling"

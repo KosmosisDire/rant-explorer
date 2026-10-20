@@ -1,6 +1,6 @@
 /* What the user does to each topic's values, kept while the explorer runs: folds, shown
    visuals, pins and edits. The watched topic is the one edited, and its edits go back to
-   the mesh as a variable's set, a composed topic's send or a function's or task's call. */
+   the mesh as a variable's set or force, a composed topic's send or a function's or task's call. */
 #ifndef EDITOR_HPP
 #define EDITOR_HPP
 
@@ -37,12 +37,14 @@ public:
     void flip(const std::string& path);
     void undo();
 
-    /* What Enter does: the head's main button. */
+    /* What Enter and the head's main button do: Set, Send, or Force while the variable is
+       forced. Nothing while live, since the edits are out already. */
     void commit();
-    /* Set or Send once, or start repeating when the flag is armed, and stop. */
-    void send();
-    void stop();
-    void toggle_repeat();
+    /* On writes what is edited at once. Off ends a topic's sends and settles a variable's edits. */
+    void toggle_live();
+    /* Forces the shown value with every edit in it, and releases a force, whoever made it. */
+    void force();
+    void release();
     /* A topic's draft: frozen from the newest message, or the schema's default before one. */
     void compose(bool on);
     bool can_compose() const;
@@ -57,18 +59,18 @@ public:
        path. Edits and folds past a removed element move up with it. */
     void add_element(const std::string& array);
     void remove_element(const std::string& path);
-    /* A draft and its repeat belong to the watch, so leaving the topic ends them. */
+    /* A draft and live belong to the watch, so leaving the topic ends them. */
     void end_draft();
     void call();
     void cancel();
 
-    /* Once a frame, a composed topic repeats on its clock. */
+    /* Once a frame, a live composed topic sends on its clock. */
     void repeat();
     /* Once a frame, a written field stops waiting once the owner's value carries it, or
        after a few seconds so a refused write does not hang there. */
     void settle(bool new_message);
 
-    /* The repeat rate as typed, which the document binds. */
+    /* A live composed topic's rate as typed, which the document binds. */
     std::string rate = "10";
     /* Why the last write, send or call failed, until the next edit. */
     const std::string& error() const { return error_; }
@@ -88,7 +90,7 @@ private:
     bool edited(std::vector<Capture::ValueNode>& out);
     void push();
     void send_draft();
-    void set_edits();
+    void write(bool force);
     bool take_draft(bool ok, Capture::Draft& draft, const std::string& error);
     static bool take(bool& flag)
     {

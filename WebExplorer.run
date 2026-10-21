@@ -1,4 +1,5 @@
 description = "The explorer served as a page to browsers on this network"
+restart     = "on-failure"
 
 param "port" {
   type        = int

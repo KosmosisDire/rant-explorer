@@ -1,5 +1,5 @@
 name        = "explorer"
-description = "The Rant mesh explorer, in a window or served as a page to browsers"
+description = "A GUI tool to browse and easily visualize anything on a Rant network. Runs native or on the web through the Rant bridge."
 archive     = "rant-explorer-${version}-${platform}.tar.gz"
 
 node "explorer" {

@@ -7,14 +7,14 @@ out the UI from RML and RCSS.
 
 ```
 ./rant_explorer [--domain N] [--port N] [--if IP] [--name STR]
-./rant_explorer --web-server [--port N] [--bind IP] [--log-file PATH]
+./rant_explorer --web-server [--port N] [--bind IP]
 ```
 
 `--web-server` opens no window. It serves the explorer as a web page, by default on port
 6732 of every address, for any browser on the network. The page reaches the mesh through a
 Rant bridge, which it looks for on port 6731 of the same host. Its plug button goes back
-to the form to pick another bridge or domain. `rant explore web enable` runs the server as
-a service.
+to the form to pick another bridge or domain. `rant enable WebExplorer` runs the server at
+every login, `rant run WebExplorer` once.
 
 A card's right click menu saves it as a PNG or records it as an MP4 or a GIF. On Linux the
 save dialog needs `xdg-desktop-portal` or `zenity`.

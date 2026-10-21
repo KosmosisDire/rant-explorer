@@ -8,11 +8,9 @@
 struct WebServerOptions {
     int         port = 6732;     /* Rant's ports are 6730 to 6739 */
     std::string bind = "0.0.0.0";
-    std::string log_file;          /* empty: the terminal that started the exe, if any */
 };
 
-/* Serves until Ctrl-C, SIGTERM or rant web stop and returns the exit code. While it listens,
-   explorer-web.state in the Rant home says where, for rant web status. */
+/* Serves until Ctrl-C, SIGTERM or rant stop and returns the exit code. */
 int web_server(const WebServerOptions& options);
 
 #endif /* WEB_SERVER_HPP */

@@ -3,10 +3,8 @@
 #ifndef OUTPUT_HPP
 #define OUTPUT_HPP
 
-#include <string>
-
-/* To log_file when one is given, else to the terminal that started the exe, if any. A log
-   past 10 MB moves aside to log_file.1 first. */
-void route_output(const std::string& log_file);
+/* Where the one that started the exe sent them, rant to a node's log, else to the terminal
+   that started it, if any. */
+void route_output();
 
 #endif /* OUTPUT_HPP */

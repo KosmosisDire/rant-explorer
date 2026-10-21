@@ -14,16 +14,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <ctime>
-#include <filesystem>
-#include <fstream>
 #include <map>
 #include <optional>
 #include <thread>
-
-#ifndef _WIN32
-#include <unistd.h>
-#endif
 
 extern const char* const          web_names[];
 extern const unsigned char* const web_data[];
@@ -32,20 +25,12 @@ extern const size_t               web_count;
 
 namespace {
 
-namespace fs = std::filesystem;
-
 std::atomic<bool> g_stop{ false };
 
-#ifdef _WIN32
-/* rant web stop sets this event, since a windowless process gets no Ctrl-C. */
-HANDLE g_stop_event = nullptr;
+bool stop_requested() { return g_stop.load(); }
 
+#ifdef _WIN32
 BOOL WINAPI on_console(DWORD) { g_stop = true; return TRUE; }
-bool stop_requested()
-{
-    return g_stop || (g_stop_event && WaitForSingleObject(g_stop_event, 0) == WAIT_OBJECT_0);
-}
-long self_pid() { return (long)GetCurrentProcessId(); }
 
 LRESULT CALLBACK on_window(HWND w, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -75,53 +60,7 @@ void close_on_window()
 }
 #else
 void on_signal(int) { g_stop = true; }
-bool stop_requested() { return g_stop.load(); }
-long self_pid() { return (long)getpid(); }
 #endif
-
-/* The Rant home the CLI and the bridge share. */
-fs::path state_path()
-{
-    fs::path home;
-    if (const char* h = std::getenv("RANT_HOME"); h && *h) home = h;
-    else {
-#ifdef _WIN32
-        const char* user = std::getenv("USERPROFILE");
-#else
-        const char* user = std::getenv("HOME");
-#endif
-        home = fs::path(user ? user : ".") / ".rant";
-    }
-    return home / "explorer-web.state";
-}
-
-/* The same lines as the bridge's state, so the CLI reads both alike. */
-void write_state(const std::string& url)
-{
-    fs::path p = state_path();
-    std::error_code ec;
-    fs::create_directories(p.parent_path(), ec);
-    std::ofstream out(p, std::ios::binary | std::ios::trunc);
-    out << "pid: " << self_pid() << "\n"
-        << "url: " << url << "\n"
-        << "version: " << RANT_EXPLORER_VERSION << "\n"
-        << "started: " << (long long)std::time(nullptr) << "\n";
-}
-
-/* Only while the state is still ours: a server started as this one was ending owns it then. */
-void remove_state()
-{
-    long pid = 0;
-    {
-        std::ifstream in(state_path());
-        std::string line;
-        while (std::getline(in, line))
-            if (line.rfind("pid: ", 0) == 0) pid = std::atol(line.c_str() + 5);
-    }
-    if (pid != self_pid()) return;
-    std::error_code ec;
-    fs::remove(state_path(), ec);
-}
 
 struct File {
     const unsigned char* gz;
@@ -212,8 +151,6 @@ int web_server(const WebServerOptions& options)
         return 1;
     }
 #ifdef _WIN32
-    g_stop_event = CreateEventW(nullptr, TRUE, FALSE, L"Local\\rant-explorer-web-stop");
-    if (g_stop_event) ResetEvent(g_stop_event);   /* a stop left over from before */
     SetConsoleCtrlHandler(on_console, TRUE);
     close_on_window();
 #else
@@ -248,7 +185,6 @@ int web_server(const WebServerOptions& options)
     std::string host = options.bind == "0.0.0.0" ? "127.0.0.1" : options.bind;
     std::string url = "http://" + host + ":" + std::to_string(options.port);
     std::fprintf(stderr, "rant_explorer %s serving the web explorer at %s\n", RANT_EXPLORER_VERSION, url.c_str());
-    write_state(url);
 
     std::thread watch([&server] {
         while (!stop_requested()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -258,10 +194,6 @@ int web_server(const WebServerOptions& options)
     bool stopped = stop_requested();
     g_stop = true;
     watch.join();
-    remove_state();
-#ifdef _WIN32
-    if (g_stop_event) CloseHandle(g_stop_event);
-#endif
     if (!stopped) std::fprintf(stderr, "rant_explorer: the server stopped by itself\n");
     return stopped ? 0 : 1;
 }

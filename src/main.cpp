@@ -893,7 +893,7 @@ void usage(const char* path, FILE* out)
         if (*c == '/' || *c == '\\') exe = c + 1;
     std::fprintf(out,
         "usage: %s [--domain N] [--port N] [--if IP] [--name STR]\n"
-        "       %s --web-server [--port N] [--bind IP] [--log-file PATH]\n"
+        "       %s --web-server [--port N] [--bind IP]\n"
         "       %s --version\n"
         "--web-server serves the web explorer instead of opening a window, on port 6732 of\n"
         "every address unless told otherwise.\n", exe, exe, exe);
@@ -915,14 +915,13 @@ int main(int argc, char** argv)
         else if (!std::strcmp(arg, "--name")   && next) { cap_opts.name = argv[++i]; node_flag = true; }
         else if (!std::strcmp(arg, "--port")   && next) port = argv[++i];
         else if (!std::strcmp(arg, "--bind")     && next) { web.bind = argv[++i]; server_flag = true; }
-        else if (!std::strcmp(arg, "--log-file") && next) { web.log_file = argv[++i]; server_flag = true; }
         else if (!std::strcmp(arg, "--web-server")) serve = true;
         else if (!std::strcmp(arg, "--version")) version = true;
         else if (!std::strcmp(arg, "--help") || !std::strcmp(arg, "-h")) help = true;
         else bad = true;
     }
 #ifndef __EMSCRIPTEN__
-    route_output(web.log_file);
+    route_output();
 #endif
     if (help) { usage(argv[0], stdout); return 0; }
     if (bad || (serve && node_flag) || (!serve && server_flag)) { usage(argv[0], stderr); return 2; }

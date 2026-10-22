@@ -112,6 +112,27 @@ std::vector<int> children_of(const std::vector<Capture::ValueNode>& nodes, int i
 int find_node(const std::vector<Capture::ValueNode>& nodes, const Capture::WatchView& view,
               const std::string& path);
 
+/* A path with [*] names a field of every element of an array, pick[*].pose for each pose. */
+bool is_gathered(const std::string& path);
+
+/* What a gathered path picks, as one array whose node is first, under the path. Each pick
+   follows as an element with its own path. Empty when nothing matches. */
+std::vector<Capture::ValueNode> gather(const std::vector<Capture::ValueNode>& nodes, const std::string& path);
+
+/* The path with its innermost index that has a field after it made [*], so pick[2].pose
+   gives pick[*].pose. Empty when there is none. */
+std::string every_element(const std::string& path);
+
+/* The fields a card can show, in tree order, each field of an array's elements once as [*].
+   An element itself and the root are left out. */
+struct FieldPath {
+    std::string path, type;
+};
+std::vector<FieldPath> field_paths(const std::vector<Capture::ValueNode>& nodes);
+
+/* The path names something in the value, or an array before its first [*] is empty for now. */
+bool path_fits(const std::vector<Capture::ValueNode>& nodes, const Capture::WatchView& view, const std::string& path);
+
 /* The pixels of the standard Image at index, from the message its nodes were decoded
    from. Invalid when they cannot be read, with the reason in problem. */
 Image image_of(const std::vector<Capture::ValueNode>& nodes, int index, const std::vector<uint8_t>& message,

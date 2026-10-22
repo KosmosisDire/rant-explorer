@@ -537,6 +537,10 @@ body.compact .viz-card > .viz-pin, body.compact .viz-card > .viz-close { display
 body.compact .head-card { display: flex; height: 100%; }
 body.compact .head-card > .icon-button { min-width: 26dp; height: 100%; padding: 0dp; }   /* the head's height is the tap room */
 
+/* The add button ends the head, so a card's pin and close never move it. */
+.detail-head > .head-add { margin-left: auto; }
+body.compact .detail-head > .head-add { min-width: 26dp; height: 100%; padding: 0dp; }
+
 /* ------------------------------------------------------------------------ menu */
 
 /* The open menu sits on a layer over the whole window, which a press outside it closes.
@@ -554,6 +558,7 @@ body.compact .head-card > .icon-button { min-width: 26dp; height: 100%; padding:
 	position: absolute;
 	width: 200dp;
 }
+#menu-layer .menu.paths { width: 360dp; }   /* PATH_MENU_W_DP */
 
 /* A phone's menu is a sheet along the bottom over a dimmed screen. It sits in the layer's
    flow, so the point it was opened at does not place it. */

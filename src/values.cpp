@@ -93,7 +93,11 @@ Visual visual_for(const ValueNode& node)
         switch (node.elem) {
         case ValueNode::Number: return node.elem_std.empty() ? Visual::Bars : Visual::Chips;
         case ValueNode::Bool:   return Visual::Cells;
-        case ValueNode::Text:   return Visual::Chips;
+        case ValueNode::Text:
+        case ValueNode::Enum:   return Visual::Chips;
+        /* only a gathered path's leaves have no visual as an array, so they list */
+        case ValueNode::Blob:
+        case ValueNode::Map:    return Visual::Kv;
         default:                return array_of_struct(node.elem_std);
         }
     default:                return Visual::None;
@@ -418,6 +422,115 @@ int find_node(const std::vector<ValueNode>& nodes, const Capture::WatchView& vie
     for (size_t i = 0; i < nodes.size(); i++)
         if (nodes[i].path == path) return (int)i;
     return -2;
+}
+
+namespace {
+
+/* One past the last node of the subtree at index. */
+size_t subtree_end(const std::vector<ValueNode>& nodes, size_t index)
+{
+    size_t j = index + 1;
+    while (j < nodes.size() && nodes[j].depth > nodes[index].depth) j++;
+    return j;
+}
+
+/* The nodes in nodes[from, to) that path names, every element's at each [*]. */
+void pick(const std::vector<ValueNode>& nodes, size_t from, size_t to, const std::string& path,
+          std::vector<size_t>& out)
+{
+    const size_t star = path.find("[*]");
+    const std::string head = path.substr(0, star);
+    size_t at = from;
+    while (at < to && nodes[at].path != head) at++;
+    if (at == to) return;
+    if (star == std::string::npos) {
+        out.push_back(at);
+        return;
+    }
+    if (nodes[at].kind != ValueNode::Array) return;
+    const std::string rest = path.substr(star + 3);
+    for (const int k : children_of(nodes, (int)at))
+        if (nodes[k].kind != ValueNode::Gap) pick(nodes, k, subtree_end(nodes, k), nodes[k].path + rest, out);
+}
+
+} /* namespace */
+
+bool is_gathered(const std::string& path)
+{
+    return path.find("[*]") != std::string::npos;
+}
+
+std::vector<ValueNode> gather(const std::vector<ValueNode>& nodes, const std::string& path)
+{
+    std::vector<size_t> picked;
+    pick(nodes, 0, nodes.size(), path, picked);
+    std::vector<ValueNode> out;
+    if (picked.empty()) return out;
+    const ValueNode& first = nodes[picked[0]];
+    ValueNode array;
+    array.kind     = ValueNode::Array;
+    array.name     = path;
+    array.path     = path;
+    array.type     = first.type + "[]";
+    array.count    = (uint32_t)picked.size();
+    array.elem     = first.kind;
+    array.elem_std = first.std_name;
+    out.push_back(std::move(array));
+    for (size_t i = 0; i < picked.size(); i++) {
+        const size_t at = picked[i], end = subtree_end(nodes, at), top = out.size();
+        const int shift = 1 - nodes[at].depth;
+        for (size_t j = at; j < end; j++) {
+            out.push_back(nodes[j]);
+            out.back().depth += shift;
+        }
+        out[top].name = "[" + std::to_string(i) + "]";
+    }
+    return out;
+}
+
+std::string every_element(const std::string& path)
+{
+    for (size_t close = path.rfind(']'); close != std::string::npos && close > 0; close = path.rfind(']', close - 1)) {
+        const size_t open = path.rfind('[', close);
+        if (open == std::string::npos) break;
+        const bool index = close > open + 1 &&
+                           std::all_of(path.begin() + open + 1, path.begin() + close, [](char c) { return c >= '0' && c <= '9'; });
+        if (index && close + 1 < path.size()) return path.substr(0, open) + "[*]" + path.substr(close + 1);
+    }
+    return std::string();
+}
+
+std::vector<FieldPath> field_paths(const std::vector<ValueNode>& nodes)
+{
+    std::vector<FieldPath> out;
+    std::set<std::string> seen;
+    for (const ValueNode& node : nodes) {
+        if (node.kind == ValueNode::Gap || node.kind == ValueNode::Part || node.path.empty()) continue;
+        std::string path;
+        for (size_t i = 0; i < node.path.size(); i++) {
+            const size_t close = node.path[i] == '[' ? node.path.find(']', i) : std::string::npos;
+            if (close == std::string::npos) {
+                path += node.path[i];
+                continue;
+            }
+            path += "[*]";
+            i = close;
+        }
+        if (path.size() >= 3 && path.compare(path.size() - 3, 3, "[*]") == 0) continue;
+        if (seen.insert(path).second) out.push_back(FieldPath{ path, node.type });
+    }
+    return out;
+}
+
+bool path_fits(const std::vector<ValueNode>& nodes, const Capture::WatchView& view, const std::string& path)
+{
+    if (find_node(nodes, view, path) >= -1) return true;
+    if (!is_gathered(path)) return false;
+    if (!gather(nodes, path).empty()) return true;
+    const std::string head = path.substr(0, path.find("[*]"));
+    for (const ValueNode& node : nodes)
+        if (node.path == head) return node.kind == ValueNode::Array && node.count == 0;
+    return false;
 }
 
 Image image_of(const std::vector<ValueNode>& nodes, int index, const std::vector<uint8_t>& message,

@@ -213,7 +213,14 @@ struct MenuItem {
     int         check = 0;       /* 0 no box, 1 clear, 2 checked */
     int         table = -1;      /* a Copy table line's index into the menu's tables */
     Rml::String path;            /* the field a raw copy line reads when picked */
+    Rml::String topic;           /* the topic key a path line adds a card of */
     bool        header = false;
+    bool        on = false;      /* the path line Enter adds */
+};
+
+/* A card the add box offers: its topic and field, what its line shows and what typing matches. */
+struct PathChoice {
+    std::string key, path, type, shown, full;
 };
 
 /* A text on one line, each run of white space one space, cut to fit a menu or the status bar. */
@@ -423,6 +430,12 @@ struct Ui {
     std::vector<Table>    menu_tables, menu_pending_tables;
     std::string           menu_topic;   /* the value a raw copy line reads when picked */
     Rml::ObserverPtr<Rml::Element> menu_cell;   /* the cell the menu copies, held lit while it is open */
+    /* The add box: what is typed, every path it offers, the line Enter adds and whether the
+       arrows chose it, and a focus owed to its field once it exists. */
+    Rml::String             path_text, path_listed;
+    std::vector<PathChoice> path_choices;
+    int                     path_pick = 0;
+    bool                    path_chose = false, path_focus = false;
 
     /* The status bar's note: a reload, a copy or what RmlUi complained about, for a while. */
     Rml::String note;
@@ -564,8 +577,30 @@ void default_columns(std::map<std::string, bool>& hidden, const Rml::String& siz
 }
 
 /* The menu's size in shell.rcss and components.rcss, which keeps it inside the window. */
-constexpr float MENU_W_DP    = 200.f;
-constexpr float MENU_ITEM_DP = 26.f;
+constexpr float  MENU_W_DP      = 200.f;
+constexpr float  MENU_ITEM_DP   = 26.f;
+constexpr float  PATH_MENU_W_DP = 360.f;   /* the add box, wide enough for a path and its type */
+constexpr size_t PATH_ROWS      = 10;      /* the most paths it lists */
+
+/* The add box's lines: the paths whose topic and field hold the typed text, ignoring case,
+   with the one Enter adds lit. */
+Rml::Vector<MenuItem> path_menu(const std::vector<PathChoice>& choices, const std::string& text, int pick)
+{
+    Rml::Vector<MenuItem> items;
+    for (const PathChoice& choice : choices) {
+        if (items.size() >= PATH_ROWS) break;
+        if (!contains_ci(choice.full, text)) continue;
+        MenuItem item;
+        item.label  = choice.shown;
+        item.hint   = choice.type;
+        item.action = "add_path";
+        item.topic  = choice.key;
+        item.path   = choice.path;
+        item.on     = (int)items.size() == pick;
+        items.push_back(item);
+    }
+    return items;
+}
 
 /* A funnel checklist's group heading, and its box for one bit as the bits stand now. */
 void menu_header(Rml::Vector<MenuItem>& items, const char* label)
@@ -1060,13 +1095,14 @@ int main(int argc, char** argv)
     /* The popup opens at a point in dp, kept inside the window. */
     auto open_menu = [&ui, &model, context](const std::string& kind, float x, float y) {
         const float ratio = context->GetDensityIndependentPixelRatio();
-        const float max_x = context->GetDimensions().x / ratio - MENU_W_DP - 4.f;
+        const float max_x = context->GetDimensions().x / ratio - (kind == "path" ? PATH_MENU_W_DP : MENU_W_DP) - 4.f;
         const float max_y = context->GetDimensions().y / ratio - ui.menu_items.size() * MENU_ITEM_DP - 12.f;
         ui.menu_open = true;
         ui.menu_kind = kind;
         ui.menu_left = Rml::CreateString("%ddp", (int)std::max(0.f, std::min(x, max_x)));
         ui.menu_top  = Rml::CreateString("%ddp", (int)std::max(0.f, std::min(y, max_y)));
         model.DirtyVariable("menu_open");
+        model.DirtyVariable("menu_kind");
         model.DirtyVariable("menu_left");
         model.DirtyVariable("menu_top");
         model.DirtyVariable("menu_items");
@@ -1340,6 +1376,7 @@ int main(int argc, char** argv)
             item.RegisterMember("hint",   &MenuItem::hint);
             item.RegisterMember("check",  &MenuItem::check);
             item.RegisterMember("header", &MenuItem::header);
+            item.RegisterMember("on",     &MenuItem::on);
         }
         ctor.RegisterArray<Rml::Vector<MenuItem>>();
 
@@ -1417,6 +1454,8 @@ int main(int argc, char** argv)
         ctor.Bind("menu_left",       &ui.menu_left);
         ctor.Bind("menu_top",        &ui.menu_top);
         ctor.Bind("menu_items",      &ui.menu_items);
+        ctor.Bind("menu_kind",       &ui.menu_kind);
+        ctor.Bind("path_text",       &ui.path_text);
         ctor.Bind("sel_key",         &ui.sel_key);
         ctor.Bind("tree_rows",       &ui.tree_rows);
         ctor.Bind("tree_cells",      &ui.tree_cells);
@@ -1743,6 +1782,63 @@ int main(int argc, char** argv)
                 capture.watch("");
             }
         };
+        /* A visual the user turns on starts pinned, so it stays when another topic is picked.
+           Only the root's, opened by default, starts unpinned. */
+        auto show_card = [&editor, &ui, &capture, &value_dirty](const std::string& key, const std::string& path, bool on) {
+            ValueView& view = editor.view(key);
+            if (!on) {
+                view.shown.erase(path);
+                view.pinned.erase(path);
+                view.still.erase(path);
+            } else if (view.shown.count(path)) {
+                return;
+            } else if (ui.cards.size() >= (size_t)MAX_CARDS) {
+                ui.note        = Rml::CreateString("at most %d cards at once, close one first", MAX_CARDS);
+                ui.note_frames = 150;
+                return;
+            } else {
+                view.shown.insert(path);
+                view.pinned.insert(path);
+                if (key != capture.watched().key || !Capture::is_call(capture.watched().kind)) capture.subscribe(key, true);
+            }
+            value_dirty = true;
+        };
+        auto toggle_card = [&editor, &capture, show_card](const std::string& path) {
+            const std::string& key = capture.watched().key;
+            show_card(key, path, !editor.view(key).shown.count(path));
+        };
+        /* The topic and field a typed path names: the longest topic name it starts with, else
+           a field of the selected topic. Empty with the reason in error when it names nothing. */
+        auto resolve_path = [&capture, value_of](const std::string& text, std::string& key, std::string& path,
+                                                 std::string& error) {
+            const Capture::WatchView& watched = capture.watched();
+            size_t best = 0;
+            key.clear();
+            for (const Capture::TopicRow& topic : capture.topics()) {
+                const std::string& name = topic.name;
+                if (!subscribable(topic) || name.size() < best || text.compare(0, name.size(), name) != 0 ||
+                    (text.size() > name.size() && text[name.size()] != '.'))
+                    continue;
+                if (name.size() == best && topic.key != watched.key) continue;   /* one name as two kinds */
+                best = name.size();
+                key  = topic.key;
+            }
+            if (!key.empty()) {
+                path = text.size() > best ? text.substr(best + 1) : std::string();
+            } else if (!watched.key.empty() && !Capture::is_call(watched.kind)) {
+                key  = watched.key;
+                path = text;
+            } else {
+                error = "no topic " + text;
+                return;
+            }
+            const std::vector<Capture::ValueNode>* nodes = nullptr;
+            const Capture::WatchView* view = value_of(key, nodes);
+            if (view && !path_fits(*nodes, *view, path)) {
+                error = "nothing at " + path + " in " + Capture::name_of(key);
+                key.clear();
+            }
+        };
         /* A row's dot is its own topic's alone. A click subscribes, or lets a kept
            subscription or a preview go. */
         ctor.BindEventCallback("toggle_sub",
@@ -1764,6 +1860,85 @@ int main(int argc, char** argv)
                 const float         height = button->GetBox().GetSize(Rml::BoxArea::Border).y;
                 ui.menu_items = kind == "mesh" ? mesh_menu((unsigned)ui.mesh_cats) : filter_menu((unsigned)ui.topic_cats);
                 open_menu(kind, at.x / ratio, (at.y + height) / ratio + 4.f);
+            });
+        /* The head's add button opens the add box under itself. It offers the selected topic's
+           fields, then every other topic, with the fields of those whose value is here. */
+        ctor.BindEventCallback("open_path",
+            [&ui, &capture, context, open_menu, value_of](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList&) {
+                const std::string& watched = capture.watched().key;
+                auto offer = [&ui, &watched, value_of](const Capture::TopicRow& topic) {
+                    const std::string& name = topic.name;
+                    ui.path_choices.push_back(PathChoice{ topic.key, "", topic.type, name, name });
+                    const std::vector<Capture::ValueNode>* nodes = nullptr;
+                    if (!value_of(topic.key, nodes)) return;
+                    for (const FieldPath& field : field_paths(*nodes))
+                        ui.path_choices.push_back(PathChoice{ topic.key, field.path, field.type,
+                                                              topic.key == watched ? field.path : name + "." + field.path,
+                                                              name + "." + field.path });
+                };
+                ui.path_choices.clear();
+                for (const Capture::TopicRow& topic : capture.topics())
+                    if (topic.key == watched && subscribable(topic)) offer(topic);
+                for (const Capture::TopicRow& topic : capture.topics())
+                    if (topic.key != watched && subscribable(topic)) offer(topic);
+                ui.path_text.clear();
+                ui.path_listed.clear();
+                ui.path_pick  = 0;
+                ui.path_chose = false;
+                ui.path_focus = true;
+                ui.menu_items = path_menu(ui.path_choices, "", 0);
+                handle.DirtyVariable("path_text");
+                const float         ratio  = context->GetDensityIndependentPixelRatio();
+                Rml::Element*       button = event.GetCurrentElement();
+                const Rml::Vector2f at     = button->GetAbsoluteOffset(Rml::BoxArea::Border);
+                const Rml::Vector2f size   = button->GetBox().GetSize(Rml::BoxArea::Border);
+                open_menu("path", (at.x + size.x) / ratio - PATH_MENU_W_DP, (at.y + size.y) / ratio + 4.f);
+            });
+        /* Enter adds the line the arrows chose, else the typed path when it names something,
+           else the first line. */
+        auto add_typed = [&ui, show_card, resolve_path, close_menu]() {
+            std::string text = ui.path_text;
+            text.erase(0, text.find_first_not_of(' '));
+            text.erase(text.find_last_not_of(' ') + 1);
+            std::string key, path, error;
+            if (!ui.path_chose && !text.empty()) resolve_path(text, key, path, error);
+            if (key.empty() && ui.path_pick < (int)ui.menu_items.size()) {
+                key  = ui.menu_items[ui.path_pick].topic;
+                path = ui.menu_items[ui.path_pick].path;
+            }
+            if (key.empty()) {
+                ui.note        = error.empty() ? Rml::String("nothing to add") : error;
+                ui.note_frames = 150;
+                return;
+            }
+            show_card(key, path, true);
+            close_menu();
+        };
+        /* The arrows choose a line, Tab writes it into the field, Escape closes. */
+        ctor.BindEventCallback("path_key",
+            [&ui, add_typed, close_menu](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList&) {
+                const int key   = event.GetParameter<int>("key_identifier", 0);
+                const int lines = (int)ui.menu_items.size();
+                if (key == Rml::Input::KI_UP || key == Rml::Input::KI_DOWN) {
+                    if (lines > 0) {
+                        if (ui.path_pick < lines) ui.menu_items[ui.path_pick].on = false;
+                        ui.path_pick = (ui.path_pick + (key == Rml::Input::KI_UP ? lines - 1 : 1)) % lines;
+                        ui.menu_items[ui.path_pick].on = true;
+                        ui.path_chose = true;
+                        handle.DirtyVariable("menu_items");
+                    }
+                    event.StopPropagation();   /* nor move the focus */
+                } else if (key == Rml::Input::KI_TAB) {
+                    if (ui.path_pick < lines) {
+                        ui.path_text = ui.menu_items[ui.path_pick].label;
+                        handle.DirtyVariable("path_text");
+                    }
+                    event.StopPropagation();
+                } else if (key == Rml::Input::KI_RETURN || key == Rml::Input::KI_NUMPADENTER) {
+                    add_typed();
+                } else if (key == Rml::Input::KI_ESCAPE) {
+                    close_menu();
+                }
             });
         ctor.BindEventCallback("set_hops",
             [&ui](Rml::DataModelHandle handle, Rml::Event&, const Rml::VariantList& args) {
@@ -1855,8 +2030,8 @@ int main(int argc, char** argv)
             });
         /* A checkbox flips and leaves the checklist open, every other line acts and closes. */
         ctor.BindEventCallback("menu_pick",
-            [&ui, &capture, &editor, &tree_dirty, &value_dirty, set_sub, close_menu, copy, copy_image, copy_table, value_of,
-             start_shot, end_shot](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList& args) {
+            [&ui, &capture, &editor, &tree_dirty, &value_dirty, set_sub, show_card, toggle_card, close_menu, copy, copy_image,
+             copy_table, value_of, start_shot, end_shot](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList& args) {
                 if (args.empty()) return;
                 const int at = args[0].Get<int>();
                 if (at < 0 || at >= (int)ui.menu_items.size()) return;
@@ -1881,6 +2056,16 @@ int main(int argc, char** argv)
                 }
                 if (action == "shot_stop") {
                     end_shot();
+                    close_menu();
+                    return;
+                }
+                if (action == "every") {
+                    toggle_card(picked.path);
+                    close_menu();
+                    return;
+                }
+                if (action == "add_path") {
+                    show_card(picked.topic, picked.path, true);
                     close_menu();
                     return;
                 }
@@ -1963,28 +2148,11 @@ int main(int argc, char** argv)
                 else view.open[path] = !is_open(*node, view);
                 value_dirty = true;
             });
-        /* A visual the user turns on starts pinned, so it stays when another topic is picked.
-           Only the root's, opened by default, starts unpinned. */
         ctor.BindEventCallback("toggle_value",
-            [&editor, &ui, &capture, &value_dirty](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList& args) {
+            [toggle_card](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList& args) {
                 if (args.empty()) return;
-                const Rml::String  path = args[0].Get<Rml::String>();
-                const std::string& key  = capture.watched().key;
-                ValueView& view = editor.view(key);
                 event.StopPropagation();   /* the row under the toggle must not also fold */
-                if (view.shown.erase(path)) {
-                    view.pinned.erase(path);
-                    view.still.erase(path);
-                } else if (ui.cards.size() >= (size_t)MAX_CARDS) {
-                    ui.note        = Rml::CreateString("at most %d cards at once, close one first", MAX_CARDS);
-                    ui.note_frames = 150;
-                    return;
-                } else {
-                    view.shown.insert(path);
-                    view.pinned.insert(path);
-                    if (!Capture::is_call(capture.watched().kind)) capture.subscribe(key, true);
-                }
-                value_dirty = true;
+                toggle_card(args[0].Get<Rml::String>());
             });
         ctor.BindEventCallback("pin_card",
             [&editor, &capture, &value_dirty](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
@@ -2291,12 +2459,13 @@ int main(int argc, char** argv)
                path, each offered only where it fits. */
             Rml::Element* tree = event.GetTargetElement();
             while (tree && !tree->HasAttribute("paste")) tree = tree->GetParentNode();
+            const bool watched = tree && tree->GetAttribute<Rml::String>("topic", "") == capture.watched().key;
+            Rml::Element* row = event.GetTargetElement();
+            while (watched && row && row != tree && !row->HasAttribute("field")) row = row->GetParentNode();
+            const std::string field = watched && row && row != tree ? row->GetAttribute<Rml::String>("field", "") : std::string();
             Rml::String clip;
-            if (tree) Rml::GetSystemInterface()->GetClipboardText(clip);
-            if (tree && tree->GetAttribute<Rml::String>("topic", "") == capture.watched().key && !clip.empty()) {
-                Rml::Element* row = event.GetTargetElement();
-                while (row && row != tree && !row->HasAttribute("field")) row = row->GetParentNode();
-                const std::string field = row && row != tree ? row->GetAttribute<Rml::String>("field", "") : std::string();
+            if (watched) Rml::GetSystemInterface()->GetClipboardText(clip);
+            if (watched && !clip.empty()) {
                 auto paste_line = [&lines, &editor, &clip](const char* label, const std::string& at) {
                     if (!editor.fits(at, clip)) return;
                     MenuItem item;
@@ -2308,6 +2477,17 @@ int main(int argc, char** argv)
                 };
                 if (!field.empty()) paste_line("Paste field", field);
                 if (tree->HasAttribute("path")) paste_line("Paste value", tree->GetAttribute<Rml::String>("path", ""));
+            }
+            /* A field inside an array's element shows in one card across every element. */
+            const std::string every = every_element(field);
+            if (!every.empty()) {
+                MenuItem item;
+                item.label  = "Show every element";
+                item.action = "every";
+                item.path   = every;
+                const auto mine = editor.views().find(capture.watched().key);
+                item.check  = mine != editor.views().end() && mine->second.shown.count(every) ? 2 : 1;
+                lines.push_back(item);
             }
         }
         /* A card that draws what came before offers to draw only the newest value. Every card
@@ -2686,10 +2866,23 @@ int main(int argc, char** argv)
                 ui.cards.push_back(row);
             };
             if (!watch.nodes.empty() && ui.value_root_on && !callable) card(watch.key, "", view);
-            for (const Capture::ValueNode& node : watch.nodes)
+            /* A gathered path has no row, so its card follows its array's place, else comes last. */
+            std::vector<std::string> gathered;
+            for (const std::string& path : view.shown)
+                if (is_gathered(path)) gathered.push_back(path);
+            for (const Capture::ValueNode& node : watch.nodes) {
                 if (node.kind != Capture::ValueNode::Gap && node.kind != Capture::ValueNode::Part &&
                     !node.path.empty() && view.shown.count(node.path))
                     card(watch.key, node.path, view);
+                if (node.kind != Capture::ValueNode::Array) continue;
+                for (std::string& path : gathered)
+                    if (!path.empty() && path.find("[*]") == node.path.size() && path.compare(0, node.path.size(), node.path) == 0) {
+                        card(watch.key, path, view);
+                        path.clear();
+                    }
+            }
+            for (const std::string& path : gathered)
+                if (!path.empty()) card(watch.key, path, view);
             for (const auto& entry : editor.views())
                 if (entry.first != watch.key && capture.view(entry.first))
                     for (const std::string& path : entry.second.pinned) card(entry.first, path, entry.second);
@@ -2846,7 +3039,20 @@ int main(int argc, char** argv)
 
         sync(model, "shown_card", ui.shown_card,
              ui.card_page < (int)ui.cards.size() ? ui.cards[ui.card_page] : CardRow());
+        if (ui.menu_open && ui.menu_kind == "path" && ui.path_text != ui.path_listed) {
+            ui.path_listed = ui.path_text;
+            ui.path_pick   = 0;
+            ui.path_chose  = false;
+            ui.menu_items  = path_menu(ui.path_choices, ui.path_text, 0);
+            model.DirtyVariable("menu_items");
+        }
         context->Update();
+        /* The add box's field exists only after the update that opened it. */
+        if (ui.path_focus) {
+            Rml::Element* field = document->GetElementById("path-field");
+            if (field) field->Focus();
+            ui.path_focus = !field && ui.menu_open;
+        }
         /* New cards exist only after the update, so a moved tiling lays out once more before
            it draws, and no card shows a frame in the wrong place. */
         if (!ui.card_swiping) ui.card_shift = ease(ui.card_shift, 0.f, dt);

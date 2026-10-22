@@ -1166,11 +1166,22 @@ protected:
         const std::string path = GetAttribute<Rml::String>("path", "");
         topic_   = GetAttribute<Rml::String>("topic", "");
         history_ = GetAttribute<Rml::String>("history", "on") != "off";
-        found_ = -2;
+        found_   = -2;
+        gathers_ = is_gathered(path);
         Visual visual = Visual::None;
+        bool   empty  = false;   /* the value came but its arrays hold nothing to gather */
         const Capture::WatchView* watch = source ? source->view(topic_) : nullptr;
         if (watch) {
-            const Nodes& nodes = source->whole(topic_);
+            if (gathers_) {
+                const Nodes& whole = source->whole(topic_);
+                const std::string key = std::to_string(watch->seq) + ":" + std::to_string(whole.size()) + ":" + path;
+                if (key != gathered_key_) {
+                    gathered_key_ = key;
+                    gathered_     = gather(whole, path);
+                }
+                empty = !whole.empty() && gathered_.empty();
+            }
+            const Nodes& nodes = this->nodes();
             found_ = find_node(nodes, *watch, path);
             visual = visual_at(*watch, nodes, found_);
             if (found_ == -1) {
@@ -1180,14 +1191,17 @@ protected:
             }
         }
         if (path != path_ || visual != visual_ || !built_) build(path, visual);
-        if (found_ >= -1) fill(source->whole(topic_));
+        if (visual_ == Visual::None)
+            html(empty ? "empty" : "none", std::string("<span class=\"faint\">") +
+                                               (empty ? "no elements" : "waiting for a value") + "</span>");
+        if (found_ >= -1) fill(nodes());
     }
 
     void OnRender() override
     {
         Rml::Element::OnRender();
         if (!source || found_ < -1 || is_html(visual_)) return;
-        const Nodes& nodes = source->whole(topic_);
+        const Nodes& nodes = this->nodes();
         if (found_ >= (int)nodes.size()) return;
 
         const double now = Capture::now_s();
@@ -1240,6 +1254,12 @@ private:
     static constexpr Rml::EventId GESTURES[] = { Rml::EventId::Dragstart, Rml::EventId::Drag,
                                                  Rml::EventId::Mousescroll, Rml::EventId::Dblclick };
 
+    /* The value the path is found in: the topic's whole value, or what the path gathers from it. */
+    const Nodes& nodes() const
+    {
+        return gathers_ ? gathered_ : source->whole(topic_);
+    }
+
     /* ---------------------------------------------------------------- building */
 
     void build(const std::string& path, Visual visual)
@@ -1268,7 +1288,6 @@ private:
         SetClass("pans", is_picture(visual));
         view_frame_ = Rml::Vector2f(0, 0);   /* the next picture starts fitted */
         if (!is_html(visual)) SetInnerRML("");
-        if (visual == Visual::None) html("none", "<span class=\"faint\">waiting for a value</span>");
     }
 
     /* Replaces the children when the key moves, and collects the elements whose text fill
@@ -2246,7 +2265,7 @@ public:
        minds another. A picture wants its frame's and letterboxes when it cannot have it. */
     Tile shape() const
     {
-        const Nodes* nodes = source && found_ >= -1 ? &source->whole(topic_) : nullptr;
+        const Nodes* nodes = source && found_ >= -1 ? &this->nodes() : nullptr;
         const size_t children = nodes ? children_of(*nodes, found_).size() : 0;
         switch (visual_) {
         case Visual::Image:
@@ -2307,6 +2326,9 @@ private:
     Visual                     visual_ = Visual::None;
     bool                       built_ = false;
     int                        found_ = -2;      /* the node index, -1 the struct root, -2 none */
+    bool                       gathers_ = false; /* the path has [*], so it reads gathered_ */
+    Nodes                      gathered_;
+    std::string                gathered_key_;    /* the message and path gathered_ was made for */
     bool                       history_ = true;  /* draw what came before, else only the newest */
     ValueNode                  root_;
 

@@ -151,6 +151,7 @@
 								<span class="icon-button"
 									data-event-click="close_card(shown_card.topic, shown_card.path)"><icon name="x" /></span>
 							</span>
+							<span class="icon-button head-add" data-event-click="open_path"><icon name="plus" /></span>
 						</div>
 						<div class="issues" data-if="has_topic &amp;&amp; topic.issues.size > 0">
 							<div class="issue" data-for="s : topic.issues">
@@ -158,8 +159,8 @@
 							</div>
 						</div>
 						<div class="viz-area" data-if="has_topic">
-							<div class="hint" data-if="cards.size == 0"><span>Toggle a field in the value tree to see it
-									here.</span></div>
+							<div class="hint" data-if="cards.size == 0"><span>Toggle a field in the value tree or add a
+									path to see it here.</span></div>
 							<div class="viz-card" data-for="c : cards" data-attr-topic="c.topic"
 								data-attr-path="c.path">
 								<span class="viz-name mono"><span class="viz-topic"
@@ -685,13 +686,19 @@
 		</div>
 
 		<div id="menu-layer" data-if="menu_open" data-event-mousedown="close_menu">
-			<div class="menu" data-style-left="menu_left" data-style-top="menu_top">
+			<div class="menu" data-class-paths="menu_kind == 'path'" data-style-left="menu_left"
+				data-style-top="menu_top">
+				<div class="filter menu-field" data-if="menu_kind == 'path'">
+					<icon name="search" />
+					<input type="text" id="path-field" class="mono" placeholder="field, Topic.field, [*] for every element"
+						data-value="path_text" data-event-keydown="path_key" />
+				</div>
 				<div class="menu-item" data-for="m, i : menu_items" data-class-header="m.header"
-					data-event-click="menu_pick(i)">
+					data-class-on="m.on" data-event-click="menu_pick(i)">
 					<span class="menu-box" data-if="m.check > 0" data-class-on="m.check == 2">
 						<icon name="check" />
 					</span>
-					<span class="menu-label">{{m.label}}</span>
+					<span class="menu-label" data-class-mono="menu_kind == 'path'">{{m.label}}</span>
 					<span class="menu-hint mono" data-if="m.hint != ''">{{m.hint}}</span>
 				</div>
 			</div>

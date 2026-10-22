@@ -999,7 +999,7 @@ scrollbarvertical sliderarrowinc {
 	border-radius: 4dp;
 }
 
-.menu-item:hover        { background-color: var(--panel3); }
+.menu-item:hover, .menu-item.on { background-color: var(--panel3); }
 .menu-item.header:hover { background-color: transparent; }
 
 /* A checkbox: the glyph is always there and shows only when checked, so nothing moves. */
@@ -1025,6 +1025,10 @@ scrollbarvertical sliderarrowinc {
 	color: var(--faint);
 }
 .menu-label { flex: 0 0 auto; white-space: nowrap; }
+
+/* The add box: a field over the paths it offers, a long path cut short before its type. */
+.menu-field { margin-bottom: 4dp; }
+.menu.paths .menu-label { flex: 0 1 auto; min-width: 0; overflow: hidden; }
 
 /* ------------------------------------------------------------------------ mesh */
 

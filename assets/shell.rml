@@ -172,7 +172,7 @@
 								<span class="viz-close" data-event-click="close_card(c.topic, c.path)">
 									<icon name="x" />
 								</span>
-								<viz data-attr-topic="c.topic" data-attr-path="c.path" data-attr-history="c.history"></viz>
+								<viz data-attr-topic="c.topic" data-attr-path="c.path" data-attr-shows="c.shows"></viz>
 							</div>
 						</div>
 					</div>

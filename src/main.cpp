@@ -176,14 +176,14 @@ struct CardRow {
     Rml::String topic_name;
     Rml::String path;
     Rml::String name;
-    Rml::String history = "on";  /* "off" while the card draws only the newest value */
+    Rml::String shows;        /* the parts of its visual the user showed or hid, viz_shows_text */
     bool        pinned = false;
     bool        other = false;   /* from a topic that is not the selected one */
 
     bool operator==(const CardRow& o) const
     {
         return topic == o.topic && topic_name == o.topic_name && path == o.path && name == o.name &&
-               history == o.history && pinned == o.pinned && other == o.other;
+               shows == o.shows && pinned == o.pinned && other == o.other;
     }
 };
 
@@ -1352,7 +1352,7 @@ int main(int argc, char** argv)
             card.RegisterMember("topic_name", &CardRow::topic_name);
             card.RegisterMember("path",   &CardRow::path);
             card.RegisterMember("name",   &CardRow::name);
-            card.RegisterMember("history", &CardRow::history);
+            card.RegisterMember("shows",  &CardRow::shows);
             card.RegisterMember("pinned", &CardRow::pinned);
         }
         ctor.RegisterArray<Rml::Vector<CardRow>>();
@@ -1789,7 +1789,7 @@ int main(int argc, char** argv)
             if (!on) {
                 view.shown.erase(path);
                 view.pinned.erase(path);
-                view.still.erase(path);
+                view.shows.erase(path);
             } else if (view.shown.count(path)) {
                 return;
             } else if (ui.cards.size() >= (size_t)MAX_CARDS) {
@@ -2069,11 +2069,13 @@ int main(int argc, char** argv)
                     close_menu();
                     return;
                 }
-                if (action == "history") {
-                    ValueView& view = editor.view(ui.menu_topic);
-                    if (!view.still.erase(picked.path)) view.still.insert(picked.path);
+                /* a part of a card's visual, the menu left open for the next */
+                if (action.compare(0, 5, "show:") == 0) {
+                    MenuItem& item = ui.menu_items[at];
+                    item.check = item.check == 2 ? 1 : 2;
+                    editor.view(ui.menu_topic).shows[picked.path][action.substr(5)] = item.check == 2;
                     value_dirty = true;
-                    close_menu();
+                    handle.DirtyVariable("menu_items");
                     return;
                 }
                 if (action == "image" || action == "json") {
@@ -2172,7 +2174,7 @@ int main(int argc, char** argv)
                 ValueView& view = editor.view(args[0].Get<Rml::String>());
                 view.shown.erase(path);
                 view.pinned.erase(path);
-                view.still.erase(path);
+                view.shows.erase(path);
                 value_dirty = true;
             });
         /* The wheel steps a number while its editor has focus, and the pane does not scroll. */
@@ -2490,15 +2492,13 @@ int main(int argc, char** argv)
                 lines.push_back(item);
             }
         }
-        /* A card that draws what came before offers to draw only the newest value. Every card
-           saves as a picture or records, one card at a time. */
+        /* A card offers each part of its visual to show or hide. Every card saves as a picture
+           or records, one card at a time. */
         Rml::Element* card = event.GetTargetElement();
         while (card && !card->IsClassSet("viz-card")) card = card->GetParentNode();
         if (card && !head) {
-            const std::vector<Capture::ValueNode>* nodes = nullptr;
             const std::string topic = card->GetAttribute<Rml::String>("topic", "");
             const std::string path  = card->GetAttribute<Rml::String>("path", "");
-            const Capture::WatchView* view = value_of(topic, nodes);
             std::vector<MenuItem> own;
             auto item = [&own, &path](const char* label, const char* action) {
                 MenuItem m;
@@ -2507,10 +2507,14 @@ int main(int argc, char** argv)
                 m.path   = path;
                 own.push_back(m);
             };
-            if (view && viz_history(visual_at(*view, *nodes, find_node(*nodes, *view, path)))) {
-                const auto mine = editor.views().find(topic);
-                item("History", "history");
-                own.back().check = mine != editor.views().end() && mine->second.still.count(path) ? 1 : 2;
+            Rml::Element* viz = nullptr;
+            for (int i = 0; i < card->GetNumChildren() && !viz; i++)
+                if (card->GetChild(i)->GetTagName() == "viz") viz = card->GetChild(i);
+            const std::vector<VizShow> parts = viz_shows(viz);
+            if (!parts.empty()) menu_header(own, "Show");
+            for (const VizShow& part : parts) {
+                item(part.label.c_str(), ("show:" + part.key).c_str());
+                own.back().check = part.on ? 2 : 1;
             }
             if (shot && shot->kind != FileKind::Png && shot->topic == topic && shot->path == path) {
                 item("Stop recording", "shot_stop");
@@ -2860,7 +2864,8 @@ int main(int argc, char** argv)
                 row.topic_name = Capture::name_of(key);
                 row.path       = path;
                 row.name       = path.empty() ? row.topic_name : path;
-                row.history    = of.still.count(path) ? "off" : "on";
+                const auto shows = of.shows.find(path);
+                row.shows      = shows != of.shows.end() ? viz_shows_text(shows->second) : std::string();
                 row.pinned     = of.pinned.count(path) > 0;
                 row.other      = key != watch.key;
                 ui.cards.push_back(row);
@@ -2914,10 +2919,13 @@ int main(int argc, char** argv)
             }
             const std::set<std::string>& paths = entry.first == watch.key ? entry.second.shown : entry.second.pinned;
             std::string key = sub->shape + "|";
-            for (const std::string& path : paths) key += path + (entry.second.still.count(path) ? "-," : ",");
+            for (const std::string& path : paths) {
+                const auto shows = entry.second.shows.find(path);
+                key += path + "|" + (shows != entry.second.shows.end() ? viz_shows_text(shows->second) : std::string()) + ",";
+            }
             if (traced[entry.first] == key) continue;
             traced[entry.first] = key;
-            const VizFeeds feeds = viz_feeds(*sub, paths, entry.second.still);
+            const VizFeeds feeds = viz_feeds(*sub, paths, entry.second.shows);
             capture.trace(entry.first, feeds.traces);
             capture.stream(entry.first, feeds.streams);
         }

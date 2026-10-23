@@ -9,6 +9,7 @@
 #include "tiling.hpp"
 #include "values.hpp"
 
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -25,12 +26,22 @@ struct VizFeeds {
     std::vector<Capture::TraceSpec> traces;
     std::vector<std::string>        streams;
 };
-/* The still paths show only their newest value, so they are not traced. */
+/* A path whose card hides its history shows only the newest value, so it is not traced. */
 VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>& shown,
-                   const std::set<std::string>& still);
+                   const std::map<std::string, ShowChoices>& shows);
 
-/* A visual that draws what came before, so its card offers to turn that off. */
-bool viz_history(Visual visual);
+/* A part of a card's visual the card can show or hide: what came before, the labels, the
+   grid. Each visual offers the few it draws, and each part has its own default. */
+struct VizShow {
+    std::string key;     /* what the card's choice is kept under */
+    std::string label;   /* its menu line */
+    bool        on = true;
+};
+/* What a card's visual offers now, in menu order. None for any other element. */
+std::vector<VizShow> viz_shows(Rml::Element* element);
+
+/* A card's choices as its viz element's shows attribute. */
+std::string viz_shows_text(const ShowChoices& choices);
 
 /* What a card's visual wants from the tiling. The default for any other element. */
 Tile viz_tile(Rml::Element* element);

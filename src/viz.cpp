@@ -68,6 +68,84 @@ constexpr float ZOOM_TEXEL = 32;
 /* An array up to this long is labelled per element. */
 constexpr size_t LABELLED = 16;
 
+/* ------------------------------------------------------------------ what a card shows */
+
+/* A part of a visual its card can show or hide. Colours off draws every element in one. */
+enum class Show { History, Arrows, Orientation, Line, Path, Turn, Torque, Labels, Colours, Drops, Grid, Axes, Readings };
+
+const VizShow SHOW_NAMES[] = {
+    { "history", "History" }, { "arrows", "Arrows" }, { "orientation", "Orientation" }, { "line", "Line" },
+    { "path", "Path" },       { "turn", "Turn" },     { "torque", "Torque" },           { "labels", "Labels" },
+    { "colors", "Colors" },   { "drops", "Drop lines" }, { "grid", "Grid" },           { "axes", "Axes" },
+    { "readings", "Readings" },
+};
+
+/* The parts a visual offers, in menu order. */
+std::vector<Show> offered(Visual v)
+{
+    using S = Show;
+    switch (v) {
+    case Visual::Plot: case Visual::Vec4: case Visual::State: case Visual::Geo:
+                           return { S::History, S::Grid, S::Readings };
+    case Visual::Bars: case Visual::Joints:
+                           return { S::Labels, S::Grid, S::Readings };
+    case Visual::Vec2:     return { S::History, S::Arrows, S::Grid, S::Axes, S::Readings };
+    case Visual::Vec2s:    return { S::Arrows, S::Line, S::Labels, S::Colours, S::Grid, S::Axes, S::Readings };
+    case Visual::Pose2D:   return { S::History, S::Orientation, S::Line, S::Grid, S::Axes, S::Readings };
+    case Visual::Poses2D:  return { S::Orientation, S::Line, S::Labels, S::Colours, S::Grid, S::Axes, S::Readings };
+    case Visual::Figure:   return { S::Grid, S::Axes, S::Readings };
+    case Visual::Figures:  return { S::Labels, S::Colours, S::Grid, S::Axes, S::Readings };
+    case Visual::Twist2D:  return { S::Path, S::Turn, S::Grid, S::Axes, S::Readings };
+    case Visual::Wrench2D: return { S::History, S::Torque, S::Grid, S::Axes, S::Readings };
+    case Visual::Vec3:     return { S::History, S::Arrows, S::Drops, S::Grid, S::Axes, S::Readings };
+    case Visual::Quat:     return { S::Grid, S::Axes, S::Readings };
+    case Visual::Pose:     return { S::History, S::Orientation, S::Line, S::Drops, S::Grid, S::Axes, S::Readings };
+    case Visual::Twist:    return { S::Path, S::Turn, S::Drops, S::Grid, S::Axes, S::Readings };
+    case Visual::Wrench:   return { S::History, S::Torque, S::Drops, S::Grid, S::Axes, S::Readings };
+    case Visual::Solid:    return { S::Drops, S::Grid, S::Axes, S::Readings };
+    case Visual::Vec3s:    return { S::Arrows, S::Line, S::Labels, S::Colours, S::Drops, S::Grid, S::Axes, S::Readings };
+    case Visual::Poses:    return { S::Orientation, S::Line, S::Labels, S::Drops, S::Grid, S::Axes, S::Readings };
+    case Visual::Solids:   return { S::Labels, S::Colours, S::Drops, S::Grid, S::Axes, S::Readings };
+    case Visual::Geos:     return { S::Line, S::Labels, S::Colours, S::Grid, S::Readings };
+    case Visual::Colors:   return { S::Labels, S::Readings };
+    case Visual::Color: case Visual::Video:
+                           return { S::Readings };
+    default:               return {};
+    }
+}
+
+/* Every part starts shown, but the line through vectors or points in order starts hidden. */
+bool shown_by_default(Visual v, Show s)
+{
+    return !(s == Show::Line && (v == Visual::Vec2s || v == Visual::Vec3s || v == Visual::Geos));
+}
+
+/* The parts that show, a bit per Show, by the card's choices over the defaults. */
+unsigned shown_parts(Visual v, const ShowChoices& choices)
+{
+    unsigned out = 0;
+    for (const Show s : offered(v)) {
+        const auto chosen = choices.find(SHOW_NAMES[(int)s].key);
+        if (chosen != choices.end() ? chosen->second : shown_by_default(v, s)) out |= 1u << (int)s;
+    }
+    return out;
+}
+
+/* A card's choices from its shows attribute, as viz_shows_text writes them. */
+ShowChoices read_choices(const std::string& text)
+{
+    ShowChoices out;
+    size_t at = 0;
+    while (at < text.size()) {
+        size_t end = text.find(' ', at);
+        if (end == std::string::npos) end = text.size();
+        const size_t colon = text.find(':', at);
+        if (colon < end) out[text.substr(at, colon - at)] = text.compare(colon + 1, end - colon - 1, "1") == 0;
+        at = end + 1;
+    }
+    return out;
+}
+
 /* ------------------------------------------------------------------ formatting */
 
 /* A value as a person reads it: a time or a span for those types, else the tree's text. */
@@ -352,26 +430,27 @@ bool inside(Rml::Vector2f p, float left, float top, float right, float bottom)
     return p.x >= left && p.x <= right && p.y >= top && p.y <= bottom;
 }
 
-/* The time axis of a strip: a line every two seconds, each named along the bottom, now at
-   the right. */
+/* The time axis of a strip: a line every two seconds unless the grid is hidden, each named
+   along the bottom, now at the right. */
 template <class X>
-void time_grid(Canvas& c, X x_of, double now, float y0, float y1)
+void time_grid(Canvas& c, X x_of, double now, float y0, float y1, bool grid)
 {
     for (int sec = 2; sec <= 10; sec += 2) {
         const float x = x_of(now - sec);
-        c.line(x, y0, x, y1, ink.grid);
+        if (grid) c.line(x, y0, x, y1, ink.grid);
         c.text("-" + std::to_string(sec) + " s", x, c.h() - c.dp(6), sec == 10 ? Canvas::Left : Canvas::Center, ink.faint, LABEL);
     }
     c.text("now", x_of(now), c.h() - c.dp(6), Canvas::Right, ink.faint, LABEL);
 }
 
-/* Horizontal lines at round steps across a value range, labelled in the left gutter. */
+/* Horizontal lines at round steps across a value range unless the grid is hidden, labelled
+   in the left gutter. */
 template <class Y>
-void value_grid(Canvas& c, float x0, float x1, double lo, double hi, Y y_of, bool is_float)
+void value_grid(Canvas& c, float x0, float x1, double lo, double hi, Y y_of, bool is_float, bool grid)
 {
     const double step = nice((hi - lo) / 4);
     for (double v = std::ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
-        c.line(x0, y_of(v), x1, y_of(v), ink.grid);
+        if (grid) c.line(x0, y_of(v), x1, y_of(v), ink.grid);
         c.text(axis_label(std::fabs(v) < step * 1e-6 ? 0 : v, is_float), x0 - c.dp(6), y_of(v) + c.dp(4), Canvas::Right, ink.faint, LABEL);
     }
 }
@@ -388,7 +467,7 @@ struct Part {
 /* Every reading of a visual goes along the bottom of its area, in order from the left, and
    its context at the right, faint. What does not fit is left out, the context first, then
    the last readings. */
-void foot(Canvas& c, const Area& a, const std::vector<Part>& left, const std::string& right = {})
+void draw_foot(Canvas& c, const Area& a, const std::vector<Part>& left, const std::string& right)
 {
     const float room = a.w - c.dp(16), gap = c.text_width("  ", LABEL);
     std::vector<float> widths;
@@ -409,11 +488,6 @@ void foot(Canvas& c, const Area& a, const std::vector<Part>& left, const std::st
         x += widths[i] + gap;
     }
     if (context) c.text(right, a.x + a.w - c.dp(8), y, Canvas::Right, ink.faint, LABEL);
-}
-
-void foot(Canvas& c, const Area& a, const std::string& left, const std::string& right = {})
-{
-    foot(c, a, std::vector<Part>{ { left, ink.dim } }, right);
 }
 
 /* The area of a view over time down to its foot, which sits above the time labels. */
@@ -444,11 +518,6 @@ void side_by_side(Canvas& c, const Area& a, const std::vector<std::string>& name
 void index_label(Canvas& c, Rml::Vector2f at, size_t i, Rml::Colourb colour)
 {
     c.text(std::to_string(i), at.x + c.dp(8), at.y - c.dp(6), Canvas::Left, colour, LABEL);
-}
-
-void index_label(Canvas& c, Rml::Vector2f at, size_t i)
-{
-    index_label(c, at, i, palette((long long)i));
 }
 
 /* A value shown alone in the middle of an area, as large as fits up to ALONE dp. */
@@ -486,11 +555,18 @@ struct Camera {
     double a = 45, e = 35, zoom = 1;
 };
 
+/* What a drawing shows around what it draws, as its card chose: the grid, the axes, and a
+   scene's foot and drop line under each point. */
+struct Backdrop {
+    bool grid = true, axes = true, drops = true;
+};
+
 /* A view of a cube around the origin reaching r, z up, scaled so the reach meets the
    area's edge with the origin centred between the text strips. Depth is toward the
    viewer, so a scene can paint back to front. */
 struct Scene {
-    double ca = 1, sa = 0, ce = 1, se = 0, k = 1, cx = 0, cy = 0, r = 1;
+    double   ca = 1, sa = 0, ce = 1, se = 0, k = 1, cx = 0, cy = 0, r = 1;
+    Backdrop look;
 
     Rml::Vector2f operator()(double x, double y, double z) const
     {
@@ -502,10 +578,11 @@ struct Scene {
     bool   front(const V3& p) const { return depth(p) >= 0; }
 };
 
-Scene scene(Canvas& c, const Area& a, double r, const Camera& cam)
+Scene scene(Canvas& c, const Area& a, double r, const Camera& cam, const Backdrop& look)
 {
     const double rad = 3.14159265358979 / 180;
     Scene s;
+    s.look = look;
     s.ca = std::cos(cam.a * rad); s.sa = std::sin(cam.a * rad);
     s.ce = std::cos(cam.e * rad); s.se = std::sin(cam.e * rad);
     s.r  = r;
@@ -514,7 +591,7 @@ Scene scene(Canvas& c, const Area& a, double r, const Camera& cam)
     s.cy = a.y + c.dp(TOP) + (a.h - c.dp(TOP + BOT)) / 2;
     /* the floor grid at a round step, running off the sides where it will */
     const double step = nice(2 * r / 4);
-    for (double m = std::ceil(-r / step) * step; m <= r + 1e-9; m += step) {
+    for (double m = std::ceil(-r / step) * step; look.grid && m <= r + 1e-9; m += step) {
         c.line(s(m, -r, 0), s(m, r, 0), ink.grid);
         c.line(s(-r, m, 0), s(r, m, 0), ink.grid);
     }
@@ -524,6 +601,7 @@ Scene scene(Canvas& c, const Area& a, double r, const Camera& cam)
 /* The axes from the origin toward the reach, each named at its end. */
 void axes(Canvas& c, const Scene& s)
 {
+    if (!s.look.axes) return;
     const double r = s.r * 0.92;
     const V3 ends[3] = { { r, 0, 0 }, { 0, r, 0 }, { 0, 0, r } };
     const char* names[3] = { "x", "y", "z" };
@@ -543,7 +621,7 @@ void shadow(Canvas& c, const Scene& s, const V3& v, const std::vector<V3>* trail
         for (const V3& p : *trail)
             if (s.front(p) == front) dots.add(s(p));
     }
-    if (s.front(v) != front) return;
+    if (s.front(v) != front || !s.look.drops) return;
     c.dot(s(v.x, v.y, 0), ink.ground, 3);
     c.dashed(s(v.x, v.y, 0), s(v), ink.ground, THIN);
 }
@@ -860,7 +938,7 @@ struct Plane {
     Rml::Vector2f operator()(const V3& p) const { return (*this)(p.x, p.y); }
 };
 
-Plane plane(Canvas& c, const Area& a, double r)
+Plane plane(Canvas& c, const Area& a, double r, const Backdrop& look)
 {
     Plane p;
     p.r  = r;
@@ -868,10 +946,11 @@ Plane plane(Canvas& c, const Area& a, double r)
     p.cx = a.x + a.w / 2;
     p.cy = a.y + c.dp(TOP) + (a.h - c.dp(TOP + BOT)) / 2;
     const double step = nice(r / 2);
-    for (double m = std::ceil(-r / step) * step; m <= r + 1e-9; m += step) {
+    for (double m = std::ceil(-r / step) * step; look.grid && m <= r + 1e-9; m += step) {
         c.line(p(m, -r), p(m, r), ink.grid);
         c.line(p(-r, m), p(r, m), ink.grid);
     }
+    if (!look.axes) return p;
     const double end = r * 0.92;
     c.line(p(-r, 0), p(end, 0), axis_colour(0), THIN);
     c.line(p(0, -r), p(0, end), axis_colour(1), THIN);
@@ -1165,7 +1244,6 @@ protected:
         Rml::Element::OnUpdate();
         const std::string path = GetAttribute<Rml::String>("path", "");
         topic_   = GetAttribute<Rml::String>("topic", "");
-        history_ = GetAttribute<Rml::String>("history", "on") != "off";
         found_   = -2;
         gathers_ = is_gathered(path);
         Visual visual = Visual::None;
@@ -1191,6 +1269,11 @@ protected:
             }
         }
         if (path != path_ || visual != visual_ || !built_) build(path, visual);
+        const std::string shows = GetAttribute<Rml::String>("shows", "");
+        if (shows != shows_text_) {
+            shows_text_ = shows;
+            shown_      = shown_parts(visual_, read_choices(shows));
+        }
         if (visual_ == Visual::None)
             html(empty ? "empty" : "none", std::string("<span class=\"faint\">") +
                                                (empty ? "no elements" : "waiting for a value") + "</span>");
@@ -1260,6 +1343,46 @@ private:
         return gathers_ ? gathered_ : source->whole(topic_);
     }
 
+    bool on(Show part) const
+    {
+        return (shown_ >> (int)part & 1) != 0;
+    }
+
+    Backdrop backdrop() const
+    {
+        return Backdrop{ on(Show::Grid), on(Show::Axes), on(Show::Drops) };
+    }
+
+    /* An element's own colour, or one for all when the card hides colours. */
+    Rml::Colourb tint(size_t i) const
+    {
+        return on(Show::Colours) ? palette((long long)i) : ink.accent;
+    }
+
+    /* An element's index beside it, in its colour, else dim. */
+    void label(Canvas& c, Rml::Vector2f at, size_t i) const
+    {
+        if (on(Show::Labels)) index_label(c, at, i, on(Show::Colours) ? palette((long long)i) : ink.dim);
+    }
+
+    /* A vector as an arrow, or as a dot at its tip when the card hides arrows. */
+    void ray(Canvas& c, Rml::Vector2f from, Rml::Vector2f to, Rml::Colourb colour) const
+    {
+        if (on(Show::Arrows)) c.arrow(from, to, colour, ARROW);
+        else                  c.dot(to, colour, 4);
+    }
+
+    /* The readings along the bottom, unless the card hides them. */
+    void foot(Canvas& c, const Area& a, const std::vector<Part>& left, const std::string& right = {}) const
+    {
+        if (on(Show::Readings)) draw_foot(c, a, left, right);
+    }
+
+    void foot(Canvas& c, const Area& a, const std::string& left, const std::string& right = {}) const
+    {
+        foot(c, a, std::vector<Part>{ { left, ink.dim } }, right);
+    }
+
     /* ---------------------------------------------------------------- building */
 
     void build(const std::string& path, Visual visual)
@@ -1272,6 +1395,7 @@ private:
         texts_.clear();
         lamps_.clear();
         lamp_states_.clear();
+        shows_text_.assign(1, '\x01');   /* the new visual's parts are read again */
         seen_ = eased_ = false;
         reach_[0] = reach_[1] = Reach();
         cam_ = Camera();
@@ -1523,8 +1647,8 @@ private:
         auto X = [&](double t) { return (float)(x0 + (x1 - x0) * (1 - (now - t) / PLOT_SECONDS)); };
         auto Y = [&](double v) { return (float)(top + (bottom - top) * (1 - (v - lo_) / (hi_ - lo_))); };
 
-        time_grid(c, X, now, top, bottom);
-        value_grid(c, x0, x1, lo_, hi_, Y, is_float);
+        time_grid(c, X, now, top, bottom, on(Show::Grid));
+        value_grid(c, x0, x1, lo_, hi_, Y, is_float, on(Show::Grid));
         /* Each line is cut to the plot so its tail slides off the left edge and a new extreme
            the range has not eased out to yet stays inside. The newest value holds until now. */
         for (size_t k = 0; k < paths.size(); k++) {
@@ -1554,7 +1678,7 @@ private:
     /* The value over time, or without history the value alone. */
     void plot(Canvas& c, const ValueNode& node)
     {
-        if (!history_) {
+        if (!on(Show::History)) {
             alone(c, c.all(), value_text(node));
             return;
         }
@@ -1577,7 +1701,7 @@ private:
             colours.push_back(component_colour(i));
             is_float = is_float || (k >= 0 && nodes[k].is_float);
         }
-        if (!history_) {
+        if (!on(Show::History)) {
             side_by_side(c, c.all(), { "x", "y", "z", "w" }, texts, colours);
             return;
         }
@@ -1611,7 +1735,7 @@ private:
             if (node.kind == ValueNode::Bool) return v != 0 ? ink.green : ink.border;
             return palette((long long)v);
         };
-        if (!history_) {
+        if (!on(Show::History)) {
             /* false reads on the dark card, where its band's colour would not */
             alone(c, c.all(), value_text(node), node.kind == ValueNode::Bool && node.number == 0 ? ink.dim : colour(node.number));
             return;
@@ -1635,7 +1759,7 @@ private:
             }
             i = j + 1;
         }
-        time_grid(c, X, now, c.dp(TOP) + c.dp(2), bottom);
+        time_grid(c, X, now, c.dp(TOP) + c.dp(2), bottom, on(Show::Grid));
         foot(c, over_time(c), value_text(node));
     }
 
@@ -1656,7 +1780,7 @@ private:
         const float top = c.dp(TOP), bottom = c.h() - c.dp(BOT), x0 = c.dp(GUTTER), x1 = c.w() - c.dp(10);
         auto Y = [&](double v) { return (float)(top + (bottom - top) * (1 - (v - lo) / (hi - lo))); };
         const bool is_float = n && nodes[items[0]].is_float;
-        value_grid(c, x0, x1, lo, hi, Y, is_float);
+        value_grid(c, x0, x1, lo, hi, Y, is_float, on(Show::Grid));
         const float gap = n <= LABELLED ? 0.3f : 0, width = n ? (x1 - x0) / n : 0;
         const float base = Y(std::max(lo_seen_, std::min(0.0, hi_seen_)));
         /* Bars sharing a pixel column draw as one, spanning their extremes and the base. */
@@ -1673,7 +1797,7 @@ private:
                 right = std::floor(x0 + i * width + width * (1 - gap / 2));
             }
             c.rect(x, y_top, std::max(1.f, right - x), std::max(1.f, y_bot - y_top), ink.accent);
-            if (n <= LABELLED) c.text(std::to_string(first), x + width * (1 - gap) / 2, c.h() - c.dp(6), Canvas::Center, ink.faint, LABEL);
+            if (n <= LABELLED && on(Show::Labels)) c.text(std::to_string(first), x + width * (1 - gap) / 2, c.h() - c.dp(6), Canvas::Center, ink.faint, LABEL);
         }
         foot(c, c.all(), "", format_number((double)n) + " values");
     }
@@ -1684,12 +1808,12 @@ private:
     {
         const V3 v = vec(nodes, found_);
         const double r = reach_[0].grow({ v.x, v.y }, dt_);
-        const Plane p = plane(c, c.all(), r);
-        if (history_) {
+        const Plane p = plane(c, c.all(), r, backdrop());
+        if (on(Show::History)) {
             Dots dots(c, ink.trail, 2);
             for (const V3& t : trail(child_path(path_, "x"), child_path(path_, "y"))) dots.add(p(t.x, t.y));
         }
-        c.arrow(p(0, 0), p(v.x, v.y), ink.accent, ARROW);
+        ray(c, p(0, 0), p(v.x, v.y), ink.accent);
         foot(c, c.all(), "x " + f3(v.x) + "  y " + f3(v.y));
     }
 
@@ -1699,10 +1823,11 @@ private:
         std::vector<V3> v;
         for (const int i : items) v.push_back(vec(nodes, i));
         for (const V3& e : v) reach_[0].seen = std::max({ reach_[0].seen, std::fabs(e.x), std::fabs(e.y) });
-        const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_));
+        const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_), backdrop());
+        for (size_t i = 1; on(Show::Line) && i < v.size(); i++) c.line(p(v[i - 1]), p(v[i]), ink.dim, THIN);
         for (size_t i = 0; i < v.size(); i++) {
-            c.arrow(p(0, 0), p(v[i].x, v[i].y), palette((long long)i), ARROW);
-            index_label(c, p(v[i].x, v[i].y), i);
+            ray(c, p(0, 0), p(v[i].x, v[i].y), tint(i));
+            label(c, p(v[i].x, v[i].y), i);
         }
         foot(c, c.all(), format_number((double)v.size()) + " vectors");
     }
@@ -1715,14 +1840,15 @@ private:
         const Placed2D at = placed_2d(nodes, framed ? kid(nodes, found_, "pose") : found_);
         /* the margin keeps the heading inside */
         const double r = reach_[0].grow({ at.at.x, at.at.y }, dt_, 1.3);
-        const Plane p = plane(c, c.all(), r);
-        if (history_) {
+        const Plane p = plane(c, c.all(), r, backdrop());
+        if (on(Show::History)) {
             const std::string base = child_path(framed ? child_path(path_, "pose") : path_, "position");
             Dots dots(c, ink.trail, 2);
             for (const V3& t : trail(base + ".x", base + ".y")) dots.add(p(t.x, t.y));
         }
-        c.line(p(0, 0), p(at.at), ink.faint, THIN);
-        heading(c, p, at, 0.2 * r, ink.accent);
+        if (on(Show::Line)) c.line(p(0, 0), p(at.at), ink.faint, THIN);
+        if (on(Show::Orientation)) heading(c, p, at, 0.2 * r, ink.accent);
+        else                       c.dot(p(at.at), ink.accent, 4);
         const int parent = framed ? kid(nodes, found_, "parent") : -2;
         foot(c, c.all(), { { "x " + f3(at.at.x) + "  y " + f3(at.at.y), ink.dim }, { "angle " + degrees(at.angle), ink.dim } },
              parent >= 0 && !nodes[parent].text.empty() ? "in " + nodes[parent].text : std::string());
@@ -1738,11 +1864,12 @@ private:
             reach_[0].seen = std::max({ reach_[0].seen, std::fabs(list.back().at.x), std::fabs(list.back().at.y) });
         }
         const double r = reach_[0].grow({}, dt_, 1.2);
-        const Plane p = plane(c, c.all(), r);
-        for (size_t i = 1; i < list.size(); i++) c.line(p(list[i - 1].at), p(list[i].at), ink.dim, THIN);
+        const Plane p = plane(c, c.all(), r, backdrop());
+        for (size_t i = 1; on(Show::Line) && i < list.size(); i++) c.line(p(list[i - 1].at), p(list[i].at), ink.dim, THIN);
         for (size_t i = 0; i < list.size(); i++) {
-            heading(c, p, list[i], 0.15 * r, palette((long long)i));
-            index_label(c, p(list[i].at), i);
+            if (on(Show::Orientation)) heading(c, p, list[i], 0.15 * r, tint(i));
+            else                       c.dot(p(list[i].at), tint(i), 4);
+            label(c, p(list[i].at), i);
         }
         foot(c, c.all(), counted(list.size(), node.elem_std));
     }
@@ -1752,7 +1879,7 @@ private:
     {
         const Figure one = figure(nodes, found_, node.std_name);
         hold(reach_[0], one);
-        const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_));
+        const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_), backdrop());
         draw_figure(c, p, one, ink.accent);
         const auto text = describe(one);
         foot(c, c.all(), { { text.first, ink.dim }, { one.kind == "OrientedBox2D" ? "angle " + degrees(one.angle) : "", ink.dim } },
@@ -1767,10 +1894,10 @@ private:
             list.push_back(figure(nodes, i, node.elem_std));
             hold(reach_[0], list.back());
         }
-        const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_));
+        const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_), backdrop());
         for (size_t i = 0; i < list.size(); i++) {
-            draw_figure(c, p, list[i], palette((long long)i));
-            index_label(c, p(list[i].centre), i);
+            draw_figure(c, p, list[i], tint(i));
+            label(c, p(list[i].centre), i);
         }
         foot(c, c.all(), counted(list.size(), node.elem_std));
     }
@@ -1782,17 +1909,17 @@ private:
     {
         const V3 v = vec(nodes, found_);
         const double r = reach_[0].grow({ length(v) }, dt_);
-        const Scene s = scene(c, c.all(), r, camera());
-        const std::vector<V3> t = history_ ? trail(child_path(path_, "x"), child_path(path_, "y"), child_path(path_, "z"))
-                                           : std::vector<V3>();
-        layered(c, s, v, &t, [&] { c.arrow(s(0, 0, 0), s(v), ink.accent, ARROW); });
+        const Scene s = scene(c, c.all(), r, camera(), backdrop());
+        const std::vector<V3> t = on(Show::History) ? trail(child_path(path_, "x"), child_path(path_, "y"), child_path(path_, "z"))
+                                                    : std::vector<V3>();
+        layered(c, s, v, &t, [&] { ray(c, s(0, 0, 0), s(v), ink.accent); });
         foot(c, c.all(), "x " + f3(v.x) + "  y " + f3(v.y) + "  z " + f3(v.z));
     }
 
     void quaternion(Canvas& c, const Nodes& nodes)
     {
         const Quat q = quat(nodes, found_);
-        const Scene s = scene(c, c.all(), 1, camera());
+        const Scene s = scene(c, c.all(), 1, camera(), backdrop());
         axes(c, s);
         triad(c, s, V3{}, q, 0.9);
         foot(c, c.all(), euler(q));
@@ -1806,12 +1933,13 @@ private:
         const Placed p = placed(nodes, framed ? kid(nodes, found_, "pose") : found_);
         /* the margin keeps the triad inside */
         const double r = reach_[0].grow({ length(p.at) }, dt_, 1.3);
-        const Scene s = scene(c, c.all(), r, camera());
+        const Scene s = scene(c, c.all(), r, camera(), backdrop());
         const std::string base = child_path(framed ? child_path(path_, "pose") : path_, "position");
-        const std::vector<V3> t = history_ ? trail(base + ".x", base + ".y", base + ".z") : std::vector<V3>();
+        const std::vector<V3> t = on(Show::History) ? trail(base + ".x", base + ".y", base + ".z") : std::vector<V3>();
         layered(c, s, p.at, &t, [&] {
-            c.line(s(0, 0, 0), s(p.at), ink.faint, THIN);
-            triad(c, s, p.at, p.turn, 0.2 * r);
+            if (on(Show::Line)) c.line(s(0, 0, 0), s(p.at), ink.faint, THIN);
+            if (on(Show::Orientation)) triad(c, s, p.at, p.turn, 0.2 * r);
+            else                       c.dot(s(p.at), ink.accent, 4);
         });
         const int parent = framed ? kid(nodes, found_, "parent") : -2;
         foot(c, c.all(), { { "x " + f3(p.at.x) + "  y " + f3(p.at.y) + "  z " + f3(p.at.z), ink.dim }, { euler(p.turn), ink.dim } },
@@ -1845,9 +1973,9 @@ private:
         for (const V3& p : path) hold(p);
         if (turning && length(centre) <= 2 * extent) hold(centre);
         const double r = reach_[0].grow({ length(v) }, dt_);
-        const Scene s = scene(c, c.all(), r, camera());
+        const Scene s = scene(c, c.all(), r, camera(), backdrop());
 
-        if (turning) {
+        if (turning && on(Show::Turn)) {
             const V3 axis = w * (1 / spin);
             /* a turn centre this far out is a straight run, and its line would leave the view */
             if (length(centre) < 20 * r) {
@@ -1856,13 +1984,15 @@ private:
             }
         }
         /* its own colour, since a forward run lies along the x axis */
-        std::vector<Rml::Vector2f> drawn;
-        for (const V3& p : path) drawn.push_back(s(p));
-        c.polyline(drawn, ink.purple, STROKE);
-        c.dot(drawn.back(), ink.purple, 4);
+        if (on(Show::Path)) {
+            std::vector<Rml::Vector2f> drawn;
+            for (const V3& p : path) drawn.push_back(s(p));
+            c.polyline(drawn, ink.purple, STROKE);
+            c.dot(drawn.back(), ink.purple, 4);
+        }
         /* the curl sweeps most of a turn at the fastest turn seen */
         const double fastest = reach_[1].grow({ spin }, dt_, 1.0);
-        if (turning) curl(c, s, w * (1 / spin), 0.15 * r, 5 * spin / fastest, ink.amber);
+        if (turning && on(Show::Turn)) curl(c, s, w * (1 / spin), 0.15 * r, 5 * spin / fastest, ink.amber);
         layered(c, s, v, nullptr, [&] { c.arrow(s(0, 0, 0), s(v), ink.accent, ARROW); });
         foot(c, c.all(), "speed " + f3(length(v)) + " m/s  turn " + f3(spin) + " rad/s", "next " + print("%.1f", ahead) + " s");
     }
@@ -1894,18 +2024,20 @@ private:
         }
         if (turning && length(centre) <= 2 * extent) hold(centre);
         const double r = reach_[0].grow({ v.x, v.y }, dt_);
-        const Plane p = plane(c, c.all(), r);
+        const Plane p = plane(c, c.all(), r, backdrop());
 
-        if (turning && length(centre) < 20 * r) {
+        if (turning && on(Show::Turn) && length(centre) < 20 * r) {
             c.dashed(p(0, 0), p(centre), ink.dim, THIN);
             c.dot(p(centre), ink.dim, 4);
         }
-        std::vector<Rml::Vector2f> drawn;
-        for (const V3& e : path) drawn.push_back(p(e));
-        c.polyline(drawn, ink.purple, STROKE);
-        c.dot(drawn.back(), ink.purple, 4);
+        if (on(Show::Path)) {
+            std::vector<Rml::Vector2f> drawn;
+            for (const V3& e : path) drawn.push_back(p(e));
+            c.polyline(drawn, ink.purple, STROKE);
+            c.dot(drawn.back(), ink.purple, 4);
+        }
         const double fastest = reach_[1].grow({ spin }, dt_, 1.0);
-        if (turning) curl_2d(c, p, V3{}, 0.15 * r, 5 * w / fastest, ink.amber);
+        if (turning && on(Show::Turn)) curl_2d(c, p, V3{}, 0.15 * r, 5 * w / fastest, ink.amber);
         c.arrow(p(0, 0), p(v), ink.accent, ARROW);
         foot(c, c.all(), "speed " + f3(length(v)) + " m/s  turn " + f3(w) + " rad/s", "next " + print("%.1f", ahead) + " s");
     }
@@ -1918,10 +2050,10 @@ private:
         const V3 f = fi >= 0 ? vec(nodes, fi) : V3{};
         const double torque = number(nodes, found_, "torque");
         const double r = reach_[0].grow({ f.x, f.y }, dt_);
-        const Plane p = plane(c, c.all(), r);
+        const Plane p = plane(c, c.all(), r, backdrop());
         const double strongest = reach_[1].grow({ torque }, dt_, 1.0);
-        if (std::fabs(torque) > 1e-9) curl_2d(c, p, V3{}, 0.2 * r, 5 * torque / strongest, ink.amber);
-        if (history_) {
+        if (std::fabs(torque) > 1e-9 && on(Show::Torque)) curl_2d(c, p, V3{}, 0.2 * r, 5 * torque / strongest, ink.amber);
+        if (on(Show::History)) {
             const std::string base = child_path(path_, "force");
             Dots dots(c, ink.trail, 2);
             for (const V3& t : trail(base + ".x", base + ".y")) dots.add(p(t.x, t.y));
@@ -1935,10 +2067,11 @@ private:
         std::vector<V3> v;
         for (const int i : children_of(nodes, found_)) v.push_back(vec(nodes, i));
         for (const V3& e : v) reach_[0].seen = std::max(reach_[0].seen, length(e));
-        const Scene s = scene(c, c.all(), reach_[0].grow({}, dt_), camera());
+        const Scene s = scene(c, c.all(), reach_[0].grow({}, dt_), camera(), backdrop());
         back_to_front(c, s, v, [&](size_t i) {
-            c.arrow(s(0, 0, 0), s(v[i]), palette((long long)i), ARROW);
-            index_label(c, s(v[i]), i);
+            if (i && on(Show::Line)) c.line(s(v[i - 1]), s(v[i]), ink.dim, THIN);
+            ray(c, s(0, 0, 0), s(v[i]), tint(i));
+            label(c, s(v[i]), i);
         });
         foot(c, c.all(), format_number((double)v.size()) + " vectors");
     }
@@ -1955,11 +2088,12 @@ private:
         }
         for (const V3& e : at) reach_[0].seen = std::max(reach_[0].seen, length(e));
         const double r = reach_[0].grow({}, dt_, 1.2);
-        const Scene s = scene(c, c.all(), r, camera());
+        const Scene s = scene(c, c.all(), r, camera(), backdrop());
         back_to_front(c, s, at, [&](size_t i) {
-            if (i) c.line(s(at[i - 1]), s(at[i]), ink.dim, THIN);
-            triad(c, s, at[i], p[i].turn, 0.15 * r);
-            index_label(c, s(at[i]), i, ink.dim);
+            if (i && on(Show::Line)) c.line(s(at[i - 1]), s(at[i]), ink.dim, THIN);
+            if (on(Show::Orientation)) triad(c, s, at[i], p[i].turn, 0.15 * r);
+            else                       c.dot(s(at[i]), ink.accent, 4);
+            label(c, s(at[i]), i);
         });
         foot(c, c.all(), format_number((double)p.size()) + (framed ? " transforms" : " poses"));
     }
@@ -1971,15 +2105,15 @@ private:
         const int fi = kid(nodes, found_, "force"), ti = kid(nodes, found_, "torque");
         const V3 f = fi >= 0 ? vec(nodes, fi) : V3{}, t = ti >= 0 ? vec(nodes, ti) : V3{};
         const double r = reach_[0].grow({ length(f) }, dt_);
-        const Scene s = scene(c, c.all(), r, camera());
+        const Scene s = scene(c, c.all(), r, camera(), backdrop());
         const double torque = length(t), strongest = reach_[1].grow({ torque }, dt_, 1.0);
-        if (torque > 1e-9) {
+        if (torque > 1e-9 && on(Show::Torque)) {
             const V3 axis = t * (1 / torque);
             c.dashed(s(axis * -r), s(axis * r), faded(ink.amber, 0.6f), THIN);
             curl(c, s, axis, 0.2 * r, 5 * torque / strongest, ink.amber);
         }
         const std::string base = child_path(path_, "force");
-        const std::vector<V3> tail = history_ ? trail(base + ".x", base + ".y", base + ".z") : std::vector<V3>();
+        const std::vector<V3> tail = on(Show::History) ? trail(base + ".x", base + ".y", base + ".z") : std::vector<V3>();
         layered(c, s, f, &tail, [&] { c.arrow(s(0, 0, 0), s(f), ink.accent, ARROW); });
         foot(c, c.all(), "force " + f3(length(f)) + " N  torque " + f3(torque) + " N m");
     }
@@ -1989,7 +2123,7 @@ private:
     {
         const Solid one = solid(nodes, found_, node.std_name);
         hold(reach_[0], one);
-        const Scene s = scene(c, c.all(), reach_[0].grow({}, dt_), camera());
+        const Scene s = scene(c, c.all(), reach_[0].grow({}, dt_), camera(), backdrop());
         layered(c, s, middle(one), nullptr, [&] { draw_solid(c, s, one, ink.accent); });
         const auto text = describe(one);
         foot(c, c.all(), { { text.first, ink.dim }, { one.kind == "OrientedBox" ? euler(one.turn) : "", ink.dim } }, text.second);
@@ -2005,10 +2139,10 @@ private:
             at.push_back(middle(list.back()));
             hold(reach_[0], list.back());
         }
-        const Scene s = scene(c, c.all(), reach_[0].grow({}, dt_), camera());
+        const Scene s = scene(c, c.all(), reach_[0].grow({}, dt_), camera(), backdrop());
         back_to_front(c, s, at, [&](size_t i) {
-            draw_solid(c, s, list[i], palette((long long)i));
-            index_label(c, s(at[i]), i);
+            draw_solid(c, s, list[i], tint(i));
+            label(c, s(at[i]), i);
         });
         foot(c, c.all(), counted(list.size(), node.elem_std));
     }
@@ -2045,11 +2179,11 @@ private:
         const double step = nice(frame_.span / 4);
         for (double m = -std::ceil(c.w() / k / step) * step; m <= c.w() / k; m += step) {
             const float x = (float)(cx + m * k);
-            if (x >= left && x <= right) c.line(x, top, x, bottom, ink.grid);
+            if (x >= left && x <= right && on(Show::Grid)) c.line(x, top, x, bottom, ink.grid);
         }
         for (double m = -std::ceil(c.h() / k / step) * step; m <= c.h() / k; m += step) {
             const float y = (float)(cy + m * k);
-            if (y >= top && y <= bottom) c.line(left, y, right, y, ink.grid);
+            if (y >= top && y <= bottom && on(Show::Grid)) c.line(left, y, right, y, ink.grid);
         }
         draw(P, left, top, right, bottom);
         c.text("N", c.w() - c.dp(16), top + c.dp(12), Canvas::Center, ink.dim, LABEL);
@@ -2059,7 +2193,7 @@ private:
     void geo(Canvas& c, const Nodes& nodes)
     {
         const V3 now{ number(nodes, found_, "lat"), number(nodes, found_, "lon"), number(nodes, found_, "alt") };
-        std::vector<V3> points = history_ ? trail(child_path(path_, "lat"), child_path(path_, "lon")) : std::vector<V3>();
+        std::vector<V3> points = on(Show::History) ? trail(child_path(path_, "lat"), child_path(path_, "lon")) : std::vector<V3>();
         if (points.empty()) points.push_back(now);
         map(c, points, [&](auto P, float left, float top, float right, float bottom) {
             /* a point within half a pixel of the last one drawn adds nothing to the path */
@@ -2088,11 +2222,15 @@ private:
         std::vector<V3> points;
         for (const int i : children_of(nodes, found_)) points.push_back(V3{ number(nodes, i, "lat"), number(nodes, i, "lon"), 0 });
         map(c, points, [&](auto P, float left, float top, float right, float bottom) {
+            for (size_t i = 1; on(Show::Line) && i < points.size(); i++) {
+                Rml::Vector2f a = P(points[i - 1].x, points[i - 1].y), b = P(points[i].x, points[i].y);
+                if (clip(a.x, a.y, b.x, b.y, left, top, right, bottom)) c.line(a, b, ink.dim, THIN);
+            }
             for (size_t i = 0; i < points.size(); i++) {
                 const Rml::Vector2f at = P(points[i].x, points[i].y);
                 if (!inside(at, left, top, right, bottom)) continue;
-                c.dot(at, palette((long long)i), 5);
-                index_label(c, at, i);
+                c.dot(at, tint(i), 5);
+                label(c, at, i);
             }
         });
         foot(c, c.all(), format_number((double)points.size()) + " points");
@@ -2122,7 +2260,7 @@ private:
         const float width = items.empty() ? 0 : (c.w() - c.dp(20)) / items.size();
         for (size_t i = 0; i < items.size(); i++) {
             c.rect(c.dp(10) + i * width + 1, c.dp(TOP), width - 2, c.h() - c.dp(TOP + BOT + 18), rgba(nodes, items[i]));
-            if (items.size() <= LABELLED)
+            if (items.size() <= LABELLED && on(Show::Labels))
                 c.text(std::to_string(i), c.dp(10) + i * width + width / 2, c.h() - c.dp(BOT + 4), Canvas::Center, ink.faint, LABEL);
         }
         foot(c, c.all(), "", format_number((double)items.size()) + " colors");
@@ -2154,14 +2292,14 @@ private:
                 const float y = top + r * row_h;
                 const double v = nodes[columns[f][r]].number;
                 c.rect(x, y, col_w, bar_h, ink.panel);
-                for (int q = 1; q < 4; q++) c.line(x + col_w * q / 4, y, x + col_w * q / 4, y + bar_h, ink.grid);
+                for (int q = 1; q < 4 && on(Show::Grid); q++) c.line(x + col_w * q / 4, y, x + col_w * q / 4, y + bar_h, ink.grid);
                 const float mid = x + col_w / 2, len = (float)(std::max(-1.0, std::min(1.0, v / m)) * col_w / 2);
                 c.rect(std::min(mid, mid + len), y, std::fabs(len), bar_h, ink.accent);
                 c.line(mid, y, mid, y + bar_h, ink.border);
-                c.text(f3(v), x + col_w - c.dp(5), y + bar_h / 2 + c.dp(4), Canvas::Right, ink.text, LABEL);
+                if (on(Show::Readings)) c.text(f3(v), x + col_w - c.dp(5), y + bar_h / 2 + c.dp(4), Canvas::Right, ink.text, LABEL);
             }
         }
-        for (size_t r = 0; r < rows; r++)
+        for (size_t r = 0; on(Show::Labels) && r < rows; r++)
             c.text(std::to_string(r), gutter - c.dp(6), top + r * row_h + bar_h / 2 + c.dp(4), Canvas::Right, ink.faint, LABEL);
     }
 
@@ -2305,6 +2443,16 @@ public:
         }
     }
 
+    std::vector<VizShow> shows() const
+    {
+        std::vector<VizShow> out;
+        for (const Show part : offered(visual_)) {
+            out.push_back(SHOW_NAMES[(int)part]);
+            out.back().on = on(part);
+        }
+        return out;
+    }
+
     /* What a video card shows now, for Copy image. Premultiplied, which an opaque video
        picture does not change. */
     Image shown_picture() const
@@ -2329,7 +2477,8 @@ private:
     bool                       gathers_ = false; /* the path has [*], so it reads gathered_ */
     Nodes                      gathered_;
     std::string                gathered_key_;    /* the message and path gathered_ was made for */
-    bool                       history_ = true;  /* draw what came before, else only the newest */
+    std::string                shows_text_;      /* the shows attribute shown_ was read from */
+    unsigned                   shown_ = 0;       /* a bit per Show the card draws */
     ValueNode                  root_;
 
     std::string                html_key_;        /* what the children were built for */
@@ -2388,20 +2537,10 @@ void viz_init(Capture& capture)
     Rml::Factory::RegisterElementInstancer("viz", &instancer);
 }
 
-bool viz_history(Visual visual)
-{
-    switch (visual) {
-    case Visual::Plot: case Visual::Vec4: case Visual::State: case Visual::Vec2: case Visual::Vec3: case Visual::Pose:
-    case Visual::Pose2D: case Visual::Wrench: case Visual::Wrench2D: case Visual::Geo:
-        return true;
-    default:
-        return false;
-    }
-}
-
 VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>& shown,
-                   const std::set<std::string>& still)
+                   const std::map<std::string, ShowChoices>& shows)
 {
+    static const ShowChoices none;
     VizFeeds out;
     auto add = [&out](const std::string& path, std::initializer_list<const char*> names) {
         for (const char* name : names) out.traces.push_back(Capture::TraceSpec{ child_path(path, name), TRAIL_SECONDS });
@@ -2410,7 +2549,8 @@ VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>&
         const int index = find_node(watch.nodes, watch, path);
         const Visual visual = visual_at(watch, watch.nodes, index);
         if (visual == Visual::Video) out.streams.push_back(path);
-        if (still.count(path) || !viz_history(visual)) continue;
+        const auto chosen = shows.find(path);
+        if (!(shown_parts(visual, chosen != shows.end() ? chosen->second : none) >> (int)Show::History & 1)) continue;
         const std::string std_name = index == -1 ? watch.root_std : index >= 0 ? watch.nodes[index].std_name : "";
         switch (visual) {
         case Visual::Plot:
@@ -2446,4 +2586,17 @@ Image viz_picture(Rml::Element* element)
 {
     const auto* viz = dynamic_cast<const VizElement*>(element);
     return viz ? viz->shown_picture() : Image();
+}
+
+std::vector<VizShow> viz_shows(Rml::Element* element)
+{
+    const auto* viz = dynamic_cast<const VizElement*>(element);
+    return viz ? viz->shows() : std::vector<VizShow>();
+}
+
+std::string viz_shows_text(const ShowChoices& choices)
+{
+    std::string out;
+    for (const auto& choice : choices) out += (out.empty() ? "" : " ") + choice.first + (choice.second ? ":1" : ":0");
+    return out;
 }

@@ -49,12 +49,15 @@ struct FieldEdit {
     bool                mine = true;
 };
 
+/* The parts of one card's visual the user showed or hid, by key, true for shown. */
+using ShowChoices = std::map<std::string, bool>;
+
 /* What the user did to one topic's tree, kept per topic while the explorer runs. */
 struct ValueView {
     bool                        seeded = false;   /* the shown set has had its default */
     std::set<std::string>       shown;            /* the paths whose visual is in the detail */
     std::set<std::string>       pinned;           /* of those, the ones kept while another topic shows */
-    std::set<std::string>       still;            /* of those, the ones drawn without history */
+    std::map<std::string, ShowChoices> shows;     /* of those, the choices of each card that has any */
     std::map<std::string, bool> open;             /* the branches the user opened or closed */
     std::map<std::string, FieldEdit>   edits;     /* by path, until they are written or reset */
     std::map<std::string, std::string> writing;   /* by path, the text written until the echo */

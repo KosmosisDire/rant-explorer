@@ -2250,7 +2250,7 @@ void Capture::poll()
         meta_.uptime_s       = snap.node.uptime_us / 1e6;
         meta_.age_s          = (snap.node.wall_us && now_wall > snap.node.wall_us)
                              ? (double)(now_wall - snap.node.wall_us) / 1e6 : 0.0;
-        meta_.peers          = (double)snap.node.peers;
+        meta_.matched_peers  = (double)snap.node.matched_peers;
         meta_.max_peers      = (double)snap.node.max_peers;
         meta_.topics         = (double)snap.node.topics;
         meta_.max_topics     = (double)snap.node.max_topics;

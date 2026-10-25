@@ -1264,7 +1264,7 @@ int main(int argc, char** argv)
             meta.RegisterMember("status",         &Capture::MetaView::status);
             meta.RegisterMember("uptime_s",       &Capture::MetaView::uptime_s);
             meta.RegisterMember("age_s",          &Capture::MetaView::age_s);
-            meta.RegisterMember("peers",          &Capture::MetaView::peers);
+            meta.RegisterMember("matched_peers",  &Capture::MetaView::matched_peers);
             meta.RegisterMember("max_peers",      &Capture::MetaView::max_peers);
             meta.RegisterMember("topics",         &Capture::MetaView::topics);
             meta.RegisterMember("max_topics",     &Capture::MetaView::max_topics);

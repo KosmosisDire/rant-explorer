@@ -421,7 +421,7 @@
 											| age}}</span></div>
 								</div>
 								<div class="kv-row">
-									<div class="kv"><span class="k">Peers</span><span class="v mono">{{meta.peers}} /
+									<div class="kv"><span class="k">Matched peers</span><span class="v mono">{{meta.matched_peers}} /
 											{{meta.max_peers}}</span></div>
 									<div class="kv"><span class="k">Topics</span><span class="v mono">{{meta.topics}} /
 											{{meta.max_topics}}</span></div>

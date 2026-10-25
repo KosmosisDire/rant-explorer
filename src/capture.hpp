@@ -88,7 +88,7 @@ public:
 
         /* Counts are doubles so every member binds as one scalar type to the data model. */
         double   uptime_s = -1, age_s = -1;
-        double   peers = 0, max_peers = 0, topics = 0, max_topics = 0;
+        double   matched_peers = 0, max_peers = 0, topics = 0, max_topics = 0;
         double   mem_in_use = -1, mem_peak = -1;
         double   alloc_calls = -1, evicted_unsent = -1;
         double   bp_waits = -1, bp_waited_s = -1;

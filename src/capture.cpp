@@ -213,23 +213,31 @@ const char* scalar_word(FieldType kind)
     }
 }
 
-/* A field's type the way the core spells it in a mismatch reason. */
-std::string field_type(const Field& f)
+/* Row i's type the way the core spells it in a mismatch reason. An array's element is its
+   next row, so a list of lists reads f32[3][]. */
+std::string field_type(const std::vector<Field>& fields, size_t i)
 {
+    const Field& f = fields[i];
     if (!f.type_name.empty()) return std::string(f.type_name);
-    if (f.kind == FieldType::Map)     return "map";
-    if (f.kind == FieldType::VString) return "string";
-    if (f.kind == FieldType::Enum)    return std::string("enum<") + scalar_word(f.elem) + ">";
-    const bool array = f.kind == FieldType::Array || f.kind == FieldType::VArray;
-    std::string out;
-    if (array && !f.elem_name.empty()) out = std::string(f.elem_name);
-    else {
-        const FieldType elem = array ? f.elem : f.kind;
-        out = elem == FieldType::String ? "string<" + std::to_string(f.str_cap) + ">" : scalar_word(elem);
+    switch (f.kind) {
+    case FieldType::Map:     return "map";
+    case FieldType::VString: return "string";
+    case FieldType::String:  return "string<" + std::to_string(f.str_cap) + ">";
+    case FieldType::Enum:    return std::string("enum<") + scalar_word(f.backing) + ">";
+    case FieldType::Array:   return field_type(fields, i + 1) + "[" + std::to_string(f.count) + "]";
+    case FieldType::VArray:  return field_type(fields, i + 1) + "[]";
+    default:                 return scalar_word(f.kind);
     }
-    if (f.kind == FieldType::Array)  out += "[" + std::to_string(f.count) + "]";
-    if (f.kind == FieldType::VArray) out += "[]";
-    return out;
+}
+
+/* An array element read straight from the array's packed bytes: a number or a capped string. */
+static bool packed(const Field& e)
+{
+    switch (e.kind) {
+    case FieldType::Struct: case FieldType::Array: case FieldType::VArray: case FieldType::VString:
+    case FieldType::Map: case FieldType::Enum: return false;
+    default: return e.size != 0;
+    }
 }
 
 /* A schema's root type: its name, a bare root's own type, or "struct". */
@@ -240,7 +248,7 @@ std::string root_type(const rant::Schema& schema)
     /* A root that is not a struct is its one unnamed field, and an array of structs lists
        its element's members after it. */
     Field root;
-    if (schema.field_at(0, root) && root.name.empty()) return field_type(root);
+    if (schema.field_at(0, root) && root.name.empty()) return field_type(schema.fields(), 0);
     return "struct";
 }
 
@@ -310,7 +318,7 @@ void write_scalar(FieldType kind, uint8_t* p, const ValueNode& n)
 bool write_edit(const rant::Schema& schema, std::vector<uint8_t>& buf, const ValueNode& e)
 {
     const rant::detail::RantSchema* raw = schema.raw();
-    Field f;
+    Field f, el;
     if (e.field == 0xFFFF || !schema.field_at(e.field, f)) return false;
     rant::detail::RantValue v{};
     std::vector<uint8_t> elements;
@@ -321,17 +329,19 @@ bool write_edit(const rant::Schema& schema, std::vector<uint8_t>& buf, const Val
                                              e.elems.data(), (uint16_t)e.elems.size(), &now) || !now.bytes.data)
             return false;
         elements.assign(now.bytes.data, now.bytes.data + now.bytes.len);
-        const size_t at = (size_t)e.element * f.elem_size;
-        if (!f.elem_size || at + f.elem_size > elements.size()) return false;
+        /* the element is the array's next row */
+        if (!schema.field_at((uint16_t)(e.field + 1), el) || !packed(el)) return false;
+        const size_t at = (size_t)e.element * el.size;
+        if (at + el.size > elements.size()) return false;
         uint8_t* p = elements.data() + at;
-        if (f.elem == FieldType::String) {
-            if (e.text.size() > f.str_cap) return false;
+        if (el.kind == FieldType::String) {
+            if (e.text.size() > el.str_cap) return false;
             p[0] = (uint8_t)(e.text.size() & 0xFF);
             p[1] = (uint8_t)(e.text.size() >> 8);
-            std::memset(p + 2, 0, f.str_cap);
+            std::memset(p + 2, 0, el.str_cap);
             std::memcpy(p + 2, e.text.data(), e.text.size());
         } else {
-            write_scalar(f.elem, p, e);
+            write_scalar(el.kind, p, e);
         }
         v.bytes = rant::detail::rant_bytes(elements.data(), elements.size());
     } else {
@@ -402,14 +412,16 @@ struct Decoder {
         return out;
     }
 
-    /* elems holds the element index in each enclosing struct array, outermost first */
-    void field(size_t i, const std::vector<uint32_t>& elems, const std::string& parent, int depth)
+    /* elems holds the element index in each enclosing array, outermost first. An array's
+       element comes as `label`, its "[k]" under the array's path. */
+    void field(size_t i, const std::vector<uint32_t>& elems, const std::string& parent, int depth,
+               const std::string* label = nullptr)
     {
         const Field& f = fields[i];
         ValueNode n;
-        n.name     = f.name.empty() ? "value" : std::string(f.name);
-        n.path     = join(parent, f.name);
-        n.type     = field_type(f);
+        n.name     = label ? *label : f.name.empty() ? "value" : std::string(f.name);
+        n.path     = label ? parent + *label : join(parent, f.name);
+        n.type     = field_type(fields, i);
         n.std_name = std_name(f.type_name);
         n.depth    = depth;
         n.field    = (uint16_t)i;
@@ -480,13 +492,14 @@ struct Decoder {
     void array(size_t i, const Field& f, const rant::detail::RantValue& v, ValueNode& n,
                const std::vector<uint32_t>& elems)
     {
-        const uint32_t elem_size = f.elem_size;
-        uint32_t count = 0;
-        if (f.kind == FieldType::Array) count = f.count;
-        else if (elem_size) count = (uint32_t)(v.bytes.len / elem_size);
+        /* the element is the next row: numbers and capped strings come packed, the rest each
+           through its own row */
+        const Field& el = fields[i + 1];
+        const uint32_t elem_size = packed(el) ? el.size : 0;
+        const uint32_t count = v.count;
 
         /* A variable byte array is one blob: an image, a file, a payload. */
-        if (f.kind == FieldType::VArray && f.elem == FieldType::U8) {
+        if (f.kind == FieldType::VArray && el.kind == FieldType::U8) {
             n.kind  = ValueNode::Blob;
             n.count = (uint32_t)v.bytes.len;
             n.offset = v.bytes.data ? (uint32_t)(v.bytes.data - msg.data) : 0;
@@ -497,16 +510,17 @@ struct Decoder {
 
         n.kind     = ValueNode::Array;
         n.count    = count;
-        n.elem     = f.elem == FieldType::Struct ? ValueNode::Struct
-                   : f.elem == FieldType::String ? ValueNode::Text
-                   : f.elem == FieldType::Bool   ? ValueNode::Bool : ValueNode::Number;
-        n.elem_std = std_name(f.elem_name);
+        n.elem     = el.kind == FieldType::Struct ? ValueNode::Struct
+                   : el.kind == FieldType::String || el.kind == FieldType::VString ? ValueNode::Text
+                   : el.kind == FieldType::Array || el.kind == FieldType::VArray ? ValueNode::Array
+                   : el.kind == FieldType::Enum ? ValueNode::Enum
+                   : el.kind == FieldType::Map ? ValueNode::Map
+                   : el.kind == FieldType::Bool ? ValueNode::Bool : ValueNode::Number;
+        n.elem_std = std_name(el.type_name);
         const uint32_t head = head_of(n.path);
         shape  += std::to_string(count) + "+" + std::to_string(head) + ",";
-        const std::string elem_type = !f.elem_name.empty() ? std::string(f.elem_name)
-                                    : f.elem == FieldType::String ? "string<" + std::to_string(f.str_cap) + ">"
-                                    : scalar_word(f.elem);
-        const std::string elem_std = std_name(f.elem_name);
+        const std::string elem_type = field_type(fields, i + 1);
+        const std::string elem_std = std_name(el.type_name);
         const std::string path = n.path;
         const int depth = n.depth;
         out.push_back(n);
@@ -528,27 +542,27 @@ struct Decoder {
             e.std_name = elem_std;
             e.field    = (uint16_t)i;
             e.elems    = elems;
-            if (f.elem == FieldType::Struct) {
-                e.kind = ValueNode::Struct;
-                out.push_back(e);
+            if (!elem_size) {
                 std::vector<uint32_t> inner = elems;
                 inner.push_back((uint32_t)k);
-                for (size_t j = i + 1, end = end_of(i); j < end; j = end_of(j)) field(j, inner, e.path, depth + 2);
+                const size_t at = out.size();
+                field(i + 1, inner, path, depth + 1, &e.name);
+                out[at].folded = count > 1;
                 continue;
             }
             e.element = (int32_t)k;
             const uint8_t* p = v.bytes.data ? v.bytes.data + (size_t)k * elem_size : nullptr;
             if (!p || (size_t)(k + 1) * elem_size > v.bytes.len) {
                 e.kind = ValueNode::Number;
-            } else if (f.elem == FieldType::String) {
+            } else if (el.kind == FieldType::String) {
                 /* a string slot is [u16 length][capacity bytes] */
                 e.kind = ValueNode::Text;
-                e.cap  = f.str_cap;
+                e.cap  = el.str_cap;
                 uint16_t len = (uint16_t)(p[0] | (p[1] << 8));
-                if (len > f.str_cap) len = f.str_cap;
+                if (len > el.str_cap) len = el.str_cap;
                 e.text.assign((const char*)p + 2, len);
             } else {
-                read_scalar(f.elem, p, e);
+                read_scalar(el.kind, p, e);
             }
             out.push_back(e);
         }
@@ -1818,10 +1832,10 @@ bool Capture::rewrite(Draft& draft, uint16_t field, const std::function<void(std
         return false;
     }
     const auto found = impl_->schemas.find(draft.schema);
-    Field f;
+    Field f, el;
     if (found == impl_->schemas.end() || !found->second.field_at(field, f) ||
-        f.kind != FieldType::VArray || !f.elem_size) {
-        error = "only a variable array can change its length";
+        f.kind != FieldType::VArray || !found->second.field_at((uint16_t)(field + 1), el) || !packed(el)) {
+        error = "only a variable array of numbers or capped strings can change its length here";
         return false;
     }
     const rant::detail::RantSchema* raw = found->second.raw();
@@ -1833,7 +1847,7 @@ bool Capture::rewrite(Draft& draft, uint16_t field, const std::function<void(std
     }
     std::vector<uint8_t> elements;
     if (now.bytes.data) elements.assign(now.bytes.data, now.bytes.data + now.bytes.len);
-    change(elements, f.elem_size);
+    change(elements, el.size);
     std::vector<uint8_t> buf(draft.message);
     buf.resize(buf.size() + elements.size() + 16);
     rant::detail::RantValue v{};

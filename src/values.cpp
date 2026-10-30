@@ -67,6 +67,12 @@ bool is_branch(const ValueNode& node)
     return node.kind == ValueNode::Struct || node.kind == ValueNode::Array;
 }
 
+/* A square matrix such as Matrix3x3 or Covariance6: an array of rows, each an array of numbers. */
+bool is_square(const ValueNode& node)
+{
+    return node.std_name.compare(0, 6, "Matrix") == 0 || node.std_name.compare(0, 10, "Covariance") == 0;
+}
+
 bool is_variable_array(const ValueNode& node)
 {
     return node.kind == ValueNode::Array && node.type.size() > 2 &&
@@ -88,7 +94,7 @@ Visual visual_for(const ValueNode& node)
     case ValueNode::Blob:   return Visual::Hex;
     case ValueNode::Struct: return struct_visual(node.std_name);
     case ValueNode::Array:
-        if (node.std_name.compare(0, 6, "Matrix") == 0) return Visual::Matrix;
+        if (is_square(node)) return Visual::Matrix;
         if (node.std_name == "Uuid") return Visual::Uuid;
         switch (node.elem) {
         case ValueNode::Number: return node.elem_std.empty() ? Visual::Bars : Visual::Chips;
@@ -271,8 +277,9 @@ std::string preview_text(const Capture::WatchView& view)
     if (!view.root_struct && root.std_name == "Uuid") return uuid_text(view.nodes, 0);
     if (!view.root_struct && root.kind == ValueNode::Array) {
         if (root.elem == ValueNode::Struct) return format_number(root.count) + " x " + view.type;
+        /* the leaves at any depth, so a list of lists such as a matrix reads as its numbers */
         for (size_t i = 1; i < view.nodes.size() && out.size() < LIMIT; i++)
-            if (view.nodes[i].depth == 1 && view.nodes[i].kind != ValueNode::Gap) add(compact(view.nodes[i]));
+            if (!is_branch(view.nodes[i]) && view.nodes[i].kind != ValueNode::Gap) add(compact(view.nodes[i]));
         out = "[" + out + (root.count > 8 ? ", ...]" : "]");
     } else if (!view.root_struct) {
         out = compact(root);
@@ -752,16 +759,13 @@ Table table_of(const std::vector<ValueNode>& nodes, const Capture::WatchView& vi
         for (const int k : rows) table.rows.push_back({ nodes[k].name, cell(nodes, k, view.message) });
         return table;
     }
-    if (nodes[index].std_name.compare(0, 6, "Matrix") == 0) {
-        const size_t n = (size_t)std::lround(std::sqrt((double)rows.size()));
-        if (n * n == rows.size()) {
-            for (size_t r = 0; r < n; r++) {
-                std::vector<std::string> cells;
-                for (size_t c = 0; c < n; c++) cells.push_back(cell(nodes, rows[r * n + c], view.message));
-                table.rows.push_back(cells);
-            }
-            return table;
+    if (is_square(nodes[index])) {
+        for (const int r : rows) {
+            std::vector<std::string> cells;
+            for (const int c : children_of(nodes, r)) cells.push_back(cell(nodes, c, view.message));
+            table.rows.push_back(cells);
         }
+        return table;
     }
     /* Elements with fields take a column per field, named by the first element's. */
     const std::vector<int> header = children_of(nodes, rows[0]);

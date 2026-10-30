@@ -1536,16 +1536,17 @@ private:
             break;
         }
         case Visual::Matrix: {
-            const size_t n = (size_t)std::lround(std::sqrt((double)children.size()));
+            /* each child is a row, an array of its numbers */
             std::string rml = "<div class=\"matrix mono\">";
-            for (size_t r = 0; r < n; r++) {
+            for (const int row : children) {
                 rml += "<div class=\"matrix-row\">";
-                for (size_t col = 0; col < n; col++) rml += "<span class=\"slot\"></span>";
+                for (size_t col = 0; col < children_of(nodes, row).size(); col++) rml += "<span class=\"slot\"></span>";
                 rml += "</div>";
             }
             html("matrix:" + count, rml + "</div>");
-            for (size_t i = 0; i < children.size() && i < n * n; i++)
-                put(i, value_text(nodes[children[i]]), nodes[children[i]].path);
+            size_t slot = 0;
+            for (const int row : children)
+                for (const int cell : children_of(nodes, row)) put(slot++, value_text(nodes[cell]), nodes[cell].path);
             break;
         }
         case Visual::Table: {
@@ -2430,10 +2431,8 @@ public:
             return table_tile(2, children);
         case Visual::Joints:
             return table_tile(4, children);
-        case Visual::Matrix: {
-            const size_t n = (size_t)std::lround(std::sqrt((double)children));
-            return table_tile(n, n);
-        }
+        case Visual::Matrix:
+            return table_tile(children, children);
         case Visual::Table: {
             const std::vector<int> rows = nodes ? children_of(*nodes, found_) : std::vector<int>();
             return table_tile(rows.empty() ? 1 : children_of(*nodes, rows[0]).size(), rows.size());

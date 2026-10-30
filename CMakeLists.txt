@@ -3,7 +3,7 @@
 
 cmake_minimum_required(VERSION 3.21)
 
-# The one version. The release workflow refuses a tag that does not match it.
+# The one version. A run on main releases it once, as the tag v<VERSION>.
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" RANT_EXPLORER_VERSION LIMIT_COUNT 1)
 project(rant_explorer VERSION ${RANT_EXPLORER_VERSION} LANGUAGES C CXX)
 

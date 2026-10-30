@@ -1,6 +1,5 @@
 name        = "explorer"
 description = "A GUI tool to browse and easily visualize anything on a Rant network. Runs native or on the web through the Rant bridge."
-archive     = "rant-explorer-${version}-${platform}.tar.gz"
 
 node "explorer" {
   run = "${path.package}/bin/rant_explorer"

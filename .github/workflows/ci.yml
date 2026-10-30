@@ -118,14 +118,14 @@ jobs:
         shell: bash
         run: |
           mkdir -p out pkg/bin
-          name="rant-explorer-$(cat VERSION)-${{ matrix.name }}"
+          v="$(cat VERSION)"
           exe=rant_explorer
           if [ -f bin/rant_explorer.exe ]; then exe=rant_explorer.exe; fi
-          cp "bin/$exe" "out/$name${exe#rant_explorer}"
+          cp "bin/$exe" "out/rant-explorer-$v-${{ matrix.name }}${exe#rant_explorer}"
           cp "bin/$exe" pkg/bin/
           cp package.rant WebExplorer.run pkg/
-          tar -czf "out/$name.tar.gz" -C pkg package.rant WebExplorer.run bin
-          tar -tzvf "out/$name.tar.gz"
+          tar -czf "out/explorer-$v-${{ matrix.name }}.tar.gz" -C pkg package.rant WebExplorer.run bin
+          tar -tzvf "out/explorer-$v-${{ matrix.name }}.tar.gz"
           ls -l out
 
       - uses: actions/upload-artifact@v7
@@ -160,3 +160,4 @@ jobs:
           target_commitish: ${{ github.sha }}
           files: artifacts/rant-explorer-*/*
           generate_release_notes: true
+          prerelease: ${{ contains(needs.plan.outputs.version, '-') }}

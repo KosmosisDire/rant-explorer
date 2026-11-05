@@ -1,5 +1,7 @@
 #include "image.hpp"
 
+#include "rant_math.hpp"
+
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
 #define STBI_ONLY_JPEG
@@ -77,24 +79,12 @@ void yuv_to_rgb(const Yuv& m, int y, int u, int v, uint8_t* out)
     out[3] = 255;
 }
 
-/* BT.601 video range, what cameras send in YUV. */
-const Yuv CAMERA = yuv_matrix(601, false, 8);
-
 } /* namespace */
 
-const char* image_format_name(int format)
-{
-    switch (format) {
-    case ImageFormat::Mono8: return "Mono8";   case ImageFormat::Mono16: return "Mono16";   case ImageFormat::Rgb8: return "Rgb8";
-    case ImageFormat::Rgba8: return "Rgba8";   case ImageFormat::Bgr8: return "Bgr8";       case ImageFormat::Yuyv: return "Yuyv";
-    case ImageFormat::Nv12: return "Nv12";     case ImageFormat::Monof32: return "Monof32"; case ImageFormat::Jpeg: return "Jpeg";
-    case ImageFormat::Png: return "Png";       default: return "unknown";
-    }
-}
-
-Image image_from_frame(uint32_t width, uint32_t height, uint32_t stride, int format,
+Image image_from_frame(uint32_t width, uint32_t height, uint32_t stride, rant::types::ImageFormat format,
                        const uint8_t* data, size_t size)
 {
+    using rant::types::ImageFormat;
     Image image;
     if (!data) return image;
 
@@ -111,67 +101,40 @@ Image image_from_frame(uint32_t width, uint32_t height, uint32_t stride, int for
         return image;
     }
 
-    size_t pixel = 0;   /* bytes per pixel of the first plane */
-    switch (format) {
-    case ImageFormat::Mono8: case ImageFormat::Nv12: pixel = 1; break;
-    case ImageFormat::Mono16: case ImageFormat::Yuyv: pixel = 2; break;
-    case ImageFormat::Rgb8: case ImageFormat::Bgr8: pixel = 3; break;
-    case ImageFormat::Rgba8: case ImageFormat::Monof32: pixel = 4; break;
-    default: return image;
-    }
-    if (!width || !height || width > 16384 || height > 16384) return image;
-    const size_t row  = stride ? stride : width * pixel;
-    const size_t need = format == ImageFormat::Nv12 ? row * height + row * ((height + 1) / 2)
-                                       : row * (height - 1) + width * pixel;
-    if (row < width * pixel || size < need) return image;
-
-    image.width  = (int)width;
-    image.height = (int)height;
-    image.rgba.resize((size_t)width * height * 4);
-
-    /* ImageFormat::Monof32 has no fixed range, so it spans what this frame holds. */
-    float lo = 0, hi = 1;
-    if (format == ImageFormat::Monof32) {
-        lo = INFINITY; hi = -INFINITY;
-        for (uint32_t y = 0; y < height; y++)
-            for (uint32_t x = 0; x < width; x++) {
-                float f;
-                std::memcpy(&f, data + y * row + x * 4, 4);
-                if (std::isfinite(f)) { lo = std::min(lo, f); hi = std::max(hi, f); }
-            }
-        if (!std::isfinite(lo)) lo = 0;
-        if (!(hi > lo)) hi = lo + 1;   /* a flat frame keeps its level */
-    }
-
-    for (uint32_t y = 0; y < height; y++) {
-        const uint8_t* src = data + y * row;
-        uint8_t*       dst = image.rgba.data() + (size_t)y * width * 4;
-        for (uint32_t x = 0; x < width; x++, dst += 4) {
-            switch (format) {
-            case ImageFormat::Mono8:  dst[0] = dst[1] = dst[2] = src[x]; dst[3] = 255; break;
-            case ImageFormat::Mono16: dst[0] = dst[1] = dst[2] = src[x * 2 + 1]; dst[3] = 255; break;   /* the high byte */
-            case ImageFormat::Rgb8:   dst[0] = src[x * 3]; dst[1] = src[x * 3 + 1]; dst[2] = src[x * 3 + 2]; dst[3] = 255; break;
-            case ImageFormat::Bgr8:   dst[0] = src[x * 3 + 2]; dst[1] = src[x * 3 + 1]; dst[2] = src[x * 3]; dst[3] = 255; break;
-            case ImageFormat::Rgba8:  std::memcpy(dst, src + x * 4, 4); break;
-            case ImageFormat::Yuyv: {
-                const uint8_t* pair = src + (x & ~1u) * 2;   /* Y0 U Y1 V covers two pixels */
-                yuv_to_rgb(CAMERA, pair[(x & 1) ? 2 : 0], pair[1], pair[3], dst);
-                break;
-            }
-            case ImageFormat::Nv12: {
-                const uint8_t* uv = data + row * height + (y / 2) * row + (x & ~1u);
-                yuv_to_rgb(CAMERA, src[x], uv[0], uv[1], dst);
-                break;
-            }
-            case ImageFormat::Monof32: {
-                float f;
-                std::memcpy(&f, src + x * 4, 4);
-                dst[0] = dst[1] = dst[2] = std::isfinite(f) ? clamp8((f - lo) / (hi - lo) * 255) : 0;
-                dst[3] = 255;
-                break;
-            }
-            }
+    if (width > 16384 || height > 16384) return image;
+    rant::math::ImageView view;
+    view.width  = width;
+    view.height = height;
+    view.stride = stride;
+    view.format = format;
+    view.data   = data;
+    view.size   = size;
+    try {
+        rant::math::image_check(view);
+        rant::types::Image out;
+        if (format == ImageFormat::Mono16) {
+            out = rant::math::image_colorize(view, 0, 65535, rant::math::Colormap::Gray, ImageFormat::Rgba8);
+        } else if (format == ImageFormat::Monof32) {
+            /* no fixed range, so it spans what this frame holds */
+            const size_t row = stride ? stride : (size_t)width * 4;
+            float lo = INFINITY, hi = -INFINITY;
+            for (uint32_t y = 0; y < height; y++)
+                for (uint32_t x = 0; x < width; x++) {
+                    float f;
+                    std::memcpy(&f, data + y * row + x * 4, 4);
+                    if (std::isfinite(f)) { lo = std::min(lo, f); hi = std::max(hi, f); }
+                }
+            if (!std::isfinite(lo)) lo = 0;
+            if (!(hi > lo)) hi = lo + 1;   /* a flat frame keeps its level */
+            out = rant::math::image_colorize(view, lo, hi, rant::math::Colormap::Gray, ImageFormat::Rgba8);
+        } else {
+            out = rant::math::image_convert(view, ImageFormat::Rgba8);
         }
+        image.width  = (int)out.width;
+        image.height = (int)out.height;
+        image.rgba   = std::move(out.data);
+    } catch (const rant::math::MathError&) {
+        return Image();
     }
     return image;
 }

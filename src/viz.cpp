@@ -6,6 +6,8 @@
 #include "values.hpp"
 #include "video.hpp"
 
+#include "rant_math.hpp"
+
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/CallbackTexture.h>
 #include <RmlUi/Core/ElementInstancer.h>
@@ -18,15 +20,25 @@
 #include <RmlUi/Core/StringUtilities.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <variant>
 
 namespace {
 
 using ValueNode = Capture::ValueNode;
 using Nodes     = std::vector<ValueNode>;
+
+namespace math  = rant::math;
+namespace types = rant::types;
+using types::Double2;
+using types::Double3;
+using types::Pose;
+using types::Pose2D;
+using types::Quaternion;
 
 Capture* source = nullptr;
 
@@ -253,78 +265,51 @@ std::string child_path(const std::string& path, const char* name)
     return path.empty() ? std::string(name) : path + "." + name;
 }
 
-struct V3 {
-    double x = 0, y = 0, z = 0;
-};
+/* A rotation that turns nothing, for a pose with no orientation. */
+constexpr Quaternion NO_TURN{ 0, 0, 0, 1 };
 
-struct Quat {
-    double x = 0, y = 0, z = 0, w = 1;
-};
-
-V3 vec(const Nodes& nodes, int index)
+Double3 vec(const Nodes& nodes, int index)
 {
-    return V3{ number(nodes, index, "x"), number(nodes, index, "y"), number(nodes, index, "z") };
+    return Double3{ number(nodes, index, "x"), number(nodes, index, "y"), number(nodes, index, "z") };
 }
 
-Quat quat(const Nodes& nodes, int index)
+Double2 vec_2d(const Nodes& nodes, int index)
 {
-    return Quat{ number(nodes, index, "x"), number(nodes, index, "y"), number(nodes, index, "z"),
-                 number(nodes, index, "w") };
+    return Double2{ number(nodes, index, "x"), number(nodes, index, "y") };
 }
 
-/* A Pose: where it is and how it is turned. The identity for no node. */
-struct Placed {
-    V3   at;
-    Quat turn;
-};
-
-Placed placed(const Nodes& nodes, int index)
+Quaternion quat(const Nodes& nodes, int index)
 {
-    if (index < -1) return Placed{};
+    return Quaternion{ number(nodes, index, "x"), number(nodes, index, "y"), number(nodes, index, "z"),
+                       number(nodes, index, "w") };
+}
+
+/* A Pose, the identity for no node. */
+Pose placed(const Nodes& nodes, int index)
+{
+    Pose out{ Double3{}, NO_TURN };
+    if (index < -1) return out;
     const int p = kid(nodes, index, "position"), o = kid(nodes, index, "orientation");
-    return Placed{ p >= 0 ? vec(nodes, p) : V3{}, o >= 0 ? quat(nodes, o) : Quat{} };
+    if (p >= 0) out.position = vec(nodes, p);
+    if (o >= 0) out.orientation = quat(nodes, o);
+    return out;
 }
 
-V3 operator+(const V3& a, const V3& b) { return V3{ a.x + b.x, a.y + b.y, a.z + b.z }; }
-V3 operator-(const V3& a, const V3& b) { return V3{ a.x - b.x, a.y - b.y, a.z - b.z }; }
-V3 operator*(const V3& a, double k) { return V3{ a.x * k, a.y * k, a.z * k }; }
-V3 cross(const V3& a, const V3& b) { return V3{ a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }
-double length(const V3& a) { return std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z); }
-
-Quat operator*(const Quat& a, const Quat& b)
+/* A Pose2D, the origin facing +x for no node. */
+Pose2D placed_2d(const Nodes& nodes, int index)
 {
-    return Quat{ a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-                 a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z };
+    if (index < -1) return Pose2D{};
+    const int p = kid(nodes, index, "position");
+    return Pose2D{ p >= 0 ? vec_2d(nodes, p) : Double2{}, number(nodes, index, "angle") };
 }
 
-/* The rotation an angular velocity w makes in t seconds. */
-Quat turned(const V3& w, double t)
+/* Roll, pitch and yaw in degrees. */
+std::string euler(const Quaternion& q)
 {
-    const double angle = length(w) * t;
-    if (angle < 1e-12) return Quat{};
-    const double k = std::sin(angle / 2) / length(w);
-    return Quat{ w.x * k, w.y * k, w.z * k, std::cos(angle / 2) };
-}
-
-V3 rotate(const Quat& q, const V3& v)
-{
-    const double n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
-    const double s = n > 0 ? 1 / n : 1, x = q.x * s, y = q.y * s, z = q.z * s, w = n > 0 ? q.w * s : 1;
-    const double tx = 2 * (y * v.z - z * v.y), ty = 2 * (z * v.x - x * v.z), tz = 2 * (x * v.y - y * v.x);
-    return V3{ v.x + w * tx + (y * tz - z * ty), v.y + w * ty + (z * tx - x * tz), v.z + w * tz + (x * ty - y * tx) };
-}
-
-/* Roll, pitch and yaw in degrees, each "12.3°". */
-std::string euler(const Quat& q)
-{
-    const double n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
-    const double s = n > 0 ? 1 / n : 1, x = q.x * s, y = q.y * s, z = q.z * s, w = n > 0 ? q.w * s : 1;
-    const double sp = 2 * (w * y - z * x), deg = 180 / 3.14159265358979;
-    const double roll  = std::atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y)) * deg;
-    const double pitch = (std::fabs(sp) >= 1 ? std::copysign(3.14159265358979 / 2, sp) : std::asin(sp)) * deg;
-    const double yaw   = std::atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)) * deg;
-    return "roll " + print("%.1f\xC2\xB0", roll) + "  pitch " + print("%.1f\xC2\xB0", pitch) +
-           "  yaw " + print("%.1f\xC2\xB0", yaw);
+    const std::array<double, 3> a = math::quaternion_to_euler(q, math::EulerOrder::FixedXyz);
+    const double deg = 180 / 3.14159265358979;
+    return "roll " + print("%.1f\xC2\xB0", a[0] * deg) + "  pitch " + print("%.1f\xC2\xB0", a[1] * deg) +
+           "  yaw " + print("%.1f\xC2\xB0", a[2] * deg);
 }
 
 /* ------------------------------------------------------------------ drawing kit */
@@ -590,9 +575,9 @@ struct Scene {
         const double u = x * ca - y * sa, v = x * sa + y * ca;
         return { (float)(cx + u * k), (float)(cy + (v * se - z * ce) * k) };
     }
-    Rml::Vector2f operator()(const V3& p) const { return (*this)(p.x, p.y, p.z); }
-    double depth(const V3& p) const { return (p.x * sa + p.y * ca) * ce + p.z * se; }
-    bool   front(const V3& p) const { return depth(p) >= 0; }
+    Rml::Vector2f operator()(const Double3& p) const { return (*this)(p.x, p.y, p.z); }
+    double depth(const Double3& p) const { return (p.x * sa + p.y * ca) * ce + p.z * se; }
+    bool   front(const Double3& p) const { return depth(p) >= 0; }
 };
 
 Scene scene(Canvas& c, const Area& a, double r, const Camera& cam, const Backdrop& look)
@@ -620,7 +605,7 @@ void axes(Canvas& c, const Scene& s)
 {
     if (!s.look.axes) return;
     const double r = s.r * 0.92;
-    const V3 ends[3] = { { r, 0, 0 }, { 0, r, 0 }, { 0, 0, r } };
+    const Double3 ends[3] = { { r, 0, 0 }, { 0, r, 0 }, { 0, 0, r } };
     const char* names[3] = { "x", "y", "z" };
     for (int i = 0; i < 3; i++) {
         c.line(s(0, 0, 0), s(ends[i]), axis_colour(i), THIN);
@@ -631,11 +616,11 @@ void axes(Canvas& c, const Scene& s)
 
 /* A point's trail in the air, and its foot on the floor with a dashed line up to it,
    the part on one side of the depth split. Nothing else is projected. */
-void shadow(Canvas& c, const Scene& s, const V3& v, const std::vector<V3>* trail, bool front)
+void shadow(Canvas& c, const Scene& s, const Double3& v, const std::vector<Double3>* trail, bool front)
 {
     if (trail) {
         Dots dots(c, ink.trail, 2);
-        for (const V3& p : *trail)
+        for (const Double3& p : *trail)
             if (s.front(p) == front) dots.add(s(p));
     }
     if (s.front(v) != front || !s.look.drops) return;
@@ -645,7 +630,7 @@ void shadow(Canvas& c, const Scene& s, const V3& v, const std::vector<V3>* trail
 
 /* Draws a scene back to front: what is behind, the axes, what is in front. */
 template <class Body>
-void layered(Canvas& c, const Scene& s, const V3& v, const std::vector<V3>* trail, Body body)
+void layered(Canvas& c, const Scene& s, const Double3& v, const std::vector<Double3>* trail, Body body)
 {
     for (const bool front : { false, true }) {
         shadow(c, s, v, trail, front);
@@ -657,7 +642,7 @@ void layered(Canvas& c, const Scene& s, const V3& v, const std::vector<V3>* trai
 /* Draws one body per point back to front, each with its foot and drop line, the axes
    between the points behind and the points in front. */
 template <class Body>
-void back_to_front(Canvas& c, const Scene& s, const std::vector<V3>& at, Body body)
+void back_to_front(Canvas& c, const Scene& s, const std::vector<Double3>& at, Body body)
 {
     std::vector<size_t> order(at.size());
     for (size_t i = 0; i < order.size(); i++) order[i] = i;
@@ -672,36 +657,29 @@ void back_to_front(Canvas& c, const Scene& s, const std::vector<V3>& at, Body bo
 }
 
 /* A rotation as three arrows along its turned axes. */
-void triad(Canvas& c, const Scene& s, const V3& at, const Quat& q, double len)
+void triad(Canvas& c, const Scene& s, const Double3& at, const Quaternion& q, double len)
 {
-    const V3 units[3] = { { len, 0, 0 }, { 0, len, 0 }, { 0, 0, len } };
-    for (int i = 0; i < 3; i++) {
-        const V3 d = rotate(q, units[i]);
-        c.arrow(s(at), s(at.x + d.x, at.y + d.y, at.z + d.z), axis_colour(i), ARROW);
-    }
+    const Double3 units[3] = { { len, 0, 0 }, { 0, len, 0 }, { 0, 0, len } };
+    for (int i = 0; i < 3; i++) c.arrow(s(at), s(at + q * units[i]), axis_colour(i), ARROW);
 }
 
 /* ------------------------------------------------------------------ solids */
 
-V3 unit(const V3& v)
+/* Two unit vectors square to an axis and to each other. A zero axis is taken as z. */
+void basis(const Double3& axis, Double3& a, Double3& b)
 {
-    const double n = length(v);
-    return n > 1e-12 ? v * (1 / n) : V3{ 0, 0, 1 };
-}
-
-/* Two unit vectors square to a unit axis and to each other. */
-void basis(const V3& axis, V3& a, V3& b)
-{
-    const V3 up = std::fabs(axis.z) < 0.9 ? V3{ 0, 0, 1 } : V3{ 1, 0, 0 };
-    a = unit(cross(up, axis));
-    b = cross(axis, a);
+    Double3 n = math::double3_normalize(axis);
+    if (math::double3_length_squared(n) == 0) n = Double3{ 0, 0, 1 };
+    const Double3 up = std::fabs(n.z) < 0.9 ? Double3{ 0, 0, 1 } : Double3{ 1, 0, 0 };
+    a = math::double3_normalize(math::double3_cross(up, n));
+    b = math::double3_cross(n, a);
 }
 
 /* A circle in space around an axis, as screen points. */
-std::vector<Rml::Vector2f> ring(const Scene& s, const V3& centre, const V3& axis, double radius)
+std::vector<Rml::Vector2f> ring(const Scene& s, const Double3& centre, const Double3& axis, double radius)
 {
-    V3 a, b;
-    basis(unit(axis), a, b);
+    Double3 a, b;
+    basis(axis, a, b);
     std::vector<Rml::Vector2f> out;
     for (int i = 0; i < 48; i++) {
         const double t = 6.28318530717959 * i / 48;
@@ -736,203 +714,231 @@ std::pair<Rml::Vector2f, Rml::Vector2f> sides(const std::vector<Rml::Vector2f>& 
     return out;
 }
 
-/* A standard 3D shape read from its node. */
-struct Solid {
-    std::string     kind;      /* the standard name */
-    V3              a, b;      /* the centre or the first end, and the second end or a normal */
-    V3              size;      /* a box's edge lengths */
-    Quat            turn;      /* an oriented box's */
-    double          radius = 0;
-    std::vector<V3> points;    /* a polygon's corners */
-};
+/* A standard 3D shape read from its node, nothing for a kind with no drawing. */
+using Solid = std::variant<std::monostate, types::AlignedBox, types::OrientedBox, types::Plane, types::Segment,
+                           types::Sphere, types::Capsule, types::Cylinder, types::Cone, types::Polygon>;
 
 Solid solid(const Nodes& nodes, int index, const std::string& kind)
 {
-    Solid out;
-    out.kind = kind;
     auto at = [&](const char* name) {
         const int k = kid(nodes, index, name);
-        return k >= 0 ? vec(nodes, k) : V3{};
+        return k >= 0 ? vec(nodes, k) : Double3{};
     };
-    out.radius = number(nodes, index, "radius");
-    if (kind == "AlignedBox") {
-        const V3 lo = at("min"), hi = at("max");
-        out.a    = (lo + hi) * 0.5;
-        out.size = hi - lo;
-    } else if (kind == "OrientedBox") {
-        const Placed p = placed(nodes, kid(nodes, index, "pose"));
-        out.a    = p.at;
-        out.turn = p.turn;
-        out.size = at("size");
-    } else if (kind == "Plane") {
-        out.a = at("position");
-        out.b = at("normal");
-    } else if (kind == "Segment") {
-        out.a = at("a");
-        out.b = at("b");
-    } else if (kind == "Sphere") {
-        out.a = at("center");
-    } else if (kind == "Capsule" || kind == "Cylinder") {
-        const int axis = kid(nodes, index, "axis");
-        if (axis >= 0) {
-            out.a = vec(nodes, kid(nodes, axis, "a"));
-            out.b = vec(nodes, kid(nodes, axis, "b"));
-        }
-    } else if (kind == "Cone") {
-        out.a = at("base");
-        out.b = at("tip");
-    } else if (kind == "Polygon") {
+    auto axis = [&] {
+        const int k = kid(nodes, index, "axis");
+        return k >= 0 ? types::Segment{ vec(nodes, kid(nodes, k, "a")), vec(nodes, kid(nodes, k, "b")) } : types::Segment{};
+    };
+    const double radius = number(nodes, index, "radius");
+    if (kind == "AlignedBox")  return types::AlignedBox{ at("min"), at("max") };
+    if (kind == "OrientedBox") return types::OrientedBox{ placed(nodes, kid(nodes, index, "pose")), at("size") };
+    if (kind == "Plane")       return types::Plane{ at("position"), at("normal") };
+    if (kind == "Segment")     return types::Segment{ at("a"), at("b") };
+    if (kind == "Sphere")      return types::Sphere{ at("center"), radius };
+    if (kind == "Capsule")     return types::Capsule{ axis(), radius };
+    if (kind == "Cylinder")    return types::Cylinder{ axis(), radius };
+    if (kind == "Cone")        return types::Cone{ at("base"), at("tip"), radius };
+    if (kind == "Polygon") {
+        types::Polygon out;
         const int points = kid(nodes, index, "points");
         if (points >= 0)
             for (const int k : children_of(nodes, points)) out.points.push_back(vec(nodes, k));
+        return out;
     }
-    return out;
-}
-
-bool is_box(const Solid& o) { return o.kind == "AlignedBox" || o.kind == "OrientedBox"; }
-bool has_axis(const Solid& o) { return o.kind == "Segment" || o.kind == "Capsule" || o.kind == "Cylinder" || o.kind == "Cone"; }
-
-/* A box's corners, the bits of the index picking the side on x, y and z. */
-std::vector<V3> corners(const Solid& o)
-{
-    std::vector<V3> out;
-    for (int i = 0; i < 8; i++) {
-        const V3 half{ (i & 1 ? 0.5 : -0.5) * o.size.x, (i & 2 ? 0.5 : -0.5) * o.size.y, (i & 4 ? 0.5 : -0.5) * o.size.z };
-        out.push_back(o.a + rotate(o.turn, half));
-    }
-    return out;
+    return std::monostate{};
 }
 
 /* Where a solid's label and drop line go. */
-V3 middle(const Solid& o)
+Double3 middle_of(const std::monostate&) { return {}; }
+Double3 middle_of(const types::AlignedBox& b) { return math::aligned_box_centroid(b); }
+Double3 middle_of(const types::OrientedBox& b) { return b.pose.position; }
+Double3 middle_of(const types::Plane& p) { return p.position; }
+Double3 middle_of(const types::Segment& l) { return math::double3_lerp(l.a, l.b, 0.5); }
+Double3 middle_of(const types::Sphere& o) { return o.center; }
+Double3 middle_of(const types::Capsule& o) { return math::capsule_centroid(o); }
+Double3 middle_of(const types::Cylinder& o) { return math::cylinder_centroid(o); }
+Double3 middle_of(const types::Cone& o) { return math::double3_lerp(o.base, o.tip, 0.5); }
+Double3 middle_of(const types::Polygon& p) { return math::polygon_centroid(p.points); }
+
+Double3 middle(const Solid& o)
 {
-    if (has_axis(o)) return (o.a + o.b) * 0.5;
-    if (o.kind == "Polygon" && !o.points.empty()) {
-        V3 sum;
-        for (const V3& p : o.points) sum = sum + p;
-        return sum * (1.0 / o.points.size());
-    }
-    return o.a;
+    return std::visit([](const auto& v) { return middle_of(v); }, o);
 }
 
-/* Grows a reach to hold a solid. A plane has no end, so its patch is drawn at a share of the
-   reach, held by keeping its point inside half of it. */
+/* Grows a reach, a distance from the origin, to hold a solid. A plane has no end, so its patch
+   is drawn at a share of the reach, held by keeping its point inside half of it. */
+void take(Reach& reach, const Double3& p, double pad)
+{
+    reach.seen = std::max(reach.seen, math::double3_length(p) + pad);
+}
+
+void hold_one(Reach&, const std::monostate&) {}
+void hold_one(Reach& r, const types::AlignedBox& b) { for (const Double3& p : math::aligned_box_corners(b)) take(r, p, 0); }
+void hold_one(Reach& r, const types::OrientedBox& b) { for (const Double3& p : math::oriented_box_corners(b)) take(r, p, 0); }
+void hold_one(Reach& r, const types::Plane& p) { take(r, p.position * 2, 0); }
+void hold_one(Reach& r, const types::Segment& l) { take(r, l.a, 0); take(r, l.b, 0); }
+void hold_one(Reach& r, const types::Sphere& o) { take(r, o.center, o.radius); }
+void hold_one(Reach& r, const types::Capsule& o) { take(r, o.axis.a, o.radius); take(r, o.axis.b, o.radius); }
+void hold_one(Reach& r, const types::Cylinder& o) { take(r, o.axis.a, o.radius); take(r, o.axis.b, o.radius); }
+void hold_one(Reach& r, const types::Cone& o) { take(r, o.base, o.radius); take(r, o.tip, 0); }
+void hold_one(Reach& r, const types::Polygon& p) { for (const Double3& v : p.points) take(r, v, 0); }
+
 void hold(Reach& reach, const Solid& o)
 {
-    auto take = [&reach](const V3& p, double pad) { reach.seen = std::max(reach.seen, length(p) + pad); };
-    if (o.kind == "Plane")
-        take(o.a * 2, 0);
-    else if (is_box(o))
-        for (const V3& p : corners(o)) take(p, 0);
-    else if (o.kind == "Polygon")
-        for (const V3& p : o.points) take(p, 0);
-    else if (o.kind == "Cone") {
-        take(o.a, o.radius);
-        take(o.b, 0);
-    } else {
-        take(o.a, o.radius);
-        if (has_axis(o)) take(o.b, o.radius);
-    }
+    std::visit([&](const auto& v) { hold_one(reach, v); }, o);
 }
 
 /* A solid as lines: the edges of a box, the outline and rings of a round one, a plane as a
    square patch with its normal. */
-void draw_solid(Canvas& c, const Scene& s, const Solid& o, Rml::Colourb colour)
+void edges(Canvas& c, const Scene& s, const std::array<types::Segment, 12>& lines, Rml::Colourb colour)
 {
-    const float rk = (float)(o.radius * s.k);
-    if (is_box(o)) {
-        const std::vector<V3> p = corners(o);
-        for (int i = 0; i < 8; i++)
-            for (const int bit : { 1, 2, 4 })
-                if (!(i & bit)) c.line(s(p[i]), s(p[i | bit]), colour, STROKE);
-    } else if (o.kind == "Plane") {
-        const V3 n = unit(o.b);
-        V3 u, v;
-        basis(n, u, v);
-        const double h = 0.35 * s.r;
-        c.polyline({ s(o.a + (u + v) * h), s(o.a + (u - v) * h), s(o.a - (u + v) * h), s(o.a - (u - v) * h) }, colour, STROKE, true);
-        c.line(s(o.a - u * h), s(o.a + u * h), faded(colour, 0.5f), THIN);
-        c.line(s(o.a - v * h), s(o.a + v * h), faded(colour, 0.5f), THIN);
-        c.arrow(s(o.a), s(o.a + n * (0.3 * s.r)), colour, ARROW);
-    } else if (o.kind == "Segment") {
-        c.line(s(o.a), s(o.b), colour, STROKE);
-        c.dot(s(o.a), colour, 4);
-        c.dot(s(o.b), colour, 4);
-    } else if (o.kind == "Sphere") {
-        c.polyline(circle(s(o.a), rk), colour, STROKE);
-        c.polyline(ring(s, o.a, V3{ 0, 0, 1 }, o.radius), faded(colour, 0.5f), THIN, true);
-    } else if (o.kind == "Cylinder" || o.kind == "Capsule") {
-        const Rml::Vector2f a = s(o.a), b = s(o.b), d = b - a;
-        const float len = std::sqrt(d.x * d.x + d.y * d.y);
-        const bool capsule = o.kind == "Capsule";
-        const std::vector<Rml::Vector2f> ra = ring(s, o.a, o.b - o.a, o.radius), rb = ring(s, o.b, o.b - o.a, o.radius);
-        c.polyline(ra, capsule ? faded(colour, 0.5f) : colour, capsule ? THIN : STROKE, true);
-        c.polyline(rb, capsule ? faded(colour, 0.5f) : colour, capsule ? THIN : STROKE, true);
-        if (len < 1e-3f) {
-            if (capsule) c.polyline(circle(a, rk), colour, STROKE);
-            return;
-        }
-        const Rml::Vector2f along = d / len;
-        if (capsule) {
-            /* the outline of two balls joined: an arc around each end, a line along each side */
-            const Rml::Vector2f n(-along.y * rk, along.x * rk);
-            const double angle = std::atan2(along.y, along.x), half = 1.5707963267949;
-            c.line(a + n, b + n, colour, STROKE);
-            c.line(a - n, b - n, colour, STROKE);
-            c.polyline(circle(a, rk, angle + half, angle + 3 * half), colour, STROKE);
-            c.polyline(circle(b, rk, angle - half, angle + half), colour, STROKE);
-        } else {
-            const auto ea = sides(ra, along), eb = sides(rb, along);
-            c.line(ea.first, eb.first, colour, STROKE);
-            c.line(ea.second, eb.second, colour, STROKE);
-        }
-    } else if (o.kind == "Cone") {
-        const std::vector<Rml::Vector2f> base = ring(s, o.a, o.b - o.a, o.radius);
-        c.polyline(base, colour, STROKE, true);
-        /* the lines from the tip touch the base where they turn furthest each way */
-        const Rml::Vector2f tip = s(o.b), toward = s(o.a) - tip;
-        const float len = std::sqrt(toward.x * toward.x + toward.y * toward.y);
-        if (len > 1e-3f) {
-            const Rml::Vector2f d = toward / len;
-            float lo = 1e30f, hi = -1e30f;
-            Rml::Vector2f left = base[0], right = base[0];
-            for (const Rml::Vector2f& p : base) {
-                const Rml::Vector2f q = p - tip;
-                const float turn = std::atan2(d.x * q.y - d.y * q.x, d.x * q.x + d.y * q.y);
-                if (turn < lo) { lo = turn; left = p; }
-                if (turn > hi) { hi = turn; right = p; }
-            }
-            /* a tip inside the base's outline has no outline lines */
-            if (hi - lo < 3.14159f) {
-                c.line(tip, left, colour, STROKE);
-                c.line(tip, right, colour, STROKE);
-            }
-        }
-        c.dot(tip, colour, 4);
-    } else if (o.kind == "Polygon") {
-        std::vector<Rml::Vector2f> p;
-        for (const V3& v : o.points) p.push_back(s(v));
-        c.polyline(p, colour, STROKE, true);
-        for (const Rml::Vector2f& v : p) c.dot(v, colour, 3.5f);
+    for (const types::Segment& l : lines) c.line(s(l.a), s(l.b), colour, STROKE);
+}
+
+void draw_one(Canvas&, const Scene&, const std::monostate&, Rml::Colourb) {}
+void draw_one(Canvas& c, const Scene& s, const types::AlignedBox& b, Rml::Colourb colour) { edges(c, s, math::aligned_box_edges(b), colour); }
+void draw_one(Canvas& c, const Scene& s, const types::OrientedBox& b, Rml::Colourb colour) { edges(c, s, math::oriented_box_edges(b), colour); }
+
+void draw_one(Canvas& c, const Scene& s, const types::Plane& o, Rml::Colourb colour)
+{
+    Double3 u, v;
+    basis(o.normal, u, v);
+    const double h = 0.35 * s.r;
+    const Double3& at = o.position;
+    c.polyline({ s(at + (u + v) * h), s(at + (u - v) * h), s(at - (u + v) * h), s(at - (u - v) * h) }, colour, STROKE, true);
+    c.line(s(at - u * h), s(at + u * h), faded(colour, 0.5f), THIN);
+    c.line(s(at - v * h), s(at + v * h), faded(colour, 0.5f), THIN);
+    c.arrow(s(at), s(at + math::double3_normalize(o.normal) * (0.3 * s.r)), colour, ARROW);
+}
+
+void draw_one(Canvas& c, const Scene& s, const types::Segment& l, Rml::Colourb colour)
+{
+    c.line(s(l.a), s(l.b), colour, STROKE);
+    c.dot(s(l.a), colour, 4);
+    c.dot(s(l.b), colour, 4);
+}
+
+void draw_one(Canvas& c, const Scene& s, const types::Sphere& o, Rml::Colourb colour)
+{
+    c.polyline(circle(s(o.center), (float)(o.radius * s.k)), colour, STROKE);
+    c.polyline(ring(s, o.center, Double3{ 0, 0, 1 }, o.radius), faded(colour, 0.5f), THIN, true);
+}
+
+/* A cylinder or a capsule: a ring at each end, and their outline along the axis. */
+void draw_round(Canvas& c, const Scene& s, const types::Segment& axis, double radius, bool capsule, Rml::Colourb colour)
+{
+    const float rk = (float)(radius * s.k);
+    const Rml::Vector2f a = s(axis.a), b = s(axis.b), d = b - a;
+    const float len = std::sqrt(d.x * d.x + d.y * d.y);
+    const std::vector<Rml::Vector2f> ra = ring(s, axis.a, axis.b - axis.a, radius), rb = ring(s, axis.b, axis.b - axis.a, radius);
+    c.polyline(ra, capsule ? faded(colour, 0.5f) : colour, capsule ? THIN : STROKE, true);
+    c.polyline(rb, capsule ? faded(colour, 0.5f) : colour, capsule ? THIN : STROKE, true);
+    if (len < 1e-3f) {
+        if (capsule) c.polyline(circle(a, rk), colour, STROKE);
+        return;
+    }
+    const Rml::Vector2f along = d / len;
+    if (capsule) {
+        /* the outline of two balls joined: an arc around each end, a line along each side */
+        const Rml::Vector2f n(-along.y * rk, along.x * rk);
+        const double angle = std::atan2(along.y, along.x), half = 1.5707963267949;
+        c.line(a + n, b + n, colour, STROKE);
+        c.line(a - n, b - n, colour, STROKE);
+        c.polyline(circle(a, rk, angle + half, angle + 3 * half), colour, STROKE);
+        c.polyline(circle(b, rk, angle - half, angle + half), colour, STROKE);
+    } else {
+        const auto ea = sides(ra, along), eb = sides(rb, along);
+        c.line(ea.first, eb.first, colour, STROKE);
+        c.line(ea.second, eb.second, colour, STROKE);
     }
 }
 
-std::string point(const V3& p)
+void draw_one(Canvas& c, const Scene& s, const types::Capsule& o, Rml::Colourb colour) { draw_round(c, s, o.axis, o.radius, true, colour); }
+void draw_one(Canvas& c, const Scene& s, const types::Cylinder& o, Rml::Colourb colour) { draw_round(c, s, o.axis, o.radius, false, colour); }
+
+void draw_one(Canvas& c, const Scene& s, const types::Cone& o, Rml::Colourb colour)
+{
+    const std::vector<Rml::Vector2f> base = ring(s, o.base, o.tip - o.base, o.radius);
+    c.polyline(base, colour, STROKE, true);
+    /* the lines from the tip touch the base where they turn furthest each way */
+    const Rml::Vector2f tip = s(o.tip), toward = s(o.base) - tip;
+    const float len = std::sqrt(toward.x * toward.x + toward.y * toward.y);
+    if (len > 1e-3f) {
+        const Rml::Vector2f d = toward / len;
+        float lo = 1e30f, hi = -1e30f;
+        Rml::Vector2f left = base[0], right = base[0];
+        for (const Rml::Vector2f& p : base) {
+            const Rml::Vector2f q = p - tip;
+            const float turn = std::atan2(d.x * q.y - d.y * q.x, d.x * q.x + d.y * q.y);
+            if (turn < lo) { lo = turn; left = p; }
+            if (turn > hi) { hi = turn; right = p; }
+        }
+        /* a tip inside the base's outline has no outline lines */
+        if (hi - lo < 3.14159f) {
+            c.line(tip, left, colour, STROKE);
+            c.line(tip, right, colour, STROKE);
+        }
+    }
+    c.dot(tip, colour, 4);
+}
+
+void draw_one(Canvas& c, const Scene& s, const types::Polygon& o, Rml::Colourb colour)
+{
+    std::vector<Rml::Vector2f> p;
+    for (const Double3& v : o.points) p.push_back(s(v));
+    c.polyline(p, colour, STROKE, true);
+    for (const Rml::Vector2f& v : p) c.dot(v, colour, 3.5f);
+}
+
+void draw_solid(Canvas& c, const Scene& s, const Solid& o, Rml::Colourb colour)
+{
+    std::visit([&](const auto& v) { draw_one(c, s, v, colour); }, o);
+}
+
+std::string point(const Double3& p)
 {
     return "(" + f3(p.x) + ", " + f3(p.y) + ", " + f3(p.z) + ")";
 }
 
-/* What a solid measures, and where it is, for the bottom of its card. */
-std::pair<std::string, std::string> describe(const Solid& o)
+std::string point(const Double2& p)
 {
-    const std::string r = "radius " + f3(o.radius);
-    if (is_box(o)) return { "size " + f3(o.size.x) + " x " + f3(o.size.y) + " x " + f3(o.size.z), "at " + point(o.a) };
-    if (o.kind == "Plane")    return { "normal " + point(unit(o.b)), "at " + point(o.a) };
-    if (o.kind == "Segment")  return { "length " + f3(length(o.b - o.a)), "from " + point(o.a) };
-    if (o.kind == "Sphere")   return { r, "at " + point(o.a) };
-    if (o.kind == "Cone")     return { r + "  height " + f3(length(o.b - o.a)), "base " + point(o.a) };
-    if (o.kind == "Polygon")  return { format_number((double)o.points.size()) + " points", {} };
-    return { r + "  length " + f3(length(o.b - o.a)), "from " + point(o.a) };
+    return "(" + f3(p.x) + ", " + f3(p.y) + ")";
+}
+
+/* What a shape measures, and where it is, for the bottom of its card. */
+using Described = std::pair<std::string, std::string>;
+
+std::string radius_text(double r) { return "radius " + f3(r); }
+
+Described describe_one(const std::monostate&) { return {}; }
+Described describe_one(const types::AlignedBox& b)
+{
+    const Double3 size = b.max - b.min;
+    return { "size " + f3(size.x) + " x " + f3(size.y) + " x " + f3(size.z), "at " + point(math::aligned_box_centroid(b)) };
+}
+Described describe_one(const types::OrientedBox& b)
+{
+    return { "size " + f3(b.size.x) + " x " + f3(b.size.y) + " x " + f3(b.size.z), "at " + point(b.pose.position) };
+}
+Described describe_one(const types::Plane& p) { return { "normal " + point(math::double3_normalize(p.normal)), "at " + point(p.position) }; }
+Described describe_one(const types::Segment& l) { return { "length " + f3(math::segment_length(l)), "from " + point(l.a) }; }
+Described describe_one(const types::Sphere& o) { return { radius_text(o.radius), "at " + point(o.center) }; }
+Described describe_one(const types::Capsule& o)
+{
+    return { radius_text(o.radius) + "  length " + f3(math::segment_length(o.axis)), "from " + point(o.axis.a) };
+}
+Described describe_one(const types::Cylinder& o)
+{
+    return { radius_text(o.radius) + "  length " + f3(math::segment_length(o.axis)), "from " + point(o.axis.a) };
+}
+Described describe_one(const types::Cone& o)
+{
+    return { radius_text(o.radius) + "  height " + f3(math::double3_distance(o.base, o.tip)), "base " + point(o.base) };
+}
+Described describe_one(const types::Polygon& p) { return { format_number((double)p.points.size()) + " points", {} }; }
+
+Described describe(const Solid& o)
+{
+    return std::visit([](const auto& v) { return describe_one(v); }, o);
 }
 
 /* An array's count by its element's kind: 3 spheres, 2 boxes, 4 poses. */
@@ -952,7 +958,7 @@ std::string counted(size_t n, const std::string& kind)
 struct Plane {
     double k = 1, cx = 0, cy = 0, r = 1;
     Rml::Vector2f operator()(double x, double y) const { return { (float)(cx + x * k), (float)(cy - y * k) }; }
-    Rml::Vector2f operator()(const V3& p) const { return (*this)(p.x, p.y); }
+    Rml::Vector2f operator()(const Double2& p) const { return (*this)(p.x, p.y); }
 };
 
 Plane plane(Canvas& c, const Area& a, double r, const Backdrop& look)
@@ -976,176 +982,185 @@ Plane plane(Canvas& c, const Area& a, double r, const Backdrop& look)
     return p;
 }
 
-/* A Pose2D: where it is, and its angle in radians from +x toward +y. */
-struct Placed2D {
-    V3     at;
-    double angle = 0;
-};
-
-Placed2D placed_2d(const Nodes& nodes, int index)
-{
-    if (index < -1) return Placed2D{};
-    const int p = kid(nodes, index, "position");
-    return Placed2D{ p >= 0 ? vec(nodes, p) : V3{}, number(nodes, index, "angle") };
-}
-
 /* A pose on a plane: a dot where it is and an arrow along its heading. */
-void heading(Canvas& c, const Plane& p, const Placed2D& at, double len, Rml::Colourb colour)
+void heading(Canvas& c, const Plane& p, const Pose2D& at, double len, Rml::Colourb colour)
 {
-    const V3 tip{ at.at.x + std::cos(at.angle) * len, at.at.y + std::sin(at.angle) * len, 0 };
-    c.arrow(p(at.at), p(tip), colour, ARROW);
-    c.dot(p(at.at), colour, 4);
+    c.arrow(p(at.position), p(at.position + math::double2_from_heading(at.angle) * len), colour, ARROW);
+    c.dot(p(at.position), colour, 4);
 }
 
 /* An angle in degrees, wrapped to a half turn either way. */
 std::string degrees(double radians)
 {
-    return print("%.1f\xC2\xB0", std::remainder(radians, 6.28318530717959) * 180 / 3.14159265358979);
+    return print("%.1f\xC2\xB0", math::angle_wrap(radians) * 180 / 3.14159265358979);
 }
 
-/* A standard 2D shape read from its node, as the corners of its outline, or a circle. */
-struct Figure {
-    std::string     kind;
-    V3              centre;    /* a line's point */
-    V3              size;      /* a box's edge lengths */
-    V3              normal;    /* a line's */
-    double          angle = 0, radius = 0;
-    std::vector<V3> points;    /* a box's or a polygon's corners in order, a segment's or a capsule's ends */
-};
+/* A standard 2D shape read from its node, nothing for a kind with no drawing. */
+using Figure = std::variant<std::monostate, types::AlignedBox2D, types::OrientedBox2D, types::Circle, types::Polygon2D,
+                            types::Plane2D, types::Segment2D, types::Capsule2D>;
 
 Figure figure(const Nodes& nodes, int index, const std::string& kind)
 {
-    Figure out;
-    out.kind = kind;
     auto at = [&](const char* name) {
         const int k = kid(nodes, index, name);
-        return k >= 0 ? vec(nodes, k) : V3{};
+        return k >= 0 ? vec_2d(nodes, k) : Double2{};
     };
-    if (kind == "AlignedBox2D") {
-        const V3 lo = at("min"), hi = at("max");
-        out.centre = (lo + hi) * 0.5;
-        out.size   = hi - lo;
-        out.points = { lo, V3{ hi.x, lo.y, 0 }, hi, V3{ lo.x, hi.y, 0 } };
-    } else if (kind == "OrientedBox2D") {
-        const Placed2D p = placed_2d(nodes, kid(nodes, index, "pose"));
-        out.centre = p.at;
-        out.angle  = p.angle;
-        out.size   = at("size");
-        const double ca = std::cos(p.angle), sa = std::sin(p.angle);
-        for (const V3& h : { V3{ -0.5, -0.5, 0 }, V3{ 0.5, -0.5, 0 }, V3{ 0.5, 0.5, 0 }, V3{ -0.5, 0.5, 0 } }) {
-            const double x = h.x * out.size.x, y = h.y * out.size.y;
-            out.points.push_back(V3{ p.at.x + x * ca - y * sa, p.at.y + x * sa + y * ca, 0 });
-        }
-    } else if (kind == "Circle") {
-        out.centre = at("center");
-        out.radius = number(nodes, index, "radius");
-    } else if (kind == "Polygon2D") {
+    const double radius = number(nodes, index, "radius");
+    if (kind == "AlignedBox2D")  return types::AlignedBox2D{ at("min"), at("max") };
+    if (kind == "OrientedBox2D") return types::OrientedBox2D{ placed_2d(nodes, kid(nodes, index, "pose")), at("size") };
+    if (kind == "Circle")        return types::Circle{ at("center"), radius };
+    if (kind == "Plane2D")       return types::Plane2D{ at("position"), at("normal") };
+    if (kind == "Segment2D")     return types::Segment2D{ at("a"), at("b") };
+    if (kind == "Capsule2D") {
+        const int k = kid(nodes, index, "axis");
+        const types::Segment2D axis = k >= 0 ? types::Segment2D{ vec_2d(nodes, kid(nodes, k, "a")), vec_2d(nodes, kid(nodes, k, "b")) }
+                                             : types::Segment2D{};
+        return types::Capsule2D{ axis, radius };
+    }
+    if (kind == "Polygon2D") {
+        types::Polygon2D out;
         const int points = kid(nodes, index, "points");
         if (points >= 0)
-            for (const int k : children_of(nodes, points)) out.points.push_back(vec(nodes, k));
-        for (const V3& v : out.points) out.centre = out.centre + v * (1.0 / out.points.size());
-    } else if (kind == "Plane2D") {
-        out.centre = at("position");
-        out.normal = at("normal");
-    } else if (kind == "Segment2D") {
-        out.points = { at("a"), at("b") };
-    } else if (kind == "Capsule2D") {
-        const int axis = kid(nodes, index, "axis");
-        out.points = { V3{}, V3{} };
-        if (axis >= 0) out.points = { vec(nodes, kid(nodes, axis, "a")), vec(nodes, kid(nodes, axis, "b")) };
-        out.radius = number(nodes, index, "radius");
+            for (const int k : children_of(nodes, points)) out.points.push_back(vec_2d(nodes, k));
+        return out;
     }
-    return out;
+    return std::monostate{};
+}
+
+/* Where a figure's label goes. */
+Double2 middle_of(const types::AlignedBox2D& b) { return math::aligned_box2d_centroid(b); }
+Double2 middle_of(const types::OrientedBox2D& b) { return b.pose.position; }
+Double2 middle_of(const types::Circle& o) { return o.center; }
+Double2 middle_of(const types::Polygon2D& p) { return math::polygon2d_centroid(p.points); }
+Double2 middle_of(const types::Plane2D& p) { return p.position; }
+Double2 middle_of(const types::Segment2D& l) { return math::double2_lerp(l.a, l.b, 0.5); }
+Double2 middle_of(const types::Capsule2D& o) { return math::double2_lerp(o.axis.a, o.axis.b, 0.5); }
+
+Double2 middle(const Figure& f)
+{
+    return std::visit([](const auto& v) {
+        const auto m = middle_of(v);
+        return Double2{ m.x, m.y };
+    }, f);
 }
 
 /* A capsule's outline: its sides and the half circles around both ends. */
-std::vector<V3> stadium(const V3& a, const V3& b, double radius)
+std::vector<Double2> stadium(const types::Capsule2D& o)
 {
-    const double len = length(b - a);
-    const V3 d = len > 1e-12 ? (b - a) * (1 / len) : V3{ 1, 0, 0 };
+    const double len = math::segment2d_length(o.axis);
+    const Double2 d = len > 1e-12 ? (o.axis.b - o.axis.a) * (1 / len) : Double2{ 1, 0 };
     const double side = std::atan2(d.x, -d.y);   /* the left of the axis, from +x */
-    std::vector<V3> out;
-    for (const auto& end : { std::make_pair(b, side), std::make_pair(a, side + 3.14159265358979) })
-        for (int i = 0; i <= 24; i++) {
-            const double t = end.second - 3.14159265358979 * i / 24;
-            out.push_back(V3{ end.first.x + radius * std::cos(t), end.first.y + radius * std::sin(t), 0 });
-        }
+    std::vector<Double2> out;
+    for (const auto& end : { std::make_pair(o.axis.b, side), std::make_pair(o.axis.a, side + 3.14159265358979) })
+        for (int i = 0; i <= 24; i++)
+            out.push_back(end.first + math::double2_from_heading(end.second - 3.14159265358979 * i / 24) * o.radius);
     return out;
 }
 
-/* Grows a plane's reach to hold a figure. */
+/* Grows a plane's reach, a largest component, to hold a figure. */
+void take_2d(Reach& reach, const Double2& p, double pad)
+{
+    reach.seen = std::max({ reach.seen, std::fabs(p.x) + pad, std::fabs(p.y) + pad });
+}
+
+void hold_one(Reach& r, const types::AlignedBox2D& b) { for (const Double2& p : math::aligned_box2d_corners(b)) take_2d(r, p, 0); }
+void hold_one(Reach& r, const types::OrientedBox2D& b) { for (const Double2& p : math::oriented_box2d_corners(b)) take_2d(r, p, 0); }
+void hold_one(Reach& r, const types::Circle& o) { take_2d(r, o.center, o.radius); }
+void hold_one(Reach& r, const types::Polygon2D& p) { for (const Double2& v : p.points) take_2d(r, v, 0); }
+/* its point at most half way out, so the line shows */
+void hold_one(Reach& r, const types::Plane2D& p) { take_2d(r, p.position * 2, 0); }
+void hold_one(Reach& r, const types::Segment2D& l) { take_2d(r, l.a, 0); take_2d(r, l.b, 0); }
+void hold_one(Reach& r, const types::Capsule2D& o) { take_2d(r, o.axis.a, o.radius); take_2d(r, o.axis.b, o.radius); }
+
 void hold(Reach& reach, const Figure& f)
 {
-    auto take = [&reach](const V3& p, double pad) {
-        reach.seen = std::max({ reach.seen, std::fabs(p.x) + pad, std::fabs(p.y) + pad });
-    };
-    if (f.kind == "Circle") take(f.centre, f.radius);
-    if (f.kind == "Plane2D") take(f.centre * 2, 0);   /* its point at most half way out, so the line shows */
-    for (const V3& p : f.points) take(p, f.kind == "Capsule2D" ? f.radius : 0);
+    std::visit([&](const auto& v) { hold_one(reach, v); }, f);
+}
+
+void outline(Canvas& c, const Plane& p, const std::array<Double2, 4>& corners, Rml::Colourb colour)
+{
+    std::vector<Rml::Vector2f> drawn;
+    for (const Double2& v : corners) drawn.push_back(p(v));
+    c.polyline(drawn, colour, STROKE, true);
+}
+
+void draw_one(Canvas&, const Plane&, const std::monostate&, Rml::Colourb) {}
+void draw_one(Canvas& c, const Plane& p, const types::AlignedBox2D& b, Rml::Colourb colour) { outline(c, p, math::aligned_box2d_corners(b), colour); }
+void draw_one(Canvas& c, const Plane& p, const types::OrientedBox2D& b, Rml::Colourb colour) { outline(c, p, math::oriented_box2d_corners(b), colour); }
+
+void draw_one(Canvas& c, const Plane& p, const types::Circle& o, Rml::Colourb colour)
+{
+    c.polyline(circle(p(o.center), (float)(o.radius * p.k)), colour, STROKE);
+    c.dot(p(o.center), colour, 3);
+}
+
+void draw_one(Canvas& c, const Plane& p, const types::Plane2D& o, Rml::Colourb colour)
+{
+    /* the endless line cut to the grid, and its normal from its point */
+    Double2 n = math::double2_normalize(o.normal);
+    if (math::double2_length(n) == 0) n = Double2{ 0, 1 };
+    const Double2 along = math::double2_perpendicular(n);
+    Rml::Vector2f a = p(o.position + along * (-4 * p.r)), b = p(o.position + along * (4 * p.r));
+    const Rml::Vector2f lo = p(-p.r, p.r), hi = p(p.r, -p.r);
+    if (clip(a.x, a.y, b.x, b.y, lo.x, lo.y, hi.x, hi.y)) c.line(a, b, colour, STROKE);
+    c.arrow(p(o.position), p(o.position + n * (0.2 * p.r)), colour, STROKE);
+    c.dot(p(o.position), colour, 3);
+}
+
+void draw_one(Canvas& c, const Plane& p, const types::Segment2D& l, Rml::Colourb colour)
+{
+    c.line(p(l.a), p(l.b), colour, STROKE);
+    c.dot(p(l.a), colour, 3.5f);
+    c.dot(p(l.b), colour, 3.5f);
+}
+
+void draw_one(Canvas& c, const Plane& p, const types::Capsule2D& o, Rml::Colourb colour)
+{
+    std::vector<Rml::Vector2f> drawn;
+    for (const Double2& v : stadium(o)) drawn.push_back(p(v));
+    c.polyline(drawn, colour, STROKE, true);
+    c.dashed(p(o.axis.a), p(o.axis.b), faded(colour, 0.6f), THIN);
+}
+
+void draw_one(Canvas& c, const Plane& p, const types::Polygon2D& o, Rml::Colourb colour)
+{
+    std::vector<Rml::Vector2f> drawn;
+    for (const Double2& v : o.points) drawn.push_back(p(v));
+    c.polyline(drawn, colour, STROKE, true);
+    for (const Rml::Vector2f& v : drawn) c.dot(v, colour, 3.5f);
 }
 
 void draw_figure(Canvas& c, const Plane& p, const Figure& f, Rml::Colourb colour)
 {
-    if (f.kind == "Circle") {
-        c.polyline(circle(p(f.centre), (float)(f.radius * p.k)), colour, STROKE);
-        c.dot(p(f.centre), colour, 3);
-        return;
-    }
-    if (f.kind == "Plane2D") {
-        /* the endless line cut to the grid, and its normal from its point */
-        const double len = length(f.normal);
-        const V3 n = len > 1e-12 ? f.normal * (1 / len) : V3{ 0, 1, 0 }, along{ -n.y, n.x, 0 };
-        Rml::Vector2f a = p(f.centre + along * (-4 * p.r)), b = p(f.centre + along * (4 * p.r));
-        const Rml::Vector2f lo = p(-p.r, p.r), hi = p(p.r, -p.r);
-        if (clip(a.x, a.y, b.x, b.y, lo.x, lo.y, hi.x, hi.y)) c.line(a, b, colour, STROKE);
-        c.arrow(p(f.centre), p(f.centre + n * (0.2 * p.r)), colour, STROKE);
-        c.dot(p(f.centre), colour, 3);
-        return;
-    }
-    if (f.kind == "Segment2D" && f.points.size() == 2) {
-        c.line(p(f.points[0]), p(f.points[1]), colour, STROKE);
-        for (const V3& v : f.points) c.dot(p(v), colour, 3.5f);
-        return;
-    }
-    if (f.kind == "Capsule2D" && f.points.size() == 2) {
-        std::vector<Rml::Vector2f> outline;
-        for (const V3& v : stadium(f.points[0], f.points[1], f.radius)) outline.push_back(p(v));
-        c.polyline(outline, colour, STROKE, true);
-        c.dashed(p(f.points[0]), p(f.points[1]), faded(colour, 0.6f), THIN);
-        return;
-    }
-    std::vector<Rml::Vector2f> corners;
-    for (const V3& v : f.points) corners.push_back(p(v));
-    c.polyline(corners, colour, STROKE, true);
-    if (f.kind == "Polygon2D")
-        for (const Rml::Vector2f& v : corners) c.dot(v, colour, 3.5f);
+    std::visit([&](const auto& v) { draw_one(c, p, v, colour); }, f);
 }
 
-std::pair<std::string, std::string> describe(const Figure& f)
+Described describe_one(const types::AlignedBox2D& b)
 {
-    const std::string at = "at (" + f3(f.centre.x) + ", " + f3(f.centre.y) + ")";
-    if (f.kind == "Circle")    return { "radius " + f3(f.radius), at };
-    if (f.kind == "Polygon2D") return { format_number((double)f.points.size()) + " points", {} };
-    if (f.kind == "Plane2D") {
-        const double len = length(f.normal);
-        const V3 n = len > 1e-12 ? f.normal * (1 / len) : V3{};
-        return { "normal (" + f3(n.x) + ", " + f3(n.y) + ")", at };
-    }
-    if (f.kind == "Segment2D" || f.kind == "Capsule2D") {
-        const V3 a = f.points.empty() ? V3{} : f.points[0], b = f.points.size() > 1 ? f.points[1] : a;
-        const std::string len = "length " + f3(length(b - a));
-        return { f.kind == "Capsule2D" ? "radius " + f3(f.radius) + "  " + len : len,
-                 "from (" + f3(a.x) + ", " + f3(a.y) + ")" };
-    }
-    return { "size " + f3(f.size.x) + " x " + f3(f.size.y), at };
+    const Double2 size = b.max - b.min;
+    return { "size " + f3(size.x) + " x " + f3(size.y), "at " + point(math::aligned_box2d_centroid(b)) };
+}
+Described describe_one(const types::OrientedBox2D& b) { return { "size " + f3(b.size.x) + " x " + f3(b.size.y), "at " + point(b.pose.position) }; }
+Described describe_one(const types::Circle& o) { return { radius_text(o.radius), "at " + point(o.center) }; }
+Described describe_one(const types::Polygon2D& p) { return { format_number((double)p.points.size()) + " points", {} }; }
+Described describe_one(const types::Plane2D& p) { return { "normal " + point(math::double2_normalize(p.normal)), "at " + point(p.position) }; }
+Described describe_one(const types::Segment2D& l) { return { "length " + f3(math::segment2d_length(l)), "from " + point(l.a) }; }
+Described describe_one(const types::Capsule2D& o)
+{
+    return { radius_text(o.radius) + "  length " + f3(math::segment2d_length(o.axis)), "from " + point(o.axis.a) };
+}
+
+Described describe(const Figure& f)
+{
+    return std::visit([](const auto& v) { return describe_one(v); }, f);
 }
 
 /* A turn about an axis through the origin: an arc of radius rho sweeping sweep radians the
    way the turn goes by the right hand rule, with a head at its end. */
-void curl(Canvas& c, const Scene& s, const V3& axis, double rho, double sweep, Rml::Colourb colour)
+void curl(Canvas& c, const Scene& s, const Double3& axis, double rho, double sweep, Rml::Colourb colour)
 {
-    V3 a, b;
-    basis(unit(axis), a, b);
+    Double3 a, b;
+    basis(axis, a, b);
     const int steps = 32;
     std::vector<Rml::Vector2f> arc;
     for (int i = 0; i <= steps; i++) {
@@ -1160,14 +1175,11 @@ void curl(Canvas& c, const Scene& s, const V3& axis, double rho, double sweep, R
 
 /* A turn on a plane: an arc about centre of radius rho, sweeping sweep radians from +x,
    toward +y when positive, with a head at its end. */
-void curl_2d(Canvas& c, const Plane& p, const V3& centre, double rho, double sweep, Rml::Colourb colour)
+void curl_2d(Canvas& c, const Plane& p, const Double2& centre, double rho, double sweep, Rml::Colourb colour)
 {
     const int steps = 32;
     std::vector<Rml::Vector2f> arc;
-    for (int i = 0; i <= steps; i++) {
-        const double t = sweep * i / steps;
-        arc.push_back(p(centre.x + rho * std::cos(t), centre.y + rho * std::sin(t)));
-    }
+    for (int i = 0; i <= steps; i++) arc.push_back(p(centre + math::double2_from_heading(sweep * i / steps) * rho));
     const Rml::Vector2f tip = arc.back();
     arc.pop_back();
     c.polyline(arc, colour, STROKE);
@@ -1673,13 +1685,13 @@ private:
 
     /* The points of up to three traces that arrived together, oldest first. Each message
        adds to all of them, so they line up from the newest end. */
-    std::vector<V3> trail(const std::string& x, const std::string& y, const std::string& z = {}) const
+    std::vector<Double3> trail(const std::string& x, const std::string& y, const std::string& z = {}) const
     {
         const auto& tx = trace(x);
         const auto& ty = trace(y);
         const auto& tz = z.empty() ? tx : trace(z);
         const size_t n = std::min({ tx.size(), ty.size(), tz.size() });
-        std::vector<V3> out(n);
+        std::vector<Double3> out(n);
         for (size_t i = 0; i < n; i++) {
             out[i].x = tx[tx.size() - n + i].v;
             out[i].y = ty[ty.size() - n + i].v;
@@ -1885,12 +1897,12 @@ private:
 
     void vec2(Canvas& c, const Nodes& nodes)
     {
-        const V3 v = vec(nodes, found_);
+        const Double2 v = vec_2d(nodes, found_);
         const double r = reach_[0].grow({ v.x, v.y }, dt_);
         const Plane p = plane(c, c.all(), r, backdrop());
         if (on(Show::History)) {
             Dots dots(c, ink.trail, 2);
-            for (const V3& t : trail(child_path(path_, "x"), child_path(path_, "y"))) dots.add(p(t.x, t.y));
+            for (const Double3& t : trail(child_path(path_, "x"), child_path(path_, "y"))) dots.add(p(t.x, t.y));
         }
         ray(c, p(0, 0), p(v.x, v.y), ink.accent);
         foot(c, c.all(), "x " + f3(v.x) + "  y " + f3(v.y));
@@ -1899,9 +1911,9 @@ private:
     void vec2s(Canvas& c, const Nodes& nodes)
     {
         const std::vector<int> items = children_of(nodes, found_);
-        std::vector<V3> v;
-        for (const int i : items) v.push_back(vec(nodes, i));
-        for (const V3& e : v) reach_[0].seen = std::max({ reach_[0].seen, std::fabs(e.x), std::fabs(e.y) });
+        std::vector<Double2> v;
+        for (const int i : items) v.push_back(vec_2d(nodes, i));
+        for (const Double2& e : v) reach_[0].seen = std::max({ reach_[0].seen, std::fabs(e.x), std::fabs(e.y) });
         const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_), backdrop());
         for (size_t i = 1; on(Show::Line) && i < v.size(); i++) c.line(p(v[i - 1]), p(v[i]), ink.dim, THIN);
         for (size_t i = 0; i < v.size(); i++) {
@@ -1916,20 +1928,20 @@ private:
     void pose_2d(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
         const bool framed = node.std_name == "Transform2D";
-        const Placed2D at = placed_2d(nodes, framed ? kid(nodes, found_, "pose") : found_);
+        const Pose2D at = placed_2d(nodes, framed ? kid(nodes, found_, "pose") : found_);
         /* the margin keeps the heading inside */
-        const double r = reach_[0].grow({ at.at.x, at.at.y }, dt_, 1.3);
+        const double r = reach_[0].grow({ at.position.x, at.position.y }, dt_, 1.3);
         const Plane p = plane(c, c.all(), r, backdrop());
         if (on(Show::History)) {
             const std::string base = child_path(framed ? child_path(path_, "pose") : path_, "position");
             Dots dots(c, ink.trail, 2);
-            for (const V3& t : trail(base + ".x", base + ".y")) dots.add(p(t.x, t.y));
+            for (const Double3& t : trail(base + ".x", base + ".y")) dots.add(p(t.x, t.y));
         }
-        if (on(Show::Line)) c.line(p(0, 0), p(at.at), ink.faint, THIN);
+        if (on(Show::Line)) c.line(p(0, 0), p(at.position), ink.faint, THIN);
         if (on(Show::Orientation)) heading(c, p, at, 0.2 * r, ink.accent);
-        else                       c.dot(p(at.at), ink.accent, 4);
+        else                       c.dot(p(at.position), ink.accent, 4);
         const int parent = framed ? kid(nodes, found_, "parent") : -2;
-        foot(c, c.all(), { { "x " + f3(at.at.x) + "  y " + f3(at.at.y), ink.dim }, { "angle " + degrees(at.angle), ink.dim } },
+        foot(c, c.all(), { { "x " + f3(at.position.x) + "  y " + f3(at.position.y), ink.dim }, { "angle " + degrees(at.angle), ink.dim } },
              parent >= 0 && !nodes[parent].text.empty() ? "in " + nodes[parent].text : std::string());
     }
 
@@ -1937,18 +1949,18 @@ private:
     void poses_2d(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
         const bool framed = node.elem_std == "Transform2D";
-        std::vector<Placed2D> list;
+        std::vector<Pose2D> list;
         for (const int i : children_of(nodes, found_)) {
             list.push_back(placed_2d(nodes, framed ? kid(nodes, i, "pose") : i));
-            reach_[0].seen = std::max({ reach_[0].seen, std::fabs(list.back().at.x), std::fabs(list.back().at.y) });
+            reach_[0].seen = std::max({ reach_[0].seen, std::fabs(list.back().position.x), std::fabs(list.back().position.y) });
         }
         const double r = reach_[0].grow({}, dt_, 1.2);
         const Plane p = plane(c, c.all(), r, backdrop());
-        for (size_t i = 1; on(Show::Line) && i < list.size(); i++) c.line(p(list[i - 1].at), p(list[i].at), ink.dim, THIN);
+        for (size_t i = 1; on(Show::Line) && i < list.size(); i++) c.line(p(list[i - 1].position), p(list[i].position), ink.dim, THIN);
         for (size_t i = 0; i < list.size(); i++) {
             if (on(Show::Orientation)) heading(c, p, list[i], 0.15 * r, tint(i));
-            else                       c.dot(p(list[i].at), tint(i), 4);
-            label(c, p(list[i].at), i);
+            else                       c.dot(p(list[i].position), tint(i), 4);
+            label(c, p(list[i].position), i);
         }
         foot(c, c.all(), counted(list.size(), node.elem_std));
     }
@@ -1961,8 +1973,8 @@ private:
         const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_), backdrop());
         draw_figure(c, p, one, ink.accent);
         const auto text = describe(one);
-        foot(c, c.all(), { { text.first, ink.dim }, { one.kind == "OrientedBox2D" ? "angle " + degrees(one.angle) : "", ink.dim } },
-             text.second);
+        const auto* box = std::get_if<types::OrientedBox2D>(&one);
+        foot(c, c.all(), { { text.first, ink.dim }, { box ? "angle " + degrees(box->pose.angle) : "", ink.dim } }, text.second);
     }
 
     /* An array of one kind of 2D shape on one plane, each in its own colour. */
@@ -1976,7 +1988,7 @@ private:
         const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_), backdrop());
         for (size_t i = 0; i < list.size(); i++) {
             draw_figure(c, p, list[i], tint(i));
-            label(c, p(list[i].centre), i);
+            label(c, p(middle(list[i])), i);
         }
         foot(c, c.all(), counted(list.size(), node.elem_std));
     }
@@ -1986,21 +1998,21 @@ private:
     /* An arrow from the origin in a scene, its foot, drop line and trail. */
     void vec3(Canvas& c, const Nodes& nodes)
     {
-        const V3 v = vec(nodes, found_);
-        const double r = reach_[0].grow({ length(v) }, dt_);
+        const Double3 v = vec(nodes, found_);
+        const double r = reach_[0].grow({ math::double3_length(v) }, dt_);
         const Scene s = scene(c, c.all(), r, camera(), backdrop());
-        const std::vector<V3> t = on(Show::History) ? trail(child_path(path_, "x"), child_path(path_, "y"), child_path(path_, "z"))
-                                                    : std::vector<V3>();
+        const std::vector<Double3> t = on(Show::History) ? trail(child_path(path_, "x"), child_path(path_, "y"), child_path(path_, "z"))
+                                                    : std::vector<Double3>();
         layered(c, s, v, &t, [&] { ray(c, s(0, 0, 0), s(v), ink.accent); });
         foot(c, c.all(), "x " + f3(v.x) + "  y " + f3(v.y) + "  z " + f3(v.z));
     }
 
     void quaternion(Canvas& c, const Nodes& nodes)
     {
-        const Quat q = quat(nodes, found_);
+        const Quaternion q = quat(nodes, found_);
         const Scene s = scene(c, c.all(), 1, camera(), backdrop());
         axes(c, s);
-        triad(c, s, V3{}, q, 0.9);
+        triad(c, s, Double3{}, q, 0.9);
         foot(c, c.all(), euler(q));
     }
 
@@ -2009,19 +2021,19 @@ private:
     void pose(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
         const bool framed = node.std_name == "Transform";
-        const Placed p = placed(nodes, framed ? kid(nodes, found_, "pose") : found_);
+        const Pose p = placed(nodes, framed ? kid(nodes, found_, "pose") : found_);
         /* the margin keeps the triad inside */
-        const double r = reach_[0].grow({ length(p.at) }, dt_, 1.3);
+        const double r = reach_[0].grow({ math::double3_length(p.position) }, dt_, 1.3);
         const Scene s = scene(c, c.all(), r, camera(), backdrop());
         const std::string base = child_path(framed ? child_path(path_, "pose") : path_, "position");
-        const std::vector<V3> t = on(Show::History) ? trail(base + ".x", base + ".y", base + ".z") : std::vector<V3>();
-        layered(c, s, p.at, &t, [&] {
-            if (on(Show::Line)) c.line(s(0, 0, 0), s(p.at), ink.faint, THIN);
-            if (on(Show::Orientation)) triad(c, s, p.at, p.turn, 0.2 * r);
-            else                       c.dot(s(p.at), ink.accent, 4);
+        const std::vector<Double3> t = on(Show::History) ? trail(base + ".x", base + ".y", base + ".z") : std::vector<Double3>();
+        layered(c, s, p.position, &t, [&] {
+            if (on(Show::Line)) c.line(s(0, 0, 0), s(p.position), ink.faint, THIN);
+            if (on(Show::Orientation)) triad(c, s, p.position, p.orientation, 0.2 * r);
+            else                       c.dot(s(p.position), ink.accent, 4);
         });
         const int parent = framed ? kid(nodes, found_, "parent") : -2;
-        foot(c, c.all(), { { "x " + f3(p.at.x) + "  y " + f3(p.at.y) + "  z " + f3(p.at.z), ink.dim }, { euler(p.turn), ink.dim } },
+        foot(c, c.all(), { { "x " + f3(p.position.x) + "  y " + f3(p.position.y) + "  z " + f3(p.position.z), ink.dim }, { euler(p.orientation), ink.dim } },
              parent >= 0 && !nodes[parent].text.empty() ? "in " + nodes[parent].text : std::string());
     }
 
@@ -2030,34 +2042,34 @@ private:
     void twist(Canvas& c, const Nodes& nodes)
     {
         const int li = kid(nodes, found_, "linear"), ai = kid(nodes, found_, "angular");
-        const V3 v = li >= 0 ? vec(nodes, li) : V3{}, w = ai >= 0 ? vec(nodes, ai) : V3{};
-        const double spin = length(w);
+        const types::Twist body{ li >= 0 ? vec(nodes, li) : Double3{}, ai >= 0 ? vec(nodes, ai) : Double3{} };
+        const Double3 &v = body.linear, &w = body.angular;
+        const double speed = math::double3_length(v), spin = math::double3_length(w);
         const bool turning = spin > 1e-9;
         const double ahead = turning ? std::min(TWIST_AHEAD, 6.28318530717959 / spin) : TWIST_AHEAD;
-        /* a screw, stepped with each step's travel turned by its middle */
-        std::vector<V3> path{ V3{} };
-        Quat q;
+        /* the screw the body runs along while the twist holds */
+        std::vector<Double3> path{ Double3{} };
+        Pose at{ Double3{}, NO_TURN };
         const int steps = 64;
-        const double dt = ahead / steps;
         for (int i = 0; i < steps; i++) {
-            path.push_back(path.back() + rotate(q * turned(w, dt / 2), v * dt));
-            q = q * turned(w, dt);
+            at = math::pose_integrate(at, body, ahead / steps);
+            path.push_back(at.position);
         }
         /* The view holds the path, and the turn centre while it is near enough to read as a
            turn: a far one would shrink the scene for good, since the reach only grows. */
-        const V3 centre = turning ? cross(w, v) * (1 / (spin * spin)) : V3{};
-        double extent = length(v);
-        for (const V3& p : path) extent = std::max(extent, length(p));
-        auto hold = [this](const V3& p) { reach_[0].seen = std::max(reach_[0].seen, length(p)); };
-        for (const V3& p : path) hold(p);
-        if (turning && length(centre) <= 2 * extent) hold(centre);
-        const double r = reach_[0].grow({ length(v) }, dt_);
+        const Double3 centre = turning ? math::double3_cross(w, v) * (1 / (spin * spin)) : Double3{};
+        double extent = speed;
+        for (const Double3& p : path) extent = std::max(extent, math::double3_length(p));
+        auto hold = [this](const Double3& p) { reach_[0].seen = std::max(reach_[0].seen, math::double3_length(p)); };
+        for (const Double3& p : path) hold(p);
+        if (turning && math::double3_length(centre) <= 2 * extent) hold(centre);
+        const double r = reach_[0].grow({ speed }, dt_);
         const Scene s = scene(c, c.all(), r, camera(), backdrop());
 
         if (turning && on(Show::Turn)) {
-            const V3 axis = w * (1 / spin);
+            const Double3 axis = w * (1 / spin);
             /* a turn centre this far out is a straight run, and its line would leave the view */
-            if (length(centre) < 20 * r) {
+            if (math::double3_length(centre) < 20 * r) {
                 c.dashed(s(centre - axis * r), s(centre + axis * r), ink.dim, THIN);
                 c.dot(s(centre), ink.dim, 4);
             }
@@ -2065,7 +2077,7 @@ private:
         /* its own colour, since a forward run lies along the x axis */
         if (on(Show::Path)) {
             std::vector<Rml::Vector2f> drawn;
-            for (const V3& p : path) drawn.push_back(s(p));
+            for (const Double3& p : path) drawn.push_back(s(p));
             c.polyline(drawn, ink.purple, STROKE);
             c.dot(drawn.back(), ink.purple, 4);
         }
@@ -2073,7 +2085,7 @@ private:
         const double fastest = reach_[1].grow({ spin }, dt_, 1.0);
         if (turning && on(Show::Turn)) curl(c, s, w * (1 / spin), 0.15 * r, 5 * spin / fastest, ink.amber);
         layered(c, s, v, nullptr, [&] { c.arrow(s(0, 0, 0), s(v), ink.accent, ARROW); });
-        foot(c, c.all(), "speed " + f3(length(v)) + " m/s  turn " + f3(spin) + " rad/s", "next " + print("%.1f", ahead) + " s");
+        foot(c, c.all(), "speed " + f3(speed) + " m/s  turn " + f3(spin) + " rad/s", "next " + print("%.1f", ahead) + " s");
     }
 
     /* A Twist2D in the moving body's frame: the velocity arrow, the turn as an arc about the
@@ -2081,44 +2093,44 @@ private:
     void twist_2d(Canvas& c, const Nodes& nodes)
     {
         const int li = kid(nodes, found_, "linear");
-        const V3 v = li >= 0 ? vec(nodes, li) : V3{};
-        const double w = number(nodes, found_, "angular"), spin = std::fabs(w);
+        const types::Twist2D body{ li >= 0 ? vec_2d(nodes, li) : Double2{}, number(nodes, found_, "angular") };
+        const Double2& v = body.linear;
+        const double w = body.angular, spin = std::fabs(w), speed = math::double2_length(v);
         const bool turning = spin > 1e-9;
         const double ahead = turning ? std::min(TWIST_AHEAD, 6.28318530717959 / spin) : TWIST_AHEAD;
-        /* each step's travel turned by the heading at its middle */
-        std::vector<V3> path{ V3{} };
+        std::vector<Double2> path{ Double2{} };
+        Pose2D at;
         const int steps = 64;
-        const double dt = ahead / steps;
         for (int i = 0; i < steps; i++) {
-            const double h = w * dt * (i + 0.5), ch = std::cos(h), sh = std::sin(h);
-            path.push_back(path.back() + V3{ (v.x * ch - v.y * sh) * dt, (v.x * sh + v.y * ch) * dt, 0 });
+            at = math::pose2d_integrate(at, body, ahead / steps);
+            path.push_back(at.position);
         }
         /* as in 3D, a far turn centre is left out of the reach, which only grows */
-        const V3 centre = turning ? V3{ -v.y / w, v.x / w, 0 } : V3{};
-        double extent = length(v);
-        auto hold = [this](const V3& p) { reach_[0].seen = std::max({ reach_[0].seen, std::fabs(p.x), std::fabs(p.y) }); };
-        for (const V3& p : path) {
-            extent = std::max(extent, length(p));
+        const Double2 centre = turning ? Double2{ -v.y / w, v.x / w } : Double2{};
+        double extent = speed;
+        auto hold = [this](const Double2& p) { reach_[0].seen = std::max({ reach_[0].seen, std::fabs(p.x), std::fabs(p.y) }); };
+        for (const Double2& p : path) {
+            extent = std::max(extent, math::double2_length(p));
             hold(p);
         }
-        if (turning && length(centre) <= 2 * extent) hold(centre);
+        if (turning && math::double2_length(centre) <= 2 * extent) hold(centre);
         const double r = reach_[0].grow({ v.x, v.y }, dt_);
         const Plane p = plane(c, c.all(), r, backdrop());
 
-        if (turning && on(Show::Turn) && length(centre) < 20 * r) {
+        if (turning && on(Show::Turn) && math::double2_length(centre) < 20 * r) {
             c.dashed(p(0, 0), p(centre), ink.dim, THIN);
             c.dot(p(centre), ink.dim, 4);
         }
         if (on(Show::Path)) {
             std::vector<Rml::Vector2f> drawn;
-            for (const V3& e : path) drawn.push_back(p(e));
+            for (const Double2& e : path) drawn.push_back(p(e));
             c.polyline(drawn, ink.purple, STROKE);
             c.dot(drawn.back(), ink.purple, 4);
         }
         const double fastest = reach_[1].grow({ spin }, dt_, 1.0);
-        if (turning && on(Show::Turn)) curl_2d(c, p, V3{}, 0.15 * r, 5 * w / fastest, ink.amber);
+        if (turning && on(Show::Turn)) curl_2d(c, p, Double2{}, 0.15 * r, 5 * w / fastest, ink.amber);
         c.arrow(p(0, 0), p(v), ink.accent, ARROW);
-        foot(c, c.all(), "speed " + f3(length(v)) + " m/s  turn " + f3(w) + " rad/s", "next " + print("%.1f", ahead) + " s");
+        foot(c, c.all(), "speed " + f3(speed) + " m/s  turn " + f3(w) + " rad/s", "next " + print("%.1f", ahead) + " s");
     }
 
     /* A Wrench2D: the force as an arrow with its trail, the torque as a turn about the
@@ -2126,26 +2138,26 @@ private:
     void wrench_2d(Canvas& c, const Nodes& nodes)
     {
         const int fi = kid(nodes, found_, "force");
-        const V3 f = fi >= 0 ? vec(nodes, fi) : V3{};
+        const Double2 f = fi >= 0 ? vec_2d(nodes, fi) : Double2{};
         const double torque = number(nodes, found_, "torque");
         const double r = reach_[0].grow({ f.x, f.y }, dt_);
         const Plane p = plane(c, c.all(), r, backdrop());
         const double strongest = reach_[1].grow({ torque }, dt_, 1.0);
-        if (std::fabs(torque) > 1e-9 && on(Show::Torque)) curl_2d(c, p, V3{}, 0.2 * r, 5 * torque / strongest, ink.amber);
+        if (std::fabs(torque) > 1e-9 && on(Show::Torque)) curl_2d(c, p, Double2{}, 0.2 * r, 5 * torque / strongest, ink.amber);
         if (on(Show::History)) {
             const std::string base = child_path(path_, "force");
             Dots dots(c, ink.trail, 2);
-            for (const V3& t : trail(base + ".x", base + ".y")) dots.add(p(t.x, t.y));
+            for (const Double3& t : trail(base + ".x", base + ".y")) dots.add(p(t.x, t.y));
         }
         c.arrow(p(0, 0), p(f), ink.accent, ARROW);
-        foot(c, c.all(), "force " + f3(length(f)) + " N  torque " + f3(torque) + " N m");
+        foot(c, c.all(), "force " + f3(math::double2_length(f)) + " N  torque " + f3(torque) + " N m");
     }
 
     void vec3s(Canvas& c, const Nodes& nodes)
     {
-        std::vector<V3> v;
+        std::vector<Double3> v;
         for (const int i : children_of(nodes, found_)) v.push_back(vec(nodes, i));
-        for (const V3& e : v) reach_[0].seen = std::max(reach_[0].seen, length(e));
+        for (const Double3& e : v) reach_[0].seen = std::max(reach_[0].seen, math::double3_length(e));
         const Scene s = scene(c, c.all(), reach_[0].grow({}, dt_), camera(), backdrop());
         back_to_front(c, s, v, [&](size_t i) {
             if (i && on(Show::Line)) c.line(s(v[i - 1]), s(v[i]), ink.dim, THIN);
@@ -2159,18 +2171,18 @@ private:
     void poses(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
         const bool framed = node.elem_std == "Transform";
-        std::vector<Placed> p;
-        std::vector<V3> at;
+        std::vector<Pose> p;
+        std::vector<Double3> at;
         for (const int i : children_of(nodes, found_)) {
             p.push_back(placed(nodes, framed ? kid(nodes, i, "pose") : i));
-            at.push_back(p.back().at);
+            at.push_back(p.back().position);
         }
-        for (const V3& e : at) reach_[0].seen = std::max(reach_[0].seen, length(e));
+        for (const Double3& e : at) reach_[0].seen = std::max(reach_[0].seen, math::double3_length(e));
         const double r = reach_[0].grow({}, dt_, 1.2);
         const Scene s = scene(c, c.all(), r, camera(), backdrop());
         back_to_front(c, s, at, [&](size_t i) {
             if (i && on(Show::Line)) c.line(s(at[i - 1]), s(at[i]), ink.dim, THIN);
-            if (on(Show::Orientation)) triad(c, s, at[i], p[i].turn, 0.15 * r);
+            if (on(Show::Orientation)) triad(c, s, at[i], p[i].orientation, 0.15 * r);
             else                       c.dot(s(at[i]), ink.accent, 4);
             label(c, s(at[i]), i);
         });
@@ -2182,19 +2194,19 @@ private:
     void wrench(Canvas& c, const Nodes& nodes)
     {
         const int fi = kid(nodes, found_, "force"), ti = kid(nodes, found_, "torque");
-        const V3 f = fi >= 0 ? vec(nodes, fi) : V3{}, t = ti >= 0 ? vec(nodes, ti) : V3{};
-        const double r = reach_[0].grow({ length(f) }, dt_);
+        const Double3 f = fi >= 0 ? vec(nodes, fi) : Double3{}, t = ti >= 0 ? vec(nodes, ti) : Double3{};
+        const double r = reach_[0].grow({ math::double3_length(f) }, dt_);
         const Scene s = scene(c, c.all(), r, camera(), backdrop());
-        const double torque = length(t), strongest = reach_[1].grow({ torque }, dt_, 1.0);
+        const double torque = math::double3_length(t), strongest = reach_[1].grow({ torque }, dt_, 1.0);
         if (torque > 1e-9 && on(Show::Torque)) {
-            const V3 axis = t * (1 / torque);
+            const Double3 axis = t * (1 / torque);
             c.dashed(s(axis * -r), s(axis * r), faded(ink.amber, 0.6f), THIN);
             curl(c, s, axis, 0.2 * r, 5 * torque / strongest, ink.amber);
         }
         const std::string base = child_path(path_, "force");
-        const std::vector<V3> tail = on(Show::History) ? trail(base + ".x", base + ".y", base + ".z") : std::vector<V3>();
+        const std::vector<Double3> tail = on(Show::History) ? trail(base + ".x", base + ".y", base + ".z") : std::vector<Double3>();
         layered(c, s, f, &tail, [&] { c.arrow(s(0, 0, 0), s(f), ink.accent, ARROW); });
-        foot(c, c.all(), "force " + f3(length(f)) + " N  torque " + f3(torque) + " N m");
+        foot(c, c.all(), "force " + f3(math::double3_length(f)) + " N  torque " + f3(torque) + " N m");
     }
 
     /* One standard shape in a scene that grows to hold it, with its drop line. */
@@ -2205,14 +2217,15 @@ private:
         const Scene s = scene(c, c.all(), reach_[0].grow({}, dt_), camera(), backdrop());
         layered(c, s, middle(one), nullptr, [&] { draw_solid(c, s, one, ink.accent); });
         const auto text = describe(one);
-        foot(c, c.all(), { { text.first, ink.dim }, { one.kind == "OrientedBox" ? euler(one.turn) : "", ink.dim } }, text.second);
+        const auto* box = std::get_if<types::OrientedBox>(&one);
+        foot(c, c.all(), { { text.first, ink.dim }, { box ? euler(box->pose.orientation) : "", ink.dim } }, text.second);
     }
 
     /* An array of one kind of shape in one scene, each in its own colour. */
     void solids(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
         std::vector<Solid> list;
-        std::vector<V3> at;
+        std::vector<Double3> at;
         for (const int i : children_of(nodes, found_)) {
             list.push_back(solid(nodes, i, node.elem_std));
             at.push_back(middle(list.back()));
@@ -2231,10 +2244,10 @@ private:
     /* A metric north up plane over every point seen, eased, with a grid and a north mark.
        Draw is handed the projection and the clip rectangle. */
     template <class Draw>
-    void map(Canvas& c, const std::vector<V3>& points, Draw draw)
+    void map(Canvas& c, const std::vector<Double3>& points, Draw draw)
     {
         /* x is latitude, y longitude */
-        for (const V3& p : points) {
+        for (const Double3& p : points) {
             if (!frame_.init) { frame_.lat0 = frame_.lat1 = p.x; frame_.lon0 = frame_.lon1 = p.y; frame_.init = true; }
             frame_.lat0 = std::min(frame_.lat0, p.x); frame_.lat1 = std::max(frame_.lat1, p.x);
             frame_.lon0 = std::min(frame_.lon0, p.y); frame_.lon1 = std::max(frame_.lon1, p.y);
@@ -2271,8 +2284,8 @@ private:
 
     void geo(Canvas& c, const Nodes& nodes)
     {
-        const V3 now{ number(nodes, found_, "lat"), number(nodes, found_, "lon"), number(nodes, found_, "alt") };
-        std::vector<V3> points = on(Show::History) ? trail(child_path(path_, "lat"), child_path(path_, "lon")) : std::vector<V3>();
+        const Double3 now{ number(nodes, found_, "lat"), number(nodes, found_, "lon"), number(nodes, found_, "alt") };
+        std::vector<Double3> points = on(Show::History) ? trail(child_path(path_, "lat"), child_path(path_, "lon")) : std::vector<Double3>();
         if (points.empty()) points.push_back(now);
         map(c, points, [&](auto P, float left, float top, float right, float bottom) {
             /* a point within half a pixel of the last one drawn adds nothing to the path */
@@ -2298,8 +2311,8 @@ private:
 
     void geos(Canvas& c, const Nodes& nodes)
     {
-        std::vector<V3> points;
-        for (const int i : children_of(nodes, found_)) points.push_back(V3{ number(nodes, i, "lat"), number(nodes, i, "lon"), 0 });
+        std::vector<Double3> points;
+        for (const int i : children_of(nodes, found_)) points.push_back(Double3{ number(nodes, i, "lat"), number(nodes, i, "lon"), 0 });
         map(c, points, [&](auto P, float left, float top, float right, float bottom) {
             for (size_t i = 1; on(Show::Line) && i < points.size(); i++) {
                 Rml::Vector2f a = P(points[i - 1].x, points[i - 1].y), b = P(points[i].x, points[i].y);

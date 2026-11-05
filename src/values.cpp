@@ -544,21 +544,23 @@ Image image_of(const std::vector<ValueNode>& nodes, int index, const std::vector
                std::string* problem)
 {
     uint32_t width = 0, height = 0, stride = 0;
-    int format = -1;
+    const ValueNode* format = nullptr;
     const ValueNode* data = nullptr;
     for (const int k : children_of(nodes, index)) {
         const ValueNode& e = nodes[k];
         if (e.name == "width")  width  = (uint32_t)e.integer;
         if (e.name == "height") height = (uint32_t)e.integer;
         if (e.name == "stride") stride = (uint32_t)e.integer;
-        if (e.name == "format") format = (int)e.integer;
+        if (e.name == "format") format = &e;
         if (e.name == "data" && e.kind == ValueNode::Blob) data = &e;
     }
-    const bool held = data && (size_t)data->offset + data->count <= message.size();
-    Image image = held ? image_from_frame(width, height, stride, format, message.data() + data->offset, data->count)
+    const bool held = format && data && (size_t)data->offset + data->count <= message.size();
+    Image image = held ? image_from_frame(width, height, stride, (rant::types::ImageFormat)format->integer,
+                                          message.data() + data->offset, data->count)
                        : Image();
     if (!image.valid() && problem)
-        *problem = !data || !data->count ? "no pixels" : std::string(image_format_name(format)) + " frame not readable";
+        *problem = !data || !data->count ? "no pixels"
+                 : (format && !format->text.empty() ? format->text : std::string("unknown")) + " frame not readable";
     return image;
 }
 

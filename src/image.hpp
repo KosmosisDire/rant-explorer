@@ -5,6 +5,8 @@
 #ifndef IMAGE_HPP
 #define IMAGE_HPP
 
+#include "rant_types.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -24,10 +26,9 @@ Image image_decode(const std::string& file);
 /* RmlUi wants premultiplied alpha for generated textures, SDL wants straight. */
 void image_premultiply(Image& image);
 
-/* One frame of the standard Image type, by its format number, to straight alpha RGBA.
-   A stride of 0 means packed rows. Invalid when the format is unknown or the data is too
-   short for the size. */
-Image image_from_frame(uint32_t width, uint32_t height, uint32_t stride, int format,
+/* One frame of the standard Image type to straight alpha RGBA. A stride of 0 means packed
+   rows. Invalid when the format is unknown or the data is too short for the size. */
+Image image_from_frame(uint32_t width, uint32_t height, uint32_t stride, rant::types::ImageFormat format,
                        const uint8_t* data, size_t size);
 
 /* A decoded video picture: a luma plane and two chroma planes, or luma alone for gray.
@@ -47,14 +48,5 @@ Image image_from_planes(const Planes& planes);
 /* The picture as a PNG file, and as a BMP file of 32 bit BGRA rows. */
 std::vector<uint8_t> image_png(const Image& image);
 std::vector<uint8_t> image_bmp(const Image& image);
-
-/* The format numbers of the standard Image type's enum. */
-struct ImageFormat {
-    enum : int { Mono8 = 0, Mono16 = 1, Rgb8 = 2, Rgba8 = 3, Bgr8 = 4, Yuyv = 5, Nv12 = 6, Monof32 = 7,
-                 Jpeg = 16, Png = 17 };
-};
-
-/* The name of an Image format number, for a message when it cannot be shown. */
-const char* image_format_name(int format);
 
 #endif /* IMAGE_HPP */

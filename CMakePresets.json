@@ -5,14 +5,14 @@
     {
       "name": "windows",
       "displayName": "Windows (Visual Studio)",
-      "description": "Newest installed Visual Studio, Rant from the pinned release",
+      "description": "Newest installed Visual Studio, Rant and math from the pinned releases",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
       "name": "linux",
       "displayName": "Linux (Ninja)",
-      "description": "Ninja, Rant from the pinned release",
+      "description": "Ninja, Rant and math from the pinned releases",
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
@@ -20,7 +20,7 @@
     {
       "name": "macos",
       "displayName": "macOS (Ninja)",
-      "description": "Ninja, Rant from the pinned release",
+      "description": "Ninja, Rant and math from the pinned releases",
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
@@ -28,31 +28,31 @@
     {
       "name": "windows-local",
       "inherits": "windows",
-      "displayName": "Windows (Visual Studio), local Rant",
-      "description": "Rant from the ../rant working tree",
-      "cacheVariables": { "CPM_rant_SOURCE": "${sourceDir}/../rant" },
+      "displayName": "Windows (Visual Studio), local Rant and math",
+      "description": "Rant and math from the ../rant and ../math-rant working trees",
+      "cacheVariables": { "CPM_rant_SOURCE": "${sourceDir}/../rant", "CPM_math_SOURCE": "${sourceDir}/../math-rant" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
       "name": "linux-local",
       "inherits": "linux",
-      "displayName": "Linux (Ninja), local Rant",
-      "description": "Rant from the ../rant working tree",
-      "cacheVariables": { "CPM_rant_SOURCE": "${sourceDir}/../rant" },
+      "displayName": "Linux (Ninja), local Rant and math",
+      "description": "Rant and math from the ../rant and ../math-rant working trees",
+      "cacheVariables": { "CPM_rant_SOURCE": "${sourceDir}/../rant", "CPM_math_SOURCE": "${sourceDir}/../math-rant" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
     },
     {
       "name": "macos-local",
       "inherits": "macos",
-      "displayName": "macOS (Ninja), local Rant",
-      "description": "Rant from the ../rant working tree",
-      "cacheVariables": { "CPM_rant_SOURCE": "${sourceDir}/../rant" },
+      "displayName": "macOS (Ninja), local Rant and math",
+      "description": "Rant and math from the ../rant and ../math-rant working trees",
+      "cacheVariables": { "CPM_rant_SOURCE": "${sourceDir}/../rant", "CPM_math_SOURCE": "${sourceDir}/../math-rant" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
     },
     {
       "name": "web",
       "displayName": "Web (Emscripten)",
-      "description": "Ninja and the emsdk in EMSDK, Rant and its web package from the pinned release",
+      "description": "Ninja and the emsdk in EMSDK, Rant, its web package and math from the pinned releases",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
@@ -61,10 +61,11 @@
     {
       "name": "web-local",
       "inherits": "web",
-      "displayName": "Web (Emscripten), local Rant",
-      "description": "Rant and its net objects from ../rant",
+      "displayName": "Web (Emscripten), local Rant and math",
+      "description": "Rant and its net objects from ../rant, math from ../math-rant",
       "cacheVariables": {
-        "CPM_rant_SOURCE": "${sourceDir}/../rant"
+        "CPM_rant_SOURCE": "${sourceDir}/../rant",
+        "CPM_math_SOURCE": "${sourceDir}/../math-rant"
       }
     }
   ],

@@ -42,6 +42,13 @@ if(NOT EMSCRIPTEN)
   include("${rant_SOURCE_DIR}/tools/static_runtime.cmake")
 endif()
 
+# Geometry, images and clouds on the standard types. The local presets set CPM_math_SOURCE to
+# ../math-rant.
+CPMAddPackage(NAME math
+  GITHUB_REPOSITORY KosmosisDire/rant-math
+  VERSION 0.0.2
+  EXCLUDE_FROM_ALL YES)
+
 # FreeType is RmlUi's font engine. Its CMake spells Freetype::Freetype as an export name
 # only, so a subdirectory build has to make the alias by hand.
 CPMAddPackage(NAME freetype
@@ -230,7 +237,7 @@ target_compile_definitions(rant_explorer PRIVATE
 target_compile_definitions(rant_explorer PRIVATE RMLUI_SDL_VERSION_MAJOR=3)
 
 target_link_libraries(rant_explorer PRIVATE
-  RmlUi::Core RmlUi::Debugger SDL3::SDL3 rant::rant openh264_decoder openh264_encoder cgif dav1d de265)
+  RmlUi::Core RmlUi::Debugger SDL3::SDL3 rant::rant rant_math openh264_decoder openh264_encoder cgif dav1d de265)
 
 if(EMSCRIPTEN)
   web_target(rant_explorer)

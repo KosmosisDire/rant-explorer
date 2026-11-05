@@ -74,9 +74,10 @@ public:
     float text_width(const std::string& s, float size_dp = 10) const;
 
     /* A texture, or the window of it from and to span as fractions, stretched over a
-       rectangle under the shapes and the text. Samples stay half a texel inside the edge,
-       so smoothing never wraps the far edge in. */
-    void picture(float x, float y, float w, float h, Rml::Texture texture, Rml::Vector2i texels,
+       rectangle under the shapes and the text. A smooth one's samples stay half a texel
+       inside the edge, so smoothing never wraps the far edge in. A sharp one magnifies each
+       texel to a square. */
+    void picture(float x, float y, float w, float h, Rml::Texture texture, Rml::Vector2i texels, bool sharp,
                  Rml::Vector2f from = { 0, 0 }, Rml::Vector2f to = { 1, 1 });
 
     /* A 3D scene, kept by the caller until render. to_area takes the world to the drawing's
@@ -90,6 +91,7 @@ private:
         Rml::Vector2f at, size;
         Rml::Texture  texture;
         Rml::Vector2f from, to;   /* the texture coordinates of the corners */
+        bool          sharp;
     };
     struct Label {
         std::string  s;

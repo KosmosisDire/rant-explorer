@@ -1444,6 +1444,97 @@ std::string detected(const Nodes& nodes, int index)
     return (name.empty() ? "" : name + " ") + print("%.2f", number(nodes, index, "score"));
 }
 
+/* From a toward b by t, 0 to 1, as math mixes colours. */
+Rml::Colourb mixed(Rml::Colourb a, Rml::Colourb b, double t)
+{
+    const types::Color m = math::color_mix(types::Color{ a.red, a.green, a.blue, a.alpha },
+                                           types::Color{ b.red, b.green, b.blue, b.alpha }, t);
+    return Rml::Colourb(m.r, m.g, m.b, m.a);
+}
+
+/* What a joints card can draw a column of, in order. */
+const char* const JOINT_COLUMNS[] = { "position", "velocity", "acceleration", "effort" };
+
+/* What a flat Grid's field or a 2D Tensor holds, as rows of a picture from the top. */
+struct Cells {
+    std::vector<float> values;
+    uint32_t           width = 0, height = 0;
+    bool               floats = false;
+    std::string        text, problem;   /* the readings at the left, or why there are none */
+
+    ImageFrame frame() const
+    {
+        ImageFrame f;
+        f.width  = width;
+        f.height = height;
+        f.format = types::ImageFormat::Monof32;
+        f.data   = values.empty() ? nullptr : (const uint8_t*)values.data();
+        f.size   = values.size() * sizeof(float);
+        return f;
+    }
+};
+
+/* A Grid's first field, one GridField of a grid, or a Tensor, read through math as a grid
+   of that one field. A tensor lies as such a field does, its last dimension as x. */
+Cells cells_of(const Nodes& nodes, int index, const std::string& std_name, const std::vector<uint8_t>& message)
+{
+    Cells out;
+    types::Grid grid;
+    types::GridField field;
+    int at = index;   /* the node holding the kind and the data */
+    const bool tensor = std_name == "Tensor";
+    if (tensor) {
+        std::vector<uint32_t> big;
+        for (const double d : numbers_of(nodes, kid(nodes, index, "shape"), message))
+            if (d > 1) big.push_back((uint32_t)d);
+        if (big.size() != 2) return out;
+        grid.cells_y    = big[0];
+        grid.cells_x    = big[1];
+        grid.cells_z    = 1;
+        grid.resolution = 1;
+    } else {
+        const int owner = std_name == "GridField" ? holder_of(nodes, holder_of(nodes, index)) : index;
+        if (std_name != "GridField") {
+            const std::vector<int> fields = children_of(nodes, kid(nodes, index, "fields"));
+            if (fields.empty()) {
+                out.problem = "no fields";
+                return out;
+            }
+            at = fields[0];
+        }
+        grid.cells_x    = (uint32_t)number(nodes, owner, "cells_x");
+        grid.cells_y    = (uint32_t)number(nodes, owner, "cells_y");
+        grid.cells_z    = (uint32_t)number(nodes, owner, "cells_z");
+        grid.resolution = number(nodes, owner, "resolution");
+        const int name  = kid(nodes, at, "name");
+        field.name      = name >= 0 ? nodes[name].text : std::string();
+    }
+    const int kind = kid(nodes, at, "kind"), data = kid(nodes, at, "data");
+    if (kind >= 0) field.kind = (types::ScalarKind)nodes[kind].integer;
+    if (data >= 0 && nodes[data].kind == ValueNode::Blob && (size_t)nodes[data].offset + nodes[data].count <= message.size())
+        field.data.assign(message.begin() + nodes[data].offset, message.begin() + nodes[data].offset + nodes[data].count);
+    grid.fields.push_back(field);
+    const std::string kind_text = kind >= 0 ? value_text(nodes[kind]) : std::string();
+    const uint32_t w = grid.cells_x, h = grid.cells_y;
+    out.floats = field.kind == types::ScalarKind::F32 || field.kind == types::ScalarKind::F64;
+    out.text   = tensor ? kind_text + "  " + std::to_string(h) + " x " + std::to_string(w)
+                        : field.name + "  " + std::to_string(w) + " x " + std::to_string(h) + "  cell " + f3(grid.resolution) + " m";
+    std::vector<double> v;
+    try {
+        v = math::grid_read_values(grid, field.name.c_str());
+    } catch (const math::MathError&) {
+        out.problem = (tensor ? std::string("tensor") : field.name) + " not readable";
+        return out;
+    }
+    /* a grid's y points up, so its last row is the picture's first */
+    out.values.resize((size_t)w * h);
+    for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w; x++) out.values[(size_t)(tensor ? y : h - 1 - y) * w + x] = (float)v[(size_t)y * w + x];
+    out.width  = w;
+    out.height = h;
+    return out;
+}
+
 /* ------------------------------------------------------------------ the element */
 
 /* What a visual draws into: the canvas, a scene the card orbits, a picture it pans and
@@ -2434,6 +2525,51 @@ private:
         foot(c, c.all(), counted(list.size(), node.elem_std));
     }
 
+    /* A LaserScan: each range math finds valid as a point in the scan's frame, the sensor at
+       the origin. While the card shows colours a point runs from dim to the accent as its
+       intensity does over every intensity seen. */
+    void scan(Canvas& c, const Nodes& nodes, const ValueNode&)
+    {
+        types::LaserScan s;
+        s.angle_min  = (float)number(nodes, found_, "angle_min");
+        s.angle_step = (float)number(nodes, found_, "angle_step");
+        s.range_min  = (float)number(nodes, found_, "range_min");
+        s.range_max  = (float)number(nodes, found_, "range_max");
+        s.echoes     = (uint8_t)number(nodes, found_, "echoes");
+        for (const double v : numbers_of(nodes, kid(nodes, found_, "ranges"), message())) s.ranges.push_back((float)v);
+        const std::vector<double> strength = numbers_of(nodes, kid(nodes, found_, "intensities"), message());
+        std::vector<Double2> points;
+        try {
+            points = math::laser_scan_points(s);
+        } catch (const math::MathError&) {
+        }
+        const bool shaded = on(Show::Colours) && strength.size() == points.size();
+        size_t hits = 0;
+        double nearest = INFINITY;
+        for (size_t i = 0; i < points.size(); i++) {
+            const Double2& q = points[i];
+            if (!std::isfinite(q.x)) continue;
+            hits++;
+            nearest = std::min(nearest, math::double2_length(q));
+            reach_[0].seen = std::max({ reach_[0].seen, std::fabs(q.x), std::fabs(q.y) });
+            if (!shaded || !std::isfinite(strength[i])) continue;
+            if (!seen_) { lo_seen_ = hi_seen_ = strength[i]; seen_ = true; }
+            lo_seen_ = std::min(lo_seen_, strength[i]);
+            hi_seen_ = std::max(hi_seen_, strength[i]);
+        }
+        if (seen_) ease_range(lo_seen_, hi_seen_);
+        const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_), backdrop());
+        for (size_t i = 0; i < points.size(); i++) {
+            if (!std::isfinite(points[i].x)) continue;
+            const bool known = shaded && std::isfinite(strength[i]) && hi_ > lo_;
+            c.dot(p(points[i]), mixed(ink.dim, ink.accent, known ? (strength[i] - lo_) / (hi_ - lo_) : 1), 2);
+        }
+        c.dot(p(0, 0), ink.dim, 3);
+        const size_t beams = s.ranges.size() / std::max<size_t>(1, s.echoes);
+        foot(c, c.all(), { { counted(beams, "beam"), ink.dim }, { hits ? "nearest " + f3(nearest) + " m" : "nothing in range", ink.dim } },
+             shaded && seen_ ? "intensity " + short_number(lo_seen_) + " to " + short_number(hi_seen_) : std::string());
+    }
+
     /* Detection2Ds, one or an array, as Detection3Ds are drawn but on a plane. */
     void detections_2d(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
@@ -2961,31 +3097,45 @@ private:
         foot(c, c.all(), "", format_number((double)items.size()) + " colors");
     }
 
-    /* One row per joint and a column each for position, velocity and effort: a bar from
-       the centre, each column scaled to the largest magnitude it has seen, written above. */
+    /* Each of JOINT_COLUMNS the value holds numbers in, by its place there, so a column
+       keeps its scale, and the most numbers any holds. */
+    std::vector<std::pair<int, std::vector<double>>> joint_columns(const Nodes& nodes, size_t& rows) const
+    {
+        std::vector<std::pair<int, std::vector<double>>> out;
+        rows = 0;
+        for (int f = 0; f < (int)std::size(JOINT_COLUMNS); f++) {
+            std::vector<double> v = numbers_of(nodes, kid(nodes, found_, JOINT_COLUMNS[f]), message());
+            rows = std::max(rows, v.size());
+            if (!v.empty()) out.push_back({ f, std::move(v) });
+        }
+        return out;
+    }
+
+    /* One row per joint and a column for each of JOINT_COLUMNS it holds: a bar from the
+       centre, each column scaled to the largest magnitude it has seen, written above. A
+       trajectory point's time is in the foot. */
     void joints(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
-        const char* names[3] = { "position", "velocity", "effort" };
-        std::vector<double> columns[3];
-        size_t rows = 0;
-        for (int f = 0; f < 3; f++) {
-            const int k = kid(nodes, found_, names[f]);
-            if (k >= 0) columns[f] = numbers_of(nodes, k, message());
-            rows = std::max(rows, columns[f].size());
-        }
-        const float gutter = c.dp(28), gap = c.dp(10), top = c.dp(TOP) + c.dp(16), bottom = c.h() - c.dp(8);
-        const float col_w = (c.w() - gutter - c.dp(8) - 2 * gap) / 3;
+        size_t rows;
+        const auto columns = joint_columns(nodes, rows);
+        const int  time    = kid(nodes, found_, "time");
+        const bool timed   = time >= 0 && on(Show::Readings);
+        const size_t n     = std::max<size_t>(1, columns.size());
+        const float gutter = c.dp(28), gap = c.dp(10), top = c.dp(TOP) + c.dp(16), bottom = c.h() - c.dp(timed ? BOT : 8);
+        const float col_w = (c.w() - gutter - c.dp(8) - (n - 1) * gap) / n;
         const float row_h = rows ? std::min(c.dp(26), (bottom - top) / rows) : 0, bar_h = std::max(1.f, row_h - c.dp(4));
-        for (int f = 0; f < 3; f++) {
+        for (size_t s = 0; s < columns.size(); s++) {
+            const int f = columns[s].first;
+            const std::vector<double>& values = columns[s].second;
             double biggest = 0;
-            for (const double v : columns[f]) biggest = std::max(biggest, std::fabs(v));
+            for (const double v : values) biggest = std::max(biggest, std::fabs(v));
             scale_[f].seen = std::max(scale_[f].seen, biggest);
             const double m = scale_[f].grow({}, dt_, 1.0);
-            const float x = gutter + f * (col_w + gap);
-            c.text(std::string(names[f]) + "  \xC2\xB1" + short_number(m), x, c.dp(TOP) + c.dp(6), Canvas::Left, ink.faint, LABEL);
-            for (size_t r = 0; r < columns[f].size(); r++) {
+            const float x = gutter + s * (col_w + gap);
+            c.text(std::string(JOINT_COLUMNS[f]) + "  \xC2\xB1" + short_number(m), x, c.dp(TOP) + c.dp(6), Canvas::Left, ink.faint, LABEL);
+            for (size_t r = 0; r < values.size(); r++) {
                 const float y = top + r * row_h;
-                const double v = columns[f][r];
+                const double v = values[r];
                 c.rect(x, y, col_w, bar_h, ink.panel);
                 for (int q = 1; q < 4 && on(Show::Grid); q++) c.line(x + col_w * q / 4, y, x + col_w * q / 4, y + bar_h, ink.grid);
                 const float mid = x + col_w / 2, len = (float)(std::max(-1.0, std::min(1.0, v / m)) * col_w / 2);
@@ -2996,24 +3146,79 @@ private:
         }
         for (size_t r = 0; on(Show::Labels) && r < rows; r++)
             c.text(std::to_string(r), gutter - c.dp(6), top + r * row_h + bar_h / 2 + c.dp(4), Canvas::Right, ink.faint, LABEL);
+        if (timed) foot(c, c.all(), "at " + print("%.3f s", nodes[time].integer / 1e6));
+    }
+
+    /* A JointTrajectory or its points: each joint's position against the trajectory's time,
+       a line per joint in its colour named at its end, over every position seen. */
+    void trajectory(Canvas& c, const Nodes& nodes, const ValueNode& node)
+    {
+        const int list = node.kind == ValueNode::Array ? found_ : kid(nodes, found_, "points");
+        std::vector<double> times;
+        std::vector<std::vector<double>> positions;
+        size_t joints = 0;
+        for (const int k : children_of(nodes, list)) {
+            times.push_back(number(nodes, k, "time") / 1e6);
+            positions.push_back(numbers_of(nodes, kid(nodes, k, "position"), message()));
+            joints = std::max(joints, positions.back().size());
+            for (const double v : positions.back()) {
+                if (!seen_) { lo_seen_ = hi_seen_ = v; seen_ = true; }
+                lo_seen_ = std::min(lo_seen_, v);
+                hi_seen_ = std::max(hi_seen_, v);
+            }
+        }
+        double lo = seen_ ? lo_seen_ : 0, hi = seen_ ? hi_seen_ : 0;
+        if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
+        else { const double m = (hi - lo) * 0.1; lo -= m; hi += m; }
+        ease_range(lo, hi);
+        const double span = reach_[0].grow({ times.empty() ? 0 : times.back() }, dt_, 1.0);
+        const float top = c.dp(TOP), bottom = c.h() - c.dp(BOT + LINE);
+        const float x0 = c.dp(GUTTER), x1 = c.w() - c.dp(on(Show::Labels) ? 28 : 10);
+        auto X = [&](double t) { return (float)(x0 + (x1 - x0) * t / span); };
+        auto Y = [&](double v) { return (float)(top + (bottom - top) * (1 - (v - lo_) / (hi_ - lo_))); };
+        const double step = nice(span / 4);
+        for (int i = 0; i * step <= span * (1 + 1e-9); i++) {
+            const float x = X(i * step);
+            if (on(Show::Grid)) c.line(x, top, x, bottom, ink.grid);
+            c.text(print("%g s", i * step), x, c.h() - c.dp(6), i ? Canvas::Center : Canvas::Left, ink.faint, LABEL);
+        }
+        value_grid(c, x0, x1, lo_, hi_, Y, true, on(Show::Grid));
+        for (size_t j = 0; j < joints; j++) {
+            std::vector<Rml::Vector2f> line;
+            for (size_t i = 0; i < times.size(); i++)
+                if (j < positions[i].size()) line.push_back({ X(times[i]), Y(positions[i][j]) });
+            c.polyline(line, tint(j), STROKE);
+            if (!line.empty()) label(c, line.back(), j);
+        }
+        foot(c, over_time(c), { { counted(times.size(), "point"), ink.dim }, { counted(joints, "joint"), ink.dim } },
+             "over " + f3(times.empty() ? 0 : times.back()) + " s");
     }
 
     /* ---------------------------------------------------------------- pictures */
 
     /* A standard Image or a File holding one, fitted inside the card over its format or name
-       and size. A one channel frame is drawn again while its levels ease to its span. */
-    void picture(Canvas& c, const Nodes& nodes, const ValueNode&)
+       and size, or the cells of a flat Grid or a 2D Tensor through a colormap. A one channel
+       frame is drawn again while its levels ease to its span. */
+    void picture(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
         const Capture::WatchView* watch = source->view(topic_);
-        const bool fresh = watch && watch->seq != frame_seq_;
+        const bool fresh = watch && watch->seq != frame_seq_, cells = visual_ == Visual::Grid;
         if (fresh) {
-            frame_seq_   = watch->seq;
-            const ImageFrame frame = frame_of(nodes, found_, watch->message);
-            one_channel_ = image_levels(frame, span_);
-            const bool floats = frame.format == types::ImageFormat::Monof32;
-            span_text_   = one_channel_ ? axis_label(span_.lo, floats) + " to " + axis_label(span_.hi, floats) : std::string();
-            const int format = kid(nodes, found_, "format"), name = kid(nodes, found_, "name");
-            frame_name_  = format >= 0 ? nodes[format].text : name >= 0 ? nodes[name].text : std::string();
+            frame_seq_ = watch->seq;
+            bool floats;
+            if (cells) {
+                cells_       = cells_of(nodes, found_, node.std_name, watch->message);
+                one_channel_ = image_levels(cells_.frame(), span_, true);
+                floats       = cells_.floats;
+                frame_name_  = cells_.text;
+            } else {
+                const ImageFrame frame = frame_of(nodes, found_, watch->message);
+                one_channel_ = image_levels(frame, span_);
+                floats       = frame.format == types::ImageFormat::Monof32;
+                const int format = kid(nodes, found_, "format"), name = kid(nodes, found_, "name");
+                frame_name_  = format >= 0 ? nodes[format].text : name >= 0 ? nodes[name].text : std::string();
+            }
+            span_text_ = one_channel_ ? axis_label(span_.lo, floats) + " to " + axis_label(span_.hi, floats) : std::string();
         }
         if (watch && (fresh || (one_channel_ && (lo_ != span_.lo || hi_ != span_.hi)))) {
             if (one_channel_) {
@@ -3021,14 +3226,16 @@ private:
                 const double near = (span_.hi - span_.lo) * 1e-3;
                 if (std::fabs(lo_ - span_.lo) < near && std::fabs(hi_ - span_.hi) < near) { lo_ = span_.lo; hi_ = span_.hi; }
             }
-            const Levels levels{ lo_, hi_ };
-            problem_.clear();
-            Image image = image_of(nodes, found_, watch->message, &problem_, one_channel_ ? &levels : nullptr);
+            const Levels levels{ lo_, hi_, cells };
+            problem_ = cells ? cells_.problem : std::string();
+            Image image = cells ? image_from_frame(cells_.frame(), &levels)
+                                : image_of(nodes, found_, watch->message, &problem_, one_channel_ ? &levels : nullptr);
             show(image);
         }
         fit(c, c.h() - c.dp(BOT), problem_.empty() ? "waiting for a frame" : problem_);
         if (texture_)
-            foot(c, c.all(), frame_name_ + "  " + std::to_string(frame_size_.x) + " x " + std::to_string(frame_size_.y), span_text_);
+            foot(c, c.all(), cells ? frame_name_ : frame_name_ + "  " + std::to_string(frame_size_.x) + " x " + std::to_string(frame_size_.y),
+                 span_text_);
     }
 
     /* A VideoFrame stream: every frame since the last draw goes to the decoder, and its
@@ -3106,7 +3313,7 @@ private:
                                 std::max(seen.y / 2, std::min(frame.y - seen.y / 2, centre_.y)));
         const Rml::Vector2f size = seen * s;
         c.picture(std::round(middle.x - size.x / 2), std::round(middle.y - size.y / 2), std::round(size.x),
-                  std::round(size.y), texture_, frame_size_, (centre_ - seen * 0.5f) / frame,
+                  std::round(size.y), texture_, frame_size_, visual_ == Visual::Grid, (centre_ - seen * 0.5f) / frame,
                   (centre_ + seen * 0.5f) / frame);
     }
 
@@ -3128,9 +3335,12 @@ private:
         return grid_tile(2, child_count(nodes));
     }
 
+    /* A joints card wants its columns and the gutter across, and a row per joint. */
     Tile joints_tile(const Nodes* nodes) const
     {
-        return grid_tile(4, child_count(nodes));
+        size_t rows = 0;
+        const size_t columns = nodes ? joint_columns(*nodes, rows).size() : 3;
+        return grid_tile(columns + 1, rows);
     }
 
     Tile matrix_tile(const Nodes* nodes) const
@@ -3227,7 +3437,7 @@ private:
 
     Reach  reach_[2];                             /* a scene's reach, and a twist's fastest turn */
     Camera cam_;
-    Reach  scale_[3];                             /* the joints' column scales */
+    Reach  scale_[std::size(JOINT_COLUMNS)];      /* the joints' column scales */
 
     struct FrameBounds {
         bool   init = false, eased = false;
@@ -3244,6 +3454,7 @@ private:
     std::string          frame_name_, span_text_;
     bool                 one_channel_ = false;
     Levels               span_;
+    Cells                cells_;   /* a grid's or a tensor's numbers, for redrawing as the levels ease */
 
     /* a video's decoder, for the topic it was made for, and the newest picture taken */
     std::unique_ptr<VideoDecoder> decoder_;
@@ -3315,6 +3526,7 @@ const VizElement::Row& VizElement::row_of(Visual v)
           { TRAIL_SECONDS, "position", { "lat", "lon" } } },
         { V::Range,    K::Canvas,   { 3, 1 },          &E::range,      bits({ S::History, S::Grid, S::Readings }), 0,
           { PLOT_SECONDS, nullptr, { "distance" } } },
+        { V::Scan,     K::Canvas,   { 1.3, 1 },        &E::scan,       bits({ S::Colours }) | PLANE_PARTS },
         { V::Detection, K::Scene,   { 1, 1.5 },        &E::detections, bits({ S::Labels, S::Colours }) | SCENE_PARTS },
         { V::Detection2D, K::Canvas, { 1.3, 1 },       &E::detections_2d, bits({ S::Labels, S::Colours }) | PLANE_PARTS },
         { V::Solid,    K::Scene,    { 1, 1.5 },        &E::solid_one,  SCENE_PARTS },
@@ -3323,7 +3535,9 @@ const VizElement::Row& VizElement::row_of(Visual v)
           { TRAIL_SECONDS, nullptr, { "lat", "lon" } } },
         { V::Color,    K::Canvas,   { 1.5, 0.5 },      &E::colour,     bits({ S::Readings }) },
         { V::Joints,   K::Canvas,   &E::joints_tile,   &E::joints,     bits({ S::Labels, S::Grid, S::Readings }) },
+        { V::Trajectory, K::Canvas, { 3, 1 },          &E::trajectory, bits({ S::Labels, S::Colours, S::Grid, S::Readings }) },
         { V::Image,    K::Picture,  &E::picture_tile,  &E::picture,    bits({ S::Readings }) },
+        { V::Grid,     K::Picture,  &E::picture_tile,  &E::picture,    bits({ S::Readings }) },
         { V::Video,    K::Picture,  &E::picture_tile,  &E::video,      bits({ S::Readings }), 0,
           { 0, nullptr, {}, true } },
         { V::Stream,   K::Html,     { 2.5, 0.5 },      &E::stream },

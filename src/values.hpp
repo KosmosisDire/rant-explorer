@@ -78,8 +78,8 @@ struct ValueView {
 enum class Visual {
     None, Plot, State, Text, Time, Duration, Uuid, Hex, Chips, Bars, Cells, Table, Matrix, Multi, Calls,
     Vec2, Vec3, Vec4, Quat, Pose, Pose2D, Twist, Twist2D, Wrench, Wrench2D, Accel, Accel2D, PoseCovariance,
-    TwistCovariance, Odometry, Imu, Inertia, Gnss, Range, Detection, Detection2D, Solid, Figure, Geo,
-    Color, Joints, Image, Video, Stream, File,
+    TwistCovariance, Odometry, Imu, Inertia, Gnss, Range, Scan, Detection, Detection2D, Solid, Figure, Geo,
+    Color, Joints, Trajectory, Image, Grid, Video, Stream, File,
     Vec2s, Vec3s, Poses, Poses2D, Path, Path2D, Polyline, Polyline2D, Solids, Figures, Geos, Colors, Kv,
 };
 Visual visual_for(const Capture::ValueNode& node);
@@ -111,8 +111,10 @@ std::string uuid_text(const std::vector<Capture::ValueNode>& nodes, int index, c
    struct's fields, an image's or a video's size. A plain struct stays blank. */
 std::string preview_text(const Capture::WatchView& view);
 
-/* The nodes directly under index, -1 for the top level. */
+/* The nodes directly under index, -1 for the top level, none for no node. */
 std::vector<int> children_of(const std::vector<Capture::ValueNode>& nodes, int index);
+/* The node directly holding index, -1 for the top level. */
+int holder_of(const std::vector<Capture::ValueNode>& nodes, int index);
 
 /* Each element or member under index in order, until visit returns false: the nodes listed
    after it, or a packed array's elements read from the message, whose at is -2. */

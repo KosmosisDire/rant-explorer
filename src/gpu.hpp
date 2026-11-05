@@ -55,4 +55,8 @@ struct Batch {
    pixels per dp. */
 void draw_batch(const Batch& batch, const Rml::Matrix4f& to_clip, Rml::Vector3f light, float dp, Rml::Vector2i window);
 
+/* While on, a texture RmlUi draws magnifies to sharp texels, as a grid's cells want. Turn it
+   off before RmlUi draws anything else. */
+void sharp_texels(bool on);
+
 #endif /* GPU_HPP */

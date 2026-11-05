@@ -35,17 +35,18 @@ struct ImageFrame {
     size_t                    size = 0;
 };
 
-/* The values a one channel frame is drawn between, black to white. */
+/* The values a one channel frame is drawn between, black to white, or through viridis. */
 struct Levels {
     double lo = 0, hi = 1;
+    bool   colormap = false;
 };
 
 /* The format of a PNG or JPEG file by its first bytes. False for any other file. */
 bool image_file_format(const uint8_t* data, size_t size, rant::types::ImageFormat& format);
 
 /* The span of a Mono16 or Monof32 frame's values. Zero is skipped, since a depth camera
-   writes it where it has no reading. False for any other format. */
-bool image_levels(const ImageFrame& frame, Levels& out);
+   writes it where it has no reading, unless it is a value. False for any other format. */
+bool image_levels(const ImageFrame& frame, Levels& out, bool zero_is_value = false);
 
 /* A frame to straight alpha RGBA, a one channel frame drawn between levels, or its own span
    when there are none. Invalid when the format is unknown or the data is too short. */

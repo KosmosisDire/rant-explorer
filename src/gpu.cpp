@@ -297,3 +297,17 @@ void draw_batch(const Batch& batch, const Rml::Matrix4f& to_clip, Rml::Vector3f 
     /* the renderer keeps which program it used last, so it binds its own again */
     static_cast<RenderInterface_GL3*>(Rml::GetRenderInterface())->ResetProgram();
 }
+
+void sharp_texels(bool on)
+{
+    /* a sampler bound to the unit RmlUi draws with overrides its texture's own filters */
+    static GLuint sampler = 0;
+    if (on && !sampler) {
+        glGenSamplers(1, &sampler);
+        glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glSamplerParameteri(sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    glBindSampler(0, on ? sampler : 0);
+}

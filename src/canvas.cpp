@@ -174,13 +174,15 @@ float Canvas::text_width(const std::string& s, float size_dp) const
     return (float)Rml::GetFontEngineInterface()->GetStringWidth(face, s, Rml::TextShapingContext{ no_language() });
 }
 
-void Canvas::picture(float x, float y, float w, float h, Rml::Texture texture, Rml::Vector2i texels,
+void Canvas::picture(float x, float y, float w, float h, Rml::Texture texture, Rml::Vector2i texels, bool sharp,
                      Rml::Vector2f from, Rml::Vector2f to)
 {
-    const Rml::Vector2f inset(0.5f / std::max(1, texels.x), 0.5f / std::max(1, texels.y));
-    from = Rml::Vector2f(std::max(from.x, inset.x), std::max(from.y, inset.y));
-    to   = Rml::Vector2f(std::min(to.x, 1 - inset.x), std::min(to.y, 1 - inset.y));
-    pictures_.push_back(Picture{ { x, y }, { w, h }, texture, from, to });
+    if (!sharp) {
+        const Rml::Vector2f inset(0.5f / std::max(1, texels.x), 0.5f / std::max(1, texels.y));
+        from = Rml::Vector2f(std::max(from.x, inset.x), std::max(from.y, inset.y));
+        to   = Rml::Vector2f(std::min(to.x, 1 - inset.x), std::min(to.y, 1 - inset.y));
+    }
+    pictures_.push_back(Picture{ { x, y }, { w, h }, texture, from, to, sharp });
 }
 
 void Canvas::scene(const Batch& batch, const Rml::Matrix4f& to_area, Rml::Vector3f light)
@@ -206,7 +208,9 @@ void Canvas::render()
         Rml::Mesh quad;
         Rml::MeshUtilities::GenerateQuad(quad, p.at, p.size, Rml::ColourbPremultiplied(255, 255, 255, 255),
                                          p.from, p.to);
+        if (p.sharp) sharp_texels(true);
         rm->MakeGeometry(std::move(quad)).Render(origin_, p.texture);
+        if (p.sharp) sharp_texels(false);
     }
     if (batch_) {
         const Rml::Vector2i window = rm->GetViewport();

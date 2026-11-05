@@ -90,7 +90,7 @@ bool image_file_format(const uint8_t* data, size_t size, rant::types::ImageForma
     return true;
 }
 
-bool image_levels(const ImageFrame& f, Levels& out)
+bool image_levels(const ImageFrame& f, Levels& out, bool zero_is_value)
 {
     using rant::types::ImageFormat;
     const size_t bytes = f.format == ImageFormat::Mono16 ? 2 : f.format == ImageFormat::Monof32 ? 4 : 0;
@@ -109,7 +109,7 @@ bool image_levels(const ImageFrame& f, Levels& out)
                 std::memcpy(&g, at, 4);
                 v = g;
             }
-            if (v != 0 && std::isfinite(v)) { lo = std::min(lo, v); hi = std::max(hi, v); }
+            if ((v != 0 || zero_is_value) && std::isfinite(v)) { lo = std::min(lo, v); hi = std::max(hi, v); }
         }
     if (!std::isfinite(lo)) lo = 0;
     if (!(hi > lo)) hi = lo + 1;   /* a flat frame keeps its level */
@@ -152,7 +152,9 @@ Image image_from_frame(const ImageFrame& f, const Levels* levels)
             levels = &own;
         }
         if (f.format == ImageFormat::Mono16 || f.format == ImageFormat::Monof32)
-            out = rant::math::image_colorize(view, levels->lo, levels->hi, rant::math::Colormap::Gray, ImageFormat::Rgba8);
+            out = rant::math::image_colorize(view, levels->lo, levels->hi,
+                                             levels->colormap ? rant::math::Colormap::Viridis : rant::math::Colormap::Gray,
+                                             ImageFormat::Rgba8);
         else
             out = rant::math::image_convert(view, ImageFormat::Rgba8);
         image.width  = (int)out.width;

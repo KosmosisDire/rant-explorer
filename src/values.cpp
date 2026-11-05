@@ -30,7 +30,7 @@ Visual struct_visual(const std::string& name)
         { "Twist2D", Visual::Twist2D }, { "Wrench2D", Visual::Wrench2D }, { "Accel2D", Visual::Accel2D },
         { "PoseWithCovariance", Visual::PoseCovariance }, { "TwistWithCovariance", Visual::TwistCovariance },
         { "Odometry", Visual::Odometry }, { "Imu", Visual::Imu }, { "Inertia", Visual::Inertia },
-        { "GnssFix", Visual::Gnss }, { "RangeReading", Visual::Range },
+        { "GnssFix", Visual::Gnss }, { "RangeReading", Visual::Range }, { "LaserScan", Visual::Scan },
         { "Detection3D", Visual::Detection }, { "Detection2D", Visual::Detection2D },
         { "AlignedBox", Visual::Solid }, { "OrientedBox", Visual::Solid }, { "Plane", Visual::Solid },
         { "Segment", Visual::Solid }, { "Ray", Visual::Solid }, { "Sphere", Visual::Solid },
@@ -43,6 +43,8 @@ Visual struct_visual(const std::string& name)
         { "Polyline", Visual::Polyline }, { "Polyline2D", Visual::Polyline2D },
         { "GeoPoint", Visual::Geo }, { "Color", Visual::Color },
         { "JointState", Visual::Joints }, { "JointNames", Visual::Chips }, { "Image", Visual::Image },
+        { "JointTrajectoryPoint", Visual::Joints }, { "JointTrajectory", Visual::Trajectory },
+        { "Grid", Visual::Grid }, { "GridField", Visual::Grid }, { "Tensor", Visual::Grid },
         { "VideoFrame", Visual::Video }, { "ExternalVideoStream", Visual::Stream }, { "File", Visual::File },
     };
     for (const auto& entry : table)
@@ -62,6 +64,7 @@ Visual array_of_struct(const std::string& name)
         { "GeoPoint", Visual::Geos },
         { "Color", Visual::Colors },
         { "Detection3D", Visual::Detection }, { "Detection2D", Visual::Detection2D },
+        { "JointTrajectoryPoint", Visual::Trajectory },
     };
     for (const auto& entry : table)
         if (name == entry.name) return entry.visual;
@@ -85,6 +88,23 @@ bool holds_picture(const std::vector<ValueNode>& nodes, int index)
     rant::types::ImageFormat format;
     return data && data->kind == ValueNode::Blob &&
            image_file_format((const uint8_t*)data->text.data(), data->text.size(), format);
+}
+
+/* A Grid one cell high or a field of one, or a Tensor with two dimensions above 1, which
+   draw as a picture. */
+bool is_flat(const std::vector<ValueNode>& nodes, int index, const std::string& std_name,
+             const std::vector<uint8_t>& message)
+{
+    if (std_name == "Tensor") {
+        size_t big = 0;
+        for (const int k : children_of(nodes, index))
+            if (nodes[k].name == "shape")
+                for (const double d : numbers_of(nodes, k, message)) big += d > 1;
+        return big == 2;
+    }
+    const int grid = std_name == "GridField" ? holder_of(nodes, holder_of(nodes, index)) : index;
+    const ValueNode* z = member(nodes, grid, "cells_z");
+    return z && z->integer == 1;
 }
 
 bool is_branch(const ValueNode& node)
@@ -139,7 +159,10 @@ Visual visual_at(const Capture::WatchView& watch, const std::vector<ValueNode>& 
 {
     if (index == -1 && Capture::is_call(watch.kind)) return Visual::Calls;
     const Visual visual = index == -1 ? struct_visual(watch.root_std) : index >= 0 ? visual_for(nodes[index]) : Visual::None;
-    return visual == Visual::File && holds_picture(nodes, index) ? Visual::Image : visual;
+    if (visual == Visual::File && holds_picture(nodes, index)) return Visual::Image;
+    if (visual == Visual::Grid && !is_flat(nodes, index, index == -1 ? watch.root_std : nodes[index].std_name, watch.message))
+        return Visual::Kv;
+    return visual;
 }
 
 /* A plain struct only lists its fields, which is no visual of its own. */
@@ -443,10 +466,18 @@ std::string step_value(const ValueNode& node, const std::string& from, int steps
 std::vector<int> children_of(const std::vector<ValueNode>& nodes, int index)
 {
     std::vector<int> out;
+    if (index < -1) return out;
     const int depth = index < 0 ? -1 : nodes[index].depth;
     for (size_t j = (size_t)(index + 1); j < nodes.size() && nodes[j].depth > depth; j++)
         if (nodes[j].depth == depth + 1) out.push_back((int)j);
     return out;
+}
+
+int holder_of(const std::vector<ValueNode>& nodes, int index)
+{
+    for (int j = index - 1; j >= 0; j--)
+        if (nodes[j].depth < nodes[index].depth) return j;
+    return -1;
 }
 
 void each_element(const std::vector<ValueNode>& nodes, int index, const std::vector<uint8_t>& message,

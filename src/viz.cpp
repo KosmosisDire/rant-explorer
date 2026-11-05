@@ -24,6 +24,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <iterator>
 #include <memory>
 #include <variant>
 
@@ -92,56 +93,17 @@ const VizShow SHOW_NAMES[] = {
     { "readings", "Readings" },
 };
 
-/* The parts a visual offers, in menu order. */
-std::vector<Show> offered(Visual v)
-{
-    using S = Show;
-    switch (v) {
-    case Visual::Plot: case Visual::Vec4: case Visual::State: case Visual::Geo:
-                           return { S::History, S::Grid, S::Readings };
-    case Visual::Bars: case Visual::Joints:
-                           return { S::Labels, S::Grid, S::Readings };
-    case Visual::Vec2:     return { S::History, S::Arrows, S::Grid, S::Axes, S::Readings };
-    case Visual::Vec2s:    return { S::Arrows, S::Line, S::Labels, S::Colours, S::Grid, S::Axes, S::Readings };
-    case Visual::Pose2D:   return { S::History, S::Orientation, S::Line, S::Grid, S::Axes, S::Readings };
-    case Visual::Poses2D:  return { S::Orientation, S::Line, S::Labels, S::Colours, S::Grid, S::Axes, S::Readings };
-    case Visual::Figure:   return { S::Grid, S::Axes, S::Readings };
-    case Visual::Figures:  return { S::Labels, S::Colours, S::Grid, S::Axes, S::Readings };
-    case Visual::Twist2D:  return { S::Path, S::Turn, S::Grid, S::Axes, S::Readings };
-    case Visual::Wrench2D: return { S::History, S::Torque, S::Grid, S::Axes, S::Readings };
-    case Visual::Vec3:     return { S::History, S::Arrows, S::Drops, S::Grid, S::Axes, S::Readings };
-    case Visual::Quat:     return { S::Grid, S::Axes, S::Readings };
-    case Visual::Pose:     return { S::History, S::Orientation, S::Line, S::Drops, S::Grid, S::Axes, S::Readings };
-    case Visual::Twist:    return { S::Path, S::Turn, S::Drops, S::Grid, S::Axes, S::Readings };
-    case Visual::Wrench:   return { S::History, S::Torque, S::Drops, S::Grid, S::Axes, S::Readings };
-    case Visual::Solid:    return { S::Drops, S::Grid, S::Axes, S::Readings };
-    case Visual::Vec3s:    return { S::Arrows, S::Line, S::Labels, S::Colours, S::Drops, S::Grid, S::Axes, S::Readings };
-    case Visual::Poses:    return { S::Orientation, S::Line, S::Labels, S::Drops, S::Grid, S::Axes, S::Readings };
-    case Visual::Solids:   return { S::Labels, S::Colours, S::Drops, S::Grid, S::Axes, S::Readings };
-    case Visual::Geos:     return { S::Line, S::Labels, S::Colours, S::Grid, S::Readings };
-    case Visual::Colors:   return { S::Labels, S::Readings };
-    case Visual::Color: case Visual::Video:
-                           return { S::Readings };
-    default:               return {};
-    }
-}
-
-/* Every part starts shown, but the line through vectors or points in order starts hidden. */
-bool shown_by_default(Visual v, Show s)
-{
-    return !(s == Show::Line && (v == Visual::Vec2s || v == Visual::Vec3s || v == Visual::Geos));
-}
-
-/* The parts that show, a bit per Show, by the card's choices over the defaults. */
-unsigned shown_parts(Visual v, const ShowChoices& choices)
+/* A set of parts, a bit per Show. */
+constexpr unsigned bits(std::initializer_list<Show> parts)
 {
     unsigned out = 0;
-    for (const Show s : offered(v)) {
-        const auto chosen = choices.find(SHOW_NAMES[(int)s].key);
-        if (chosen != choices.end() ? chosen->second : shown_by_default(v, s)) out |= 1u << (int)s;
-    }
+    for (const Show s : parts) out |= 1u << (int)s;
     return out;
 }
+
+/* What every plane offers, and every scene, which adds drop lines. */
+constexpr unsigned PLANE_PARTS = bits({ Show::Grid, Show::Axes, Show::Readings });
+constexpr unsigned SCENE_PARTS = bits({ Show::Drops }) | PLANE_PARTS;
 
 /* A card's choices from its shows attribute, as viz_shows_text writes them. */
 ShowChoices read_choices(const std::string& text)
@@ -1188,33 +1150,29 @@ void curl_2d(Canvas& c, const Plane& p, const Double2& centre, double rho, doubl
 
 /* ------------------------------------------------------------------ the element */
 
-/* A picture pans and zooms. */
-bool is_picture(Visual v)
-{
-    return v == Visual::Image || v == Visual::Video;
-}
+/* What a visual draws into: the canvas, a scene the card orbits, a picture it pans and
+   zooms, or child elements. */
+enum class Kind { Canvas, Scene, Picture, Html };
 
-bool is_scene(Visual v)
-{
-    switch (v) {
-    case Visual::Vec3: case Visual::Quat: case Visual::Pose: case Visual::Twist: case Visual::Wrench:
-    case Visual::Solid: case Visual::Vec3s: case Visual::Poses: case Visual::Solids:
-        return true;
-    default:
-        return false;
-    }
-}
+/* What a card's history traces: the named fields of the value, or of its field under, or
+   the value itself when none are named. A stream decodes the value's every frame instead. */
+struct Feed {
+    double      seconds;
+    const char* under;
+    const char* names[4];
+    bool        stream;
+};
 
-bool is_html(Visual v)
+/* The trace keys a feed fills for the value at path. A Transform traces its pose. */
+std::vector<std::string> fed_paths(const Feed& feed, const std::string& path, const std::string& std_name)
 {
-    switch (v) {
-    case Visual::None: case Visual::Text: case Visual::Time: case Visual::Duration: case Visual::Uuid:
-    case Visual::Hex: case Visual::Chips: case Visual::Kv: case Visual::Cells:
-    case Visual::Table: case Visual::Matrix: case Visual::Multi: case Visual::Stream: case Visual::Calls:
-        return true;
-    default:
-        return false;
-    }
+    std::string at = std_name == "Transform" || std_name == "Transform2D" ? child_path(path, "pose") : path;
+    if (feed.under) at = child_path(at, feed.under);
+    std::vector<std::string> out;
+    for (const char* name : feed.names)
+        if (name) out.push_back(child_path(at, name));
+    if (out.empty()) out.push_back(at);
+    return out;
 }
 
 /* A table wants the box its columns and rows fill. Past TABLE_ROWS it asks for that
@@ -1222,7 +1180,7 @@ bool is_html(Visual v)
 constexpr double TABLE_COL = 100, TABLE_ROW = 24;
 constexpr size_t TABLE_ROWS = 12;
 
-Tile table_tile(size_t cols, size_t rows)
+Tile grid_tile(size_t cols, size_t rows)
 {
     const size_t shown = std::max<size_t>(1, std::min(rows, TABLE_ROWS));
     return Tile{ std::max<size_t>(1, cols) * TABLE_COL / ((shown + 1) * TABLE_ROW), 1 };
@@ -1230,6 +1188,53 @@ Tile table_tile(size_t cols, size_t rows)
 
 class VizElement : public Rml::Element, public Rml::EventListener {
 public:
+    using Paint = void (VizElement::*)(Canvas&, const Nodes&, const ValueNode&);
+    using Fill  = void (VizElement::*)(const Nodes&, const ValueNode&);
+    using Fit   = Tile (VizElement::*)(const Nodes*) const;
+
+    /* What a card wants from the tiling: a fixed tile, or what fit measures from the value. */
+    struct Size {
+        Tile tile;
+        Fit  fit = nullptr;
+        constexpr Size(double aspect, double stiff) : tile{ aspect, stiff } {}
+        constexpr Size(Fit f) : fit(f) {}
+    };
+
+    /* How a visual draws: paint each frame, or fill its child elements as the value changes. */
+    struct Draw {
+        Paint paint = nullptr;
+        Fill  fill  = nullptr;
+        constexpr Draw() = default;
+        constexpr Draw(Paint p) : paint(p) {}
+        constexpr Draw(Fill f) : fill(f) {}
+    };
+
+    /* One visual: what it draws into and how, its tile, the parts its card offers and which
+       of them start hidden, and what its history traces. */
+    struct Row {
+        Visual   visual;
+        Kind     kind;
+        Size     size;
+        Draw     draw;
+        unsigned parts;    /* a bit per Show, which the menu lists in Show's order */
+        unsigned hidden;
+        Feed     feed;
+
+        /* The parts that show, a bit per Show, by the card's choices over the defaults. */
+        unsigned shown(const ShowChoices& choices) const
+        {
+            unsigned out = 0;
+            for (size_t s = 0; s < std::size(SHOW_NAMES); s++) {
+                if (!(parts >> s & 1)) continue;
+                const auto chosen = choices.find(SHOW_NAMES[s].key);
+                if (chosen != choices.end() ? chosen->second : !(hidden >> s & 1)) out |= 1u << s;
+            }
+            return out;
+        }
+    };
+
+    static const Row& row_of(Visual v);
+
     explicit VizElement(const Rml::String& tag) : Rml::Element(tag)
     {
         for (const Rml::EventId id : GESTURES) AddEventListener(id, this);
@@ -1244,7 +1249,8 @@ public:
        wheel over either zooms it and never scrolls the pane. */
     void ProcessEvent(Rml::Event& event) override
     {
-        if (!is_scene(visual_) && !is_picture(visual_)) return;
+        const Kind kind = row_of(visual_).kind;
+        if (kind != Kind::Scene && kind != Kind::Picture) return;
         const Rml::Vector2f at(event.GetParameter<float>("mouse_x", 0.f), event.GetParameter<float>("mouse_y", 0.f));
         switch (event.GetId()) {
         case Rml::EventId::Dragstart:
@@ -1301,18 +1307,23 @@ protected:
         const std::string shows = GetAttribute<Rml::String>("shows", "");
         if (shows != shows_text_) {
             shows_text_ = shows;
-            shown_      = shown_parts(visual_, read_choices(shows));
+            shown_      = row_of(visual_).shown(read_choices(shows));
         }
         if (visual_ == Visual::None)
             html(empty ? "empty" : "none", std::string("<span class=\"faint\">") +
                                                (empty ? "no elements" : "waiting for a value") + "</span>");
-        if (found_ >= -1) fill(nodes());
+        const Fill fill = row_of(visual_).draw.fill;
+        if (found_ >= -1 && fill) {
+            const Nodes& nodes = this->nodes();
+            (this->*fill)(nodes, found_ < 0 ? root_ : nodes[found_]);
+        }
     }
 
     void OnRender() override
     {
         Rml::Element::OnRender();
-        if (!source || found_ < -1 || is_html(visual_)) return;
+        const Paint paint = row_of(visual_).draw.paint;
+        if (!source || found_ < -1 || !paint) return;
         const Nodes& nodes = this->nodes();
         if (found_ >= (int)nodes.size()) return;
 
@@ -1324,38 +1335,7 @@ protected:
         if (c.w() < 1 || c.h() < 1) return;
         read_ink(*this);
 
-        const ValueNode& node = found_ < 0 ? root_ : nodes[found_];
-        switch (visual_) {
-        case Visual::Plot:       plot(c, node); break;
-        case Visual::Vec4:       vec4(c, nodes); break;
-        case Visual::State:      state(c, node); break;
-        case Visual::Image:      picture(c, nodes); break;
-        case Visual::Video:      video(c); break;
-        case Visual::Bars:       bars(c, nodes); break;
-        case Visual::Vec2:       vec2(c, nodes); break;
-        case Visual::Vec3:       vec3(c, nodes); break;
-        case Visual::Quat:       quaternion(c, nodes); break;
-        case Visual::Pose:       pose(c, nodes, node); break;
-        case Visual::Twist:      twist(c, nodes); break;
-        case Visual::Twist2D:    twist_2d(c, nodes); break;
-        case Visual::Wrench:     wrench(c, nodes); break;
-        case Visual::Wrench2D:   wrench_2d(c, nodes); break;
-        case Visual::Solid:      solid_one(c, nodes, node); break;
-        case Visual::Solids:     solids(c, nodes, node); break;
-        case Visual::Geo:        geo(c, nodes); break;
-        case Visual::Color:      colour(c, nodes); break;
-        case Visual::Joints:     joints(c, nodes); break;
-        case Visual::Vec2s:      vec2s(c, nodes); break;
-        case Visual::Pose2D:     pose_2d(c, nodes, node); break;
-        case Visual::Poses2D:    poses_2d(c, nodes, node); break;
-        case Visual::Figure:     figure_one(c, nodes, node); break;
-        case Visual::Figures:    figures(c, nodes, node); break;
-        case Visual::Vec3s:      vec3s(c, nodes); break;
-        case Visual::Poses:      poses(c, nodes, node); break;
-        case Visual::Geos:       geos(c, nodes); break;
-        case Visual::Colors:     colours(c, nodes); break;
-        default: break;
-        }
+        (this->*paint)(c, nodes, found_ < 0 ? root_ : nodes[found_]);
         c.render();
         turn_  = Rml::Vector2f(0, 0);
         wheel_ = 0;
@@ -1436,11 +1416,12 @@ private:
         decoder_.reset();
         last_frame_ = 0;
 
-        SetClass("html", is_html(visual));
-        SetClass("orbit", is_scene(visual));
-        SetClass("pans", is_picture(visual));
+        const Kind kind = row_of(visual).kind;
+        SetClass("html", kind == Kind::Html);
+        SetClass("orbit", kind == Kind::Scene);
+        SetClass("pans", kind == Kind::Picture);
         view_frame_ = Rml::Vector2f(0, 0);   /* the next picture starts fitted */
-        if (!is_html(visual)) SetInnerRML("");
+        if (kind != Kind::Html) SetInnerRML("");
     }
 
     /* Replaces the children when the key moves, and collects the elements whose text fill
@@ -1477,201 +1458,222 @@ private:
         slots_[slot]->SetAttribute("cell-path", path);
     }
 
-    void fill(const Nodes& nodes)
+    /* ---------------------------------------------------------------- html */
+
+    void text(const Nodes&, const ValueNode& node)
     {
-        const ValueNode& node = found_ < 0 ? root_ : nodes[found_];
-        /* JointNames shows its names, each numbered as a JointState counts its joints */
-        const bool named = visual_ == Visual::Chips && node.kind == ValueNode::Struct;
+        html("text", "<div class=\"big text mono slot\"></div>");
+        put(0, value_text(node));
+    }
+
+    void time(const Nodes&, const ValueNode& node)
+    {
+        html("big", "<div class=\"big mono slot\"></div>");
+        put(0, format_timestamp(node.integer));
+    }
+
+    void duration(const Nodes&, const ValueNode& node)
+    {
+        html("big", "<div class=\"big mono slot\"></div>");
+        put(0, format_span(node.integer));
+    }
+
+    void uuid(const Nodes& nodes, const ValueNode& node)
+    {
+        html("uuid", "<div class=\"big mono slot\"></div>");
+        put(0, uuid_text(nodes, found_), node.path);
+    }
+
+    /* A stream handed over by URL: its name, the URL, and the hints about it. */
+    void stream(const Nodes& nodes, const ValueNode&)
+    {
+        html("stream", "<div class=\"big text slot\"></div><div class=\"stream-url mono slot\"></div>"
+                       "<div class=\"chips\"><span class=\"chip mono slot\"></span>"
+                       "<span class=\"chip mono slot\"></span><span class=\"chip mono slot\"></span></div>");
+        auto field = [&](const char* name) -> const ValueNode* {
+            const int k = kid(nodes, found_, name);
+            return k >= 0 ? &nodes[k] : nullptr;
+        };
+        const ValueNode *name = field("name"), *url = field("url"), *kind = field("kind"), *codec = field("codec");
+        const int64_t width = field("width") ? field("width")->integer : 0, height = field("height") ? field("height")->integer : 0;
+        put(0, name && !name->text.empty() ? name->text : "unnamed stream");
+        if (url) put(1, url->text, url->path);
+        put(2, kind ? value_text(*kind) : "");
+        put(3, codec ? value_text(*codec) : "");
+        put(4, width > 0 ? std::to_string(width) + " x " + std::to_string(height) : "size unstated");
+    }
+
+    void hex(const Nodes&, const ValueNode& node)
+    {
+        html("hex", "<div class=\"hex mono slot\"></div>");
+        std::string out;
+        const std::string& head = node.text;
+        for (size_t row = 0; row * 16 < head.size() && row < 4; row++) {
+            for (size_t i = row * 16; i < head.size() && i < row * 16 + 16; i++) {
+                char byte[4];
+                std::snprintf(byte, sizeof byte, "%02x ", (unsigned char)head[i]);
+                out += byte;
+            }
+            out += "\n";
+        }
+        put(0, out + (node.count > head.size() ? "... " : "") + format_bytes(node.count));
+    }
+
+    /* A chip per element. JointNames shows its names, each numbered as a JointState counts its joints. */
+    void chips(const Nodes& nodes, const ValueNode& node)
+    {
+        const bool named = node.kind == ValueNode::Struct;
         const std::vector<int> children = children_of(nodes, named ? kid(nodes, found_, "name") : found_);
+        std::string rml = "<div class=\"chips\">";
+        for (size_t i = 0; i < children.size(); i++) rml += "<span class=\"chip mono slot\"></span>";
+        if (children.empty()) rml += "<span class=\"faint\">empty</span>";
+        html("chips:" + std::to_string(children.size()), rml + "</div>");
+        for (size_t i = 0; i < children.size(); i++)
+            put(i, (named ? std::to_string(i) + " " : "") + human(nodes[children[i]]), nodes[children[i]].path);
+    }
+
+    void kv(const Nodes& nodes, const ValueNode&)
+    {
+        const std::vector<int> children = children_of(nodes, found_);
         const std::string count = std::to_string(children.size());
-        switch (visual_) {
-        case Visual::Text:
-            html("text", "<div class=\"big text mono slot\"></div>");
-            put(0, value_text(node));
-            break;
-        case Visual::Time:
-        case Visual::Duration:
-            html("big", "<div class=\"big mono slot\"></div>");
-            put(0, visual_ == Visual::Time ? format_timestamp(node.integer) : format_span(node.integer));
-            break;
-        case Visual::Uuid:
-            html("uuid", "<div class=\"big mono slot\"></div>");
-            put(0, uuid_text(nodes, found_), node.path);
-            break;
-        case Visual::Stream: {
-            /* a stream handed over by URL: its name, the URL, and the hints about it */
-            html("stream", "<div class=\"big text slot\"></div><div class=\"stream-url mono slot\"></div>"
-                           "<div class=\"chips\"><span class=\"chip mono slot\"></span>"
-                           "<span class=\"chip mono slot\"></span><span class=\"chip mono slot\"></span></div>");
-            auto field = [&](const char* name) -> const ValueNode* {
-                const int k = kid(nodes, found_, name);
-                return k >= 0 ? &nodes[k] : nullptr;
-            };
-            const ValueNode *name = field("name"), *url = field("url"), *kind = field("kind"), *codec = field("codec");
-            const int64_t width = field("width") ? field("width")->integer : 0, height = field("height") ? field("height")->integer : 0;
-            put(0, name && !name->text.empty() ? name->text : "unnamed stream");
-            if (url) put(1, url->text, url->path);
-            put(2, kind ? value_text(*kind) : "");
-            put(3, codec ? value_text(*codec) : "");
-            put(4, width > 0 ? std::to_string(width) + " x " + std::to_string(height) : "size unstated");
-            break;
+        std::string rml = "<div class=\"pairs\">";
+        for (size_t i = 0; i < children.size(); i++)
+            rml += "<div class=\"pair\"><span class=\"pair-key slot\"></span><span class=\"pair-value slot\"></span></div>";
+        html("kv:" + count, rml + "</div>");
+        for (size_t i = 0; i < children.size(); i++) {
+            put(i * 2, nodes[children[i]].name);
+            put(i * 2 + 1, brief(nodes, children[i]), nodes[children[i]].path);
         }
-        case Visual::Hex: {
-            html("hex", "<div class=\"hex mono slot\"></div>");
-            std::string out;
-            const std::string& head = node.text;
-            for (size_t row = 0; row * 16 < head.size() && row < 4; row++) {
-                for (size_t i = row * 16; i < head.size() && i < row * 16 + 16; i++) {
-                    char byte[4];
-                    std::snprintf(byte, sizeof byte, "%02x ", (unsigned char)head[i]);
-                    out += byte;
-                }
-                out += "\n";
-            }
-            put(0, out + (node.count > head.size() ? "... " : "") + format_bytes(node.count));
-            break;
+    }
+
+    void cells(const Nodes& nodes, const ValueNode&)
+    {
+        const std::vector<int> children = children_of(nodes, found_);
+        const std::string count = std::to_string(children.size());
+        std::string rml = "<div class=\"cells\">";
+        for (size_t i = 0; i < children.size(); i++)
+            rml += "<span class=\"cell\"><span class=\"lamp\"></span><span class=\"idx mono\">" + std::to_string(i) + "</span></span>";
+        html("cells:" + count, rml + "</div>");
+        for (size_t i = 0; i < children.size() && i < lamps_.size(); i++) {
+            const int on = nodes[children[i]].number != 0 ? 1 : 0;
+            if (lamp_states_[i] == on) continue;
+            lamp_states_[i] = on;
+            lamps_[i]->SetClass("on", on != 0);
         }
-        case Visual::Chips: {
-            std::string rml = "<div class=\"chips\">";
-            for (size_t i = 0; i < children.size(); i++) rml += "<span class=\"chip mono slot\"></span>";
-            if (children.empty()) rml += "<span class=\"faint\">empty</span>";
-            html("chips:" + count, rml + "</div>");
-            for (size_t i = 0; i < children.size(); i++)
-                put(i, (named ? std::to_string(i) + " " : "") + human(nodes[children[i]]), nodes[children[i]].path);
-            break;
+    }
+
+    /* Each child is a row, an array of its numbers. */
+    void matrix(const Nodes& nodes, const ValueNode&)
+    {
+        const std::vector<int> children = children_of(nodes, found_);
+        const std::string count = std::to_string(children.size());
+        std::string rml = "<div class=\"matrix mono\">";
+        for (const int row : children) {
+            rml += "<div class=\"matrix-row\">";
+            for (size_t col = 0; col < children_of(nodes, row).size(); col++) rml += "<span><span class=\"slot\"></span></span>";
+            rml += "</div>";
         }
-        case Visual::Kv: {
-            std::string rml = "<div class=\"pairs\">";
-            for (size_t i = 0; i < children.size(); i++)
-                rml += "<div class=\"pair\"><span class=\"pair-key slot\"></span><span class=\"pair-value slot\"></span></div>";
-            html("kv:" + count, rml + "</div>");
-            for (size_t i = 0; i < children.size(); i++) {
-                put(i * 2, nodes[children[i]].name);
-                put(i * 2 + 1, brief(nodes, children[i]), nodes[children[i]].path);
-            }
-            break;
+        html("matrix:" + count, rml + "</div>");
+        size_t slot = 0;
+        for (const int row : children)
+            for (const int cell : children_of(nodes, row)) put(slot++, value_text(nodes[cell]), nodes[cell].path);
+    }
+
+    /* A column per member of the element, a row per element. */
+    void table(const Nodes& nodes, const ValueNode&)
+    {
+        const std::vector<int> children = children_of(nodes, found_);
+        const std::vector<int> columns = children.empty() ? std::vector<int>() : children_of(nodes, children[0]);
+        std::string key = "table:" + std::to_string(children.size()), rml = "<div class=\"scroll-table\"><table><tr>";
+        for (const int col : columns) {
+            key += ":" + nodes[col].name;
+            rml += "<th>" + Rml::StringUtilities::EncodeRml(nodes[col].name) + "</th>";
         }
-        case Visual::Cells: {
-            std::string rml = "<div class=\"cells\">";
-            for (size_t i = 0; i < children.size(); i++)
-                rml += "<span class=\"cell\"><span class=\"lamp\"></span><span class=\"idx mono\">" + std::to_string(i) + "</span></span>";
-            html("cells:" + count, rml + "</div>");
-            for (size_t i = 0; i < children.size() && i < lamps_.size(); i++) {
-                const int on = nodes[children[i]].number != 0 ? 1 : 0;
-                if (lamp_states_[i] == on) continue;
-                lamp_states_[i] = on;
-                lamps_[i]->SetClass("on", on != 0);
-            }
-            break;
-        }
-        case Visual::Matrix: {
-            /* each child is a row, an array of its numbers */
-            std::string rml = "<div class=\"matrix mono\">";
-            for (const int row : children) {
-                rml += "<div class=\"matrix-row\">";
-                for (size_t col = 0; col < children_of(nodes, row).size(); col++) rml += "<span><span class=\"slot\"></span></span>";
-                rml += "</div>";
-            }
-            html("matrix:" + count, rml + "</div>");
-            size_t slot = 0;
-            for (const int row : children)
-                for (const int cell : children_of(nodes, row)) put(slot++, value_text(nodes[cell]), nodes[cell].path);
-            break;
-        }
-        case Visual::Table: {
-            /* a column per member of the element, a row per element */
-            const std::vector<int> columns = children.empty() ? std::vector<int>() : children_of(nodes, children[0]);
-            std::string key = "table:" + count, rml = "<div class=\"scroll-table\"><table><tr>";
-            for (const int col : columns) {
-                key += ":" + nodes[col].name;
-                rml += "<th>" + Rml::StringUtilities::EncodeRml(nodes[col].name) + "</th>";
-            }
+        rml += "</tr>";
+        for (size_t r = 0; r < children.size(); r++) {
+            rml += "<tr>";
+            for (size_t col = 0; col < columns.size(); col++) rml += "<td class=\"mono slot\"></td>";
             rml += "</tr>";
-            for (size_t r = 0; r < children.size(); r++) {
+        }
+        html(key, rml + "</table></div>");
+        size_t slot = 0;
+        for (const int row : children)
+            for (const int cell : children_of(nodes, row)) put(slot++, brief(nodes, cell), nodes[cell].path);
+    }
+
+    /* A row per call by any node, newest first. */
+    void calls(const Nodes&, const ValueNode&)
+    {
+        const Capture::WatchView* watch = source->view(topic_);
+        if (!watch) return;
+        if (watch->calls.empty()) {
+            html("calls:" + watch->calls_status,
+                 "<span class=\"faint\">" + Rml::StringUtilities::EncodeRml(watch->calls_status) + "</span>");
+            return;
+        }
+        const bool task = watch->kind == Capture::Kind::Task;
+        /* who called with when under it, a message column per part, and the state with how
+           long it took under it. Only a message column wraps. */
+        struct Column {
+            const char* label;
+            const char* sized;
+            int         slots;
+        };
+        static const Column FUNCTION_COLUMNS[] = { { "Caller", "caller", 2 }, { "Request", "message", 1 },
+                                                   { "State", "state", 2 }, { "Reply", "message", 1 } };
+        static const Column TASK_COLUMNS[] = { { "Caller", "caller", 2 }, { "Goal", "message", 1 },
+                                               { "State", "state", 2 }, { "Progress", "message", 1 },
+                                               { "Result", "message", 1 } };
+        const Column* columns = task ? TASK_COLUMNS : FUNCTION_COLUMNS;
+        const size_t column_count = task ? 5 : 4;
+        const std::string key = std::string("calls:") + (task ? "task:" : "function:") + std::to_string(watch->calls.size());
+        if (key != html_key_) {
+            /* RmlUi takes a column's weight from a col element only, never from its heading */
+            std::string rml = "<div class=\"scroll-table calls\"><table>";
+            for (size_t col = 0; col < column_count; col++) rml += std::string("<col class=\"") + columns[col].sized + "\"/>";
+            rml += "<tr>";
+            for (size_t col = 0; col < column_count; col++) rml += std::string("<th>") + columns[col].label + "</th>";
+            rml += "</tr>";
+            for (size_t r = 0; r < watch->calls.size(); r++) {
                 rml += "<tr>";
-                for (size_t col = 0; col < columns.size(); col++) rml += "<td class=\"mono slot\"></td>";
+                for (size_t col = 0; col < column_count; col++)
+                    rml += std::string("<td class=\"mono ") + columns[col].sized + "\"><div class=\"slot\"></div>" +
+                           (columns[col].slots == 2 ? "<div class=\"slot under\"></div>" : "") + "</td>";
                 rml += "</tr>";
             }
             html(key, rml + "</table></div>");
-            size_t slot = 0;
-            for (const int row : children)
-                for (const int cell : children_of(nodes, row)) put(slot++, brief(nodes, cell), nodes[cell].path);
-            break;
+            calls_seq_ = ~0ull;
         }
-        case Visual::Calls: {
-            /* a row per call by any node, newest first */
-            const Capture::WatchView* watch = source->view(topic_);
-            if (!watch) break;
-            if (watch->calls.empty()) {
-                html("calls:" + watch->calls_status,
-                     "<span class=\"faint\">" + Rml::StringUtilities::EncodeRml(watch->calls_status) + "</span>");
-                break;
+        if (calls_seq_ == watch->calls_seq) return;
+        calls_seq_ = watch->calls_seq;
+        size_t slot = 0;
+        for (const Capture::CallRow& row : watch->calls) {
+            put(slot++, row.caller.empty() ? DASH : row.caller);
+            put(slot++, row.time);
+            put(slot++, brief_message(row.request));
+            if (slot < slots_.size()) {
+                slots_[slot]->SetClass("ok", row.tone == 1);
+                slots_[slot]->SetClass("bad", row.tone == 2);
+                slots_[slot]->SetClass("busy", row.tone == 3);
             }
-            const bool task = watch->kind == Capture::Kind::Task;
-            /* who called with when under it, a message column per part, and the state with how
-               long it took under it. Only a message column wraps. */
-            struct Column {
-                const char* label;
-                const char* sized;
-                int         slots;
-            };
-            static const Column FUNCTION_COLUMNS[] = { { "Caller", "caller", 2 }, { "Request", "message", 1 },
-                                                       { "State", "state", 2 }, { "Reply", "message", 1 } };
-            static const Column TASK_COLUMNS[] = { { "Caller", "caller", 2 }, { "Goal", "message", 1 },
-                                                   { "State", "state", 2 }, { "Progress", "message", 1 },
-                                                   { "Result", "message", 1 } };
-            const Column* columns = task ? TASK_COLUMNS : FUNCTION_COLUMNS;
-            const size_t column_count = task ? 5 : 4;
-            const std::string key = std::string("calls:") + (task ? "task:" : "function:") + std::to_string(watch->calls.size());
-            if (key != html_key_) {
-                /* RmlUi takes a column's weight from a col element only, never from its heading */
-                std::string rml = "<div class=\"scroll-table calls\"><table>";
-                for (size_t col = 0; col < column_count; col++) rml += std::string("<col class=\"") + columns[col].sized + "\"/>";
-                rml += "<tr>";
-                for (size_t col = 0; col < column_count; col++) rml += std::string("<th>") + columns[col].label + "</th>";
-                rml += "</tr>";
-                for (size_t r = 0; r < watch->calls.size(); r++) {
-                    rml += "<tr>";
-                    for (size_t col = 0; col < column_count; col++)
-                        rml += std::string("<td class=\"mono ") + columns[col].sized + "\"><div class=\"slot\"></div>" +
-                               (columns[col].slots == 2 ? "<div class=\"slot under\"></div>" : "") + "</td>";
-                    rml += "</tr>";
-                }
-                html(key, rml + "</table></div>");
-                calls_seq_ = ~0ull;
-            }
-            if (calls_seq_ == watch->calls_seq) break;
-            calls_seq_ = watch->calls_seq;
-            size_t slot = 0;
-            for (const Capture::CallRow& row : watch->calls) {
-                put(slot++, row.caller.empty() ? DASH : row.caller);
-                put(slot++, row.time);
-                put(slot++, brief_message(row.request));
-                if (slot < slots_.size()) {
-                    slots_[slot]->SetClass("ok", row.tone == 1);
-                    slots_[slot]->SetClass("bad", row.tone == 2);
-                    slots_[slot]->SetClass("busy", row.tone == 3);
-                }
-                put(slot++, row.state);
-                put(slot++, row.took);
-                if (task) put(slot++, brief_message(row.progress));
-                put(slot++, !row.reply.empty() ? brief_message(row.reply) : !row.message.empty() ? row.message : std::string(DASH));
-            }
-            break;
+            put(slot++, row.state);
+            put(slot++, row.took);
+            if (task) put(slot++, brief_message(row.progress));
+            put(slot++, !row.reply.empty() ? brief_message(row.reply) : !row.message.empty() ? row.message : std::string(DASH));
         }
-        case Visual::Multi: {
-            /* a small copy of the element's own visual per element, each with its own bounds */
-            std::string rml = "<div class=\"multi\">";
-            for (size_t i = 0; i < children.size(); i++)
-                rml += "<div class=\"multi-cell\"><span class=\"idx mono\">" + std::to_string(i) +
-                       "</span><viz topic=\"" + Rml::StringUtilities::EncodeRml(topic_) + "\" path=\"" +
-                       Rml::StringUtilities::EncodeRml(nodes[children[i]].path) + "\"></viz></div>";
-            html("multi:" + count, rml + "</div>");
-            break;
-        }
-        default:
-            break;
-        }
+    }
+
+    /* A small copy of the element's own visual per element, each with its own bounds. */
+    void multi(const Nodes& nodes, const ValueNode&)
+    {
+        const std::vector<int> children = children_of(nodes, found_);
+        const std::string count = std::to_string(children.size());
+        std::string rml = "<div class=\"multi\">";
+        for (size_t i = 0; i < children.size(); i++)
+            rml += "<div class=\"multi-cell\"><span class=\"idx mono\">" + std::to_string(i) +
+                   "</span><viz topic=\"" + Rml::StringUtilities::EncodeRml(topic_) + "\" path=\"" +
+                   Rml::StringUtilities::EncodeRml(nodes[children[i]].path) + "\"></viz></div>";
+        html("multi:" + count, rml + "</div>");
     }
 
     /* ---------------------------------------------------------------- traces */
@@ -1683,19 +1685,27 @@ private:
         return t ? *t : none;
     }
 
-    /* The points of up to three traces that arrived together, oldest first. Each message
-       adds to all of them, so they line up from the newest end. */
-    std::vector<Double3> trail(const std::string& x, const std::string& y, const std::string& z = {}) const
+    /* The trace keys the card's feed fills, in the feed's order. */
+    std::vector<std::string> fed(const ValueNode& node) const
     {
-        const auto& tx = trace(x);
-        const auto& ty = trace(y);
-        const auto& tz = z.empty() ? tx : trace(z);
+        return fed_paths(row_of(visual_).feed, path_, node.std_name);
+    }
+
+    /* The points of the card's two or three traces that arrived together, oldest first.
+       Each message adds to all of them, so they line up from the newest end. */
+    std::vector<Double3> trail(const ValueNode& node) const
+    {
+        const std::vector<std::string> paths = fed(node);
+        const bool flat = paths.size() < 3;
+        const auto& tx = trace(paths[0]);
+        const auto& ty = trace(paths[1]);
+        const auto& tz = flat ? tx : trace(paths[2]);
         const size_t n = std::min({ tx.size(), ty.size(), tz.size() });
         std::vector<Double3> out(n);
         for (size_t i = 0; i < n; i++) {
             out[i].x = tx[tx.size() - n + i].v;
             out[i].y = ty[ty.size() - n + i].v;
-            out[i].z = z.empty() ? 0 : tz[tz.size() - n + i].v;
+            out[i].z = flat ? 0 : tz[tz.size() - n + i].v;
         }
         return out;
     }
@@ -1767,7 +1777,7 @@ private:
     }
 
     /* The value over time, or without history the value alone. */
-    void plot(Canvas& c, const ValueNode& node)
+    void plot(Canvas& c, const Nodes&, const ValueNode& node)
     {
         if (!on(Show::History)) {
             alone(c, c.all(), value_text(node));
@@ -1779,15 +1789,15 @@ private:
 
     /* A Float4, Double4 or Int4: a line per component in its own colour, named in the foot,
        or without history the four values side by side. */
-    void vec4(Canvas& c, const Nodes& nodes)
+    void vec4(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
         const char* names[4] = { "x", "y", "z", "w" };
-        std::vector<std::string> paths, texts;
+        const std::vector<std::string> paths = fed(node);
+        std::vector<std::string> texts;
         std::vector<Rml::Colourb> colours;
         bool is_float = false;
         for (int i = 0; i < 4; i++) {
             const int k = kid(nodes, found_, names[i]);
-            paths.push_back(child_path(path_, names[i]));
             texts.push_back(k >= 0 ? value_text(nodes[k]) : "");
             colours.push_back(component_colour(i));
             is_float = is_float || (k >= 0 && nodes[k].is_float);
@@ -1820,7 +1830,7 @@ private:
     /* A bool or an enum over ten seconds: a band per run of equal values on whole pixels.
        A pixel shows the first run to reach it, so a fast toggle costs the width. Without
        history it is the value alone, in its band's colour. */
-    void state(Canvas& c, const ValueNode& node)
+    void state(Canvas& c, const Nodes&, const ValueNode& node)
     {
         auto colour = [&](double v) {
             if (node.kind == ValueNode::Bool) return v != 0 ? ink.green : ink.border;
@@ -1857,7 +1867,7 @@ private:
     /* ---------------------------------------------------------------- arrays of numbers */
 
     /* Bars from zero, the range grown from every value seen, labelled while few. */
-    void bars(Canvas& c, const Nodes& nodes)
+    void bars(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
         const std::vector<int> items = children_of(nodes, found_);
         const size_t n = items.size();
@@ -1895,20 +1905,20 @@ private:
 
     /* ---------------------------------------------------------------- planes */
 
-    void vec2(Canvas& c, const Nodes& nodes)
+    void vec2(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
         const Double2 v = vec_2d(nodes, found_);
         const double r = reach_[0].grow({ v.x, v.y }, dt_);
         const Plane p = plane(c, c.all(), r, backdrop());
         if (on(Show::History)) {
             Dots dots(c, ink.trail, 2);
-            for (const Double3& t : trail(child_path(path_, "x"), child_path(path_, "y"))) dots.add(p(t.x, t.y));
+            for (const Double3& t : trail(node)) dots.add(p(t.x, t.y));
         }
         ray(c, p(0, 0), p(v.x, v.y), ink.accent);
         foot(c, c.all(), "x " + f3(v.x) + "  y " + f3(v.y));
     }
 
-    void vec2s(Canvas& c, const Nodes& nodes)
+    void vec2s(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
         const std::vector<int> items = children_of(nodes, found_);
         std::vector<Double2> v;
@@ -1933,9 +1943,8 @@ private:
         const double r = reach_[0].grow({ at.position.x, at.position.y }, dt_, 1.3);
         const Plane p = plane(c, c.all(), r, backdrop());
         if (on(Show::History)) {
-            const std::string base = child_path(framed ? child_path(path_, "pose") : path_, "position");
             Dots dots(c, ink.trail, 2);
-            for (const Double3& t : trail(base + ".x", base + ".y")) dots.add(p(t.x, t.y));
+            for (const Double3& t : trail(node)) dots.add(p(t.x, t.y));
         }
         if (on(Show::Line)) c.line(p(0, 0), p(at.position), ink.faint, THIN);
         if (on(Show::Orientation)) heading(c, p, at, 0.2 * r, ink.accent);
@@ -1996,18 +2005,17 @@ private:
     /* ---------------------------------------------------------------- scenes */
 
     /* An arrow from the origin in a scene, its foot, drop line and trail. */
-    void vec3(Canvas& c, const Nodes& nodes)
+    void vec3(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
         const Double3 v = vec(nodes, found_);
         const double r = reach_[0].grow({ math::double3_length(v) }, dt_);
         const Scene s = scene(c, c.all(), r, camera(), backdrop());
-        const std::vector<Double3> t = on(Show::History) ? trail(child_path(path_, "x"), child_path(path_, "y"), child_path(path_, "z"))
-                                                    : std::vector<Double3>();
+        const std::vector<Double3> t = on(Show::History) ? trail(node) : std::vector<Double3>();
         layered(c, s, v, &t, [&] { ray(c, s(0, 0, 0), s(v), ink.accent); });
         foot(c, c.all(), "x " + f3(v.x) + "  y " + f3(v.y) + "  z " + f3(v.z));
     }
 
-    void quaternion(Canvas& c, const Nodes& nodes)
+    void quaternion(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
         const Quaternion q = quat(nodes, found_);
         const Scene s = scene(c, c.all(), 1, camera(), backdrop());
@@ -2025,8 +2033,7 @@ private:
         /* the margin keeps the triad inside */
         const double r = reach_[0].grow({ math::double3_length(p.position) }, dt_, 1.3);
         const Scene s = scene(c, c.all(), r, camera(), backdrop());
-        const std::string base = child_path(framed ? child_path(path_, "pose") : path_, "position");
-        const std::vector<Double3> t = on(Show::History) ? trail(base + ".x", base + ".y", base + ".z") : std::vector<Double3>();
+        const std::vector<Double3> t = on(Show::History) ? trail(node) : std::vector<Double3>();
         layered(c, s, p.position, &t, [&] {
             if (on(Show::Line)) c.line(s(0, 0, 0), s(p.position), ink.faint, THIN);
             if (on(Show::Orientation)) triad(c, s, p.position, p.orientation, 0.2 * r);
@@ -2039,7 +2046,7 @@ private:
 
     /* A twist in the moving body's frame: velocity arrow, turn curl, the path while it
        holds, and the turn axis. The path stops short of a second full turn. */
-    void twist(Canvas& c, const Nodes& nodes)
+    void twist(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
         const int li = kid(nodes, found_, "linear"), ai = kid(nodes, found_, "angular");
         const types::Twist body{ li >= 0 ? vec(nodes, li) : Double3{}, ai >= 0 ? vec(nodes, ai) : Double3{} };
@@ -2090,7 +2097,7 @@ private:
 
     /* A Twist2D in the moving body's frame: the velocity arrow, the turn as an arc about the
        origin, the path while it holds, and the turn centre. The path stops short of a full turn. */
-    void twist_2d(Canvas& c, const Nodes& nodes)
+    void twist_2d(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
         const int li = kid(nodes, found_, "linear");
         const types::Twist2D body{ li >= 0 ? vec_2d(nodes, li) : Double2{}, number(nodes, found_, "angular") };
@@ -2135,7 +2142,7 @@ private:
 
     /* A Wrench2D: the force as an arrow with its trail, the torque as a turn about the
        origin that sweeps most of a turn at the strongest seen. */
-    void wrench_2d(Canvas& c, const Nodes& nodes)
+    void wrench_2d(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
         const int fi = kid(nodes, found_, "force");
         const Double2 f = fi >= 0 ? vec_2d(nodes, fi) : Double2{};
@@ -2145,15 +2152,14 @@ private:
         const double strongest = reach_[1].grow({ torque }, dt_, 1.0);
         if (std::fabs(torque) > 1e-9 && on(Show::Torque)) curl_2d(c, p, Double2{}, 0.2 * r, 5 * torque / strongest, ink.amber);
         if (on(Show::History)) {
-            const std::string base = child_path(path_, "force");
             Dots dots(c, ink.trail, 2);
-            for (const Double3& t : trail(base + ".x", base + ".y")) dots.add(p(t.x, t.y));
+            for (const Double3& t : trail(node)) dots.add(p(t.x, t.y));
         }
         c.arrow(p(0, 0), p(f), ink.accent, ARROW);
         foot(c, c.all(), "force " + f3(math::double2_length(f)) + " N  torque " + f3(torque) + " N m");
     }
 
-    void vec3s(Canvas& c, const Nodes& nodes)
+    void vec3s(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
         std::vector<Double3> v;
         for (const int i : children_of(nodes, found_)) v.push_back(vec(nodes, i));
@@ -2191,7 +2197,7 @@ private:
 
     /* A force and a torque about the frame origin: the force as an arrow with its trail,
        the torque as a turn about its axis that sweeps most of a turn at the strongest seen. */
-    void wrench(Canvas& c, const Nodes& nodes)
+    void wrench(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
         const int fi = kid(nodes, found_, "force"), ti = kid(nodes, found_, "torque");
         const Double3 f = fi >= 0 ? vec(nodes, fi) : Double3{}, t = ti >= 0 ? vec(nodes, ti) : Double3{};
@@ -2203,8 +2209,7 @@ private:
             c.dashed(s(axis * -r), s(axis * r), faded(ink.amber, 0.6f), THIN);
             curl(c, s, axis, 0.2 * r, 5 * torque / strongest, ink.amber);
         }
-        const std::string base = child_path(path_, "force");
-        const std::vector<Double3> tail = on(Show::History) ? trail(base + ".x", base + ".y", base + ".z") : std::vector<Double3>();
+        const std::vector<Double3> tail = on(Show::History) ? trail(node) : std::vector<Double3>();
         layered(c, s, f, &tail, [&] { c.arrow(s(0, 0, 0), s(f), ink.accent, ARROW); });
         foot(c, c.all(), "force " + f3(math::double3_length(f)) + " N  torque " + f3(torque) + " N m");
     }
@@ -2282,10 +2287,10 @@ private:
         c.arrow({ c.w() - c.dp(16), top + c.dp(36) }, { c.w() - c.dp(16), top + c.dp(17) }, ink.dim, THIN);
     }
 
-    void geo(Canvas& c, const Nodes& nodes)
+    void geo(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
         const Double3 now{ number(nodes, found_, "lat"), number(nodes, found_, "lon"), number(nodes, found_, "alt") };
-        std::vector<Double3> points = on(Show::History) ? trail(child_path(path_, "lat"), child_path(path_, "lon")) : std::vector<Double3>();
+        std::vector<Double3> points = on(Show::History) ? trail(node) : std::vector<Double3>();
         if (points.empty()) points.push_back(now);
         map(c, points, [&](auto P, float left, float top, float right, float bottom) {
             /* a point within half a pixel of the last one drawn adds nothing to the path */
@@ -2309,7 +2314,7 @@ private:
         foot(c, c.all(), "lat " + print("%.6f", now.x) + "  lon " + print("%.6f", now.y) + "  alt " + print("%.1f", now.z) + " m");
     }
 
-    void geos(Canvas& c, const Nodes& nodes)
+    void geos(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
         std::vector<Double3> points;
         for (const int i : children_of(nodes, found_)) points.push_back(Double3{ number(nodes, i, "lat"), number(nodes, i, "lon"), 0 });
@@ -2336,7 +2341,7 @@ private:
         return Rml::Colourb(channel("r"), channel("g"), channel("b"), channel("a"));
     }
 
-    void colour(Canvas& c, const Nodes& nodes)
+    void colour(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
         const Rml::Colourb col = rgba(nodes, found_);
         c.rect(c.dp(10), c.dp(TOP), c.w() - c.dp(20), c.h() - c.dp(TOP + BOT), col);
@@ -2346,7 +2351,7 @@ private:
                               std::to_string(col.blue) + " " + std::to_string(col.alpha));
     }
 
-    void colours(Canvas& c, const Nodes& nodes)
+    void colours(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
         const std::vector<int> items = children_of(nodes, found_);
         const float width = items.empty() ? 0 : (c.w() - c.dp(20)) / items.size();
@@ -2360,7 +2365,7 @@ private:
 
     /* One row per joint and a column each for position, velocity and effort: a bar from
        the centre, each column scaled to the largest magnitude it has seen, written above. */
-    void joints(Canvas& c, const Nodes& nodes)
+    void joints(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
         const char* names[3] = { "position", "velocity", "effort" };
         std::vector<int> columns[3];
@@ -2399,7 +2404,7 @@ private:
 
     /* A standard Image, decoded once per message into a texture and fitted inside the
        card, keeping its shape. */
-    void picture(Canvas& c, const Nodes& nodes)
+    void picture(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
         const Capture::WatchView* watch = source->view(topic_);
         if (watch && watch->seq != frame_seq_) {
@@ -2414,7 +2419,7 @@ private:
     /* A VideoFrame stream: every frame since the last draw goes to the decoder, and its
        newest picture is fitted as an Image's is, over the codec and size. A decoder is
        for one stream, so another topic gets a new one. */
-    void video(Canvas& c)
+    void video(Canvas& c, const Nodes&, const ValueNode&)
     {
         if (!decoder_ || decoder_topic_ != topic_) {
             decoder_       = std::make_unique<VideoDecoder>();
@@ -2490,61 +2495,64 @@ private:
                   (centre_ + seen * 0.5f) / frame);
     }
 
+    /* ---------------------------------------------------------------- tiles */
+
+    size_t child_count(const Nodes* nodes) const
+    {
+        return nodes ? children_of(*nodes, found_).size() : 0;
+    }
+
+    /* A picture wants its frame's shape and letterboxes when it cannot have it. */
+    Tile picture_tile(const Nodes*) const
+    {
+        return Tile{ frame_size_.x > 0 && frame_size_.y > 0 ? (double)frame_size_.x / frame_size_.y : 4.0 / 3, 4 };
+    }
+
+    Tile kv_tile(const Nodes* nodes) const
+    {
+        return grid_tile(2, child_count(nodes));
+    }
+
+    Tile joints_tile(const Nodes* nodes) const
+    {
+        return grid_tile(4, child_count(nodes));
+    }
+
+    Tile matrix_tile(const Nodes* nodes) const
+    {
+        return grid_tile(child_count(nodes), child_count(nodes));
+    }
+
+    Tile table_tile(const Nodes* nodes) const
+    {
+        const std::vector<int> rows = nodes ? children_of(*nodes, found_) : std::vector<int>();
+        return grid_tile(rows.empty() ? 1 : children_of(*nodes, rows[0]).size(), rows.size());
+    }
+
+    Tile calls_tile(const Nodes*) const
+    {
+        const Capture::WatchView* watch = source ? source->view(topic_) : nullptr;
+        if (!watch || watch->calls.empty()) return Tile{ 3, 0.5 };
+        return grid_tile(watch->kind == Capture::Kind::Task ? 7 : 6, watch->calls.size());
+    }
+
 public:
     /* What the card wants from the tiling: the aspect of what it draws, and how much it
-       minds another. A picture wants its frame's and letterboxes when it cannot have it. */
+       minds another. */
     Tile shape() const
     {
-        const Nodes* nodes = source && found_ >= -1 ? &this->nodes() : nullptr;
-        const size_t children = nodes ? children_of(*nodes, found_).size() : 0;
-        switch (visual_) {
-        case Visual::Image:
-        case Visual::Video:
-            return Tile{ frame_size_.x > 0 && frame_size_.y > 0 ? (double)frame_size_.x / frame_size_.y : 4.0 / 3, 4 };
-        case Visual::Plot: case Visual::Vec4: case Visual::State: case Visual::Bars:
-            return Tile{ 3, 1 };
-        case Visual::Text: case Visual::Time: case Visual::Duration: case Visual::Uuid: case Visual::Hex:
-        case Visual::Chips: case Visual::Cells: case Visual::Colors: case Visual::None:
-            return Tile{ 3, 0.5 };
-        case Visual::Stream:
-            return Tile{ 2.5, 0.5 };
-        case Visual::Color:
-            return Tile{ 1.5, 0.5 };
-        case Visual::Vec3: case Visual::Quat: case Visual::Pose: case Visual::Twist: case Visual::Wrench:
-        case Visual::Solid: case Visual::Vec3s: case Visual::Poses: case Visual::Solids:
-            return Tile{ 1, 1.5 };
-        case Visual::Vec2: case Visual::Vec2s: case Visual::Pose2D: case Visual::Poses2D:
-        case Visual::Twist2D: case Visual::Wrench2D: case Visual::Figure: case Visual::Figures:
-            return Tile{ 1.3, 1 };
-        case Visual::Geo: case Visual::Geos:
-            return Tile{ 1.5, 1 };
-        case Visual::Kv:
-            return table_tile(2, children);
-        case Visual::Joints:
-            return table_tile(4, children);
-        case Visual::Matrix:
-            return table_tile(children, children);
-        case Visual::Table: {
-            const std::vector<int> rows = nodes ? children_of(*nodes, found_) : std::vector<int>();
-            return table_tile(rows.empty() ? 1 : children_of(*nodes, rows[0]).size(), rows.size());
-        }
-        case Visual::Calls: {
-            const Capture::WatchView* watch = source ? source->view(topic_) : nullptr;
-            if (!watch || watch->calls.empty()) return Tile{ 3, 0.5 };
-            return table_tile(watch->kind == Capture::Kind::Task ? 7 : 6, watch->calls.size());
-        }
-        default:
-            return Tile{ 1.5, 1 };
-        }
+        const Size& size = row_of(visual_).size;
+        return size.fit ? (this->*size.fit)(source && found_ >= -1 ? &this->nodes() : nullptr) : size.tile;
     }
 
     std::vector<VizShow> shows() const
     {
         std::vector<VizShow> out;
-        for (const Show part : offered(visual_)) {
-            out.push_back(SHOW_NAMES[(int)part]);
-            out.back().on = on(part);
-        }
+        for (size_t part = 0; part < std::size(SHOW_NAMES); part++)
+            if (row_of(visual_).parts >> part & 1) {
+                out.push_back(SHOW_NAMES[part]);
+                out.back().on = on((Show)part);
+            }
         return out;
     }
 
@@ -2623,6 +2631,76 @@ private:
     Rml::Mesh            shapes_;   /* the canvas mesh, kept so its memory is reused */
 };
 
+/* A row per Visual. */
+const VizElement::Row& VizElement::row_of(Visual v)
+{
+    using V = Visual;
+    using K = Kind;
+    using S = Show;
+    using E = VizElement;
+    /* Not constexpr: MSVC miscompiles a constant array of member pointers of a class with two bases. */
+    static const Row rows[] = {
+        /* visual      kind         tile               draw            parts, hidden, feed */
+        { V::None,     K::Html,     { 3, 0.5 } },
+        { V::Plot,     K::Canvas,   { 3, 1 },          &E::plot,       bits({ S::History, S::Grid, S::Readings }), 0,
+          { PLOT_SECONDS } },
+        { V::State,    K::Canvas,   { 3, 1 },          &E::state,      bits({ S::History, S::Grid, S::Readings }), 0,
+          { PLOT_SECONDS } },
+        { V::Text,     K::Html,     { 3, 0.5 },        &E::text },
+        { V::Time,     K::Html,     { 3, 0.5 },        &E::time },
+        { V::Duration, K::Html,     { 3, 0.5 },        &E::duration },
+        { V::Uuid,     K::Html,     { 3, 0.5 },        &E::uuid },
+        { V::Hex,      K::Html,     { 3, 0.5 },        &E::hex },
+        { V::Chips,    K::Html,     { 3, 0.5 },        &E::chips },
+        { V::Bars,     K::Canvas,   { 3, 1 },          &E::bars,       bits({ S::Labels, S::Grid, S::Readings }) },
+        { V::Cells,    K::Html,     { 3, 0.5 },        &E::cells },
+        { V::Table,    K::Html,     &E::table_tile,    &E::table },
+        { V::Matrix,   K::Html,     &E::matrix_tile,   &E::matrix },
+        { V::Multi,    K::Html,     { 1.5, 1 },        &E::multi },
+        { V::Calls,    K::Html,     &E::calls_tile,    &E::calls },
+        { V::Vec2,     K::Canvas,   { 1.3, 1 },        &E::vec2,       bits({ S::History, S::Arrows }) | PLANE_PARTS, 0,
+          { TRAIL_SECONDS, nullptr, { "x", "y" } } },
+        { V::Vec3,     K::Scene,    { 1, 1.5 },        &E::vec3,       bits({ S::History, S::Arrows }) | SCENE_PARTS, 0,
+          { TRAIL_SECONDS, nullptr, { "x", "y", "z" } } },
+        { V::Vec4,     K::Canvas,   { 3, 1 },          &E::vec4,       bits({ S::History, S::Grid, S::Readings }), 0,
+          { PLOT_SECONDS, nullptr, { "x", "y", "z", "w" } } },
+        { V::Quat,     K::Scene,    { 1, 1.5 },        &E::quaternion, PLANE_PARTS },
+        { V::Pose,     K::Scene,    { 1, 1.5 },        &E::pose,       bits({ S::History, S::Orientation, S::Line }) | SCENE_PARTS, 0,
+          { TRAIL_SECONDS, "position", { "x", "y", "z" } } },
+        { V::Pose2D,   K::Canvas,   { 1.3, 1 },        &E::pose_2d,    bits({ S::History, S::Orientation, S::Line }) | PLANE_PARTS, 0,
+          { TRAIL_SECONDS, "position", { "x", "y" } } },
+        { V::Twist,    K::Scene,    { 1, 1.5 },        &E::twist,      bits({ S::Path, S::Turn }) | SCENE_PARTS },
+        { V::Twist2D,  K::Canvas,   { 1.3, 1 },        &E::twist_2d,   bits({ S::Path, S::Turn }) | PLANE_PARTS },
+        { V::Wrench,   K::Scene,    { 1, 1.5 },        &E::wrench,     bits({ S::History, S::Torque }) | SCENE_PARTS, 0,
+          { TRAIL_SECONDS, "force", { "x", "y", "z" } } },
+        { V::Wrench2D, K::Canvas,   { 1.3, 1 },        &E::wrench_2d,  bits({ S::History, S::Torque }) | PLANE_PARTS, 0,
+          { TRAIL_SECONDS, "force", { "x", "y" } } },
+        { V::Solid,    K::Scene,    { 1, 1.5 },        &E::solid_one,  SCENE_PARTS },
+        { V::Figure,   K::Canvas,   { 1.3, 1 },        &E::figure_one, PLANE_PARTS },
+        { V::Geo,      K::Canvas,   { 1.5, 1 },        &E::geo,        bits({ S::History, S::Grid, S::Readings }), 0,
+          { TRAIL_SECONDS, nullptr, { "lat", "lon" } } },
+        { V::Color,    K::Canvas,   { 1.5, 0.5 },      &E::colour,     bits({ S::Readings }) },
+        { V::Joints,   K::Canvas,   &E::joints_tile,   &E::joints,     bits({ S::Labels, S::Grid, S::Readings }) },
+        { V::Image,    K::Picture,  &E::picture_tile,  &E::picture },
+        { V::Video,    K::Picture,  &E::picture_tile,  &E::video,      bits({ S::Readings }), 0,
+          { 0, nullptr, {}, true } },
+        { V::Stream,   K::Html,     { 2.5, 0.5 },      &E::stream },
+        { V::Vec2s,    K::Canvas,   { 1.3, 1 },        &E::vec2s,      bits({ S::Arrows, S::Line, S::Labels, S::Colours }) | PLANE_PARTS, bits({ S::Line }) },
+        { V::Vec3s,    K::Scene,    { 1, 1.5 },        &E::vec3s,      bits({ S::Arrows, S::Line, S::Labels, S::Colours }) | SCENE_PARTS, bits({ S::Line }) },
+        { V::Poses,    K::Scene,    { 1, 1.5 },        &E::poses,      bits({ S::Orientation, S::Line, S::Labels }) | SCENE_PARTS },
+        { V::Poses2D,  K::Canvas,   { 1.3, 1 },        &E::poses_2d,   bits({ S::Orientation, S::Line, S::Labels, S::Colours }) | PLANE_PARTS },
+        { V::Solids,   K::Scene,    { 1, 1.5 },        &E::solids,     bits({ S::Labels, S::Colours }) | SCENE_PARTS },
+        { V::Figures,  K::Canvas,   { 1.3, 1 },        &E::figures,    bits({ S::Labels, S::Colours }) | PLANE_PARTS },
+        { V::Geos,     K::Canvas,   { 1.5, 1 },        &E::geos,       bits({ S::Line, S::Labels, S::Colours, S::Grid, S::Readings }), bits({ S::Line }) },
+        { V::Colors,   K::Canvas,   { 3, 0.5 },        &E::colours,    bits({ S::Labels, S::Readings }) },
+        { V::Kv,       K::Html,     &E::kv_tile,       &E::kv },
+    };
+    static_assert(sizeof rows / sizeof rows[0] == (size_t)Visual::Kv + 1, "a row per Visual");
+    for (const Row& row : rows)
+        if (row.visual == v) return row;
+    return rows[0];
+}
+
 Rml::ElementInstancerGeneric<VizElement> instancer;
 
 } /* namespace */
@@ -2638,36 +2716,16 @@ VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>&
 {
     static const ShowChoices none;
     VizFeeds out;
-    auto add = [&out](const std::string& path, std::initializer_list<const char*> names) {
-        for (const char* name : names) out.traces.push_back(Capture::TraceSpec{ child_path(path, name), TRAIL_SECONDS });
-    };
     for (const std::string& path : shown) {
         const int index = find_node(watch.nodes, watch, path);
-        const Visual visual = visual_at(watch, watch.nodes, index);
-        if (visual == Visual::Video) out.streams.push_back(path);
+        const VizElement::Row& row = VizElement::row_of(visual_at(watch, watch.nodes, index));
+        if (row.feed.stream) out.streams.push_back(path);
         const auto chosen = shows.find(path);
-        if (!(shown_parts(visual, chosen != shows.end() ? chosen->second : none) >> (int)Show::History & 1)) continue;
+        if (row.feed.seconds == 0 || !(row.shown(chosen != shows.end() ? chosen->second : none) >> (int)Show::History & 1))
+            continue;
         const std::string std_name = index == -1 ? watch.root_std : index >= 0 ? watch.nodes[index].std_name : "";
-        switch (visual) {
-        case Visual::Plot:
-        case Visual::State: out.traces.push_back(Capture::TraceSpec{ path, PLOT_SECONDS }); break;
-        case Visual::Vec4:
-            for (const char* name : { "x", "y", "z", "w" })
-                out.traces.push_back(Capture::TraceSpec{ child_path(path, name), PLOT_SECONDS });
-            break;
-        case Visual::Vec2:  add(path, { "x", "y" }); break;
-        case Visual::Vec3:  add(path, { "x", "y", "z" }); break;
-        case Visual::Pose:
-            add(child_path(std_name == "Transform" ? child_path(path, "pose") : path, "position"), { "x", "y", "z" });
-            break;
-        case Visual::Pose2D:
-            add(child_path(std_name == "Transform2D" ? child_path(path, "pose") : path, "position"), { "x", "y" });
-            break;
-        case Visual::Wrench:   add(child_path(path, "force"), { "x", "y", "z" }); break;
-        case Visual::Wrench2D: add(child_path(path, "force"), { "x", "y" }); break;
-        case Visual::Geo:   add(path, { "lat", "lon" }); break;
-        default: break;
-        }
+        for (const std::string& traced : fed_paths(row.feed, path, std_name))
+            out.traces.push_back(Capture::TraceSpec{ traced, row.feed.seconds });
     }
     return out;
 }

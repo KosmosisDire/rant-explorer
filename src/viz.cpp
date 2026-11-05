@@ -24,6 +24,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <iterator>
 #include <memory>
 #include <variant>
@@ -533,48 +534,33 @@ struct Backdrop {
 };
 
 /* A view of a cube around the origin reaching r, z up, scaled so the reach meets the
-   area's edge with the origin centred between the text strips. Depth is toward the
-   viewer, so a scene can paint back to front. */
+   area's edge with the origin centred between the text strips. Right, up and toward are the
+   screen's directions in the world, a right handed frame with toward pointing at the viewer. */
 struct View {
-    double   ca = 1, sa = 0, ce = 1, se = 0, k = 1, cx = 0, cy = 0, r = 1;
+    Double3  right{ 1, 0, 0 }, up{ 0, 0, 1 }, toward{ 0, -1, 0 };
+    double   k = 1, cx = 0, cy = 0, r = 1;
     Backdrop look;
 
-    Rml::Vector2f operator()(double x, double y, double z) const
+    Rml::Vector2f operator()(const Double3& p) const
     {
-        const double u = x * ca - y * sa, v = x * sa + y * ca;
-        return { (float)(cx + u * k), (float)(cy + (v * se - z * ce) * k) };
+        return { (float)(cx + math::double3_dot(right, p) * k), (float)(cy - math::double3_dot(up, p) * k) };
     }
-    Rml::Vector2f operator()(const Double3& p) const { return (*this)(p.x, p.y, p.z); }
-    double depth(const Double3& p) const { return (p.x * sa + p.y * ca) * ce + p.z * se; }
-    bool   front(const Double3& p) const { return depth(p) >= 0; }
 };
 
 View view(const Canvas& c, const Area& a, double r, const Camera& cam, const Backdrop& look)
 {
     const double rad = 3.14159265358979 / 180;
+    const double ca = std::cos(cam.a * rad), sa = std::sin(cam.a * rad), ce = std::cos(cam.e * rad), se = std::sin(cam.e * rad);
     View s;
-    s.look = look;
-    s.ca = std::cos(cam.a * rad); s.sa = std::sin(cam.a * rad);
-    s.ce = std::cos(cam.e * rad); s.se = std::sin(cam.e * rad);
+    s.look   = look;
+    s.right  = { -ca, sa, 0 };
+    s.up     = { -sa * se, -ca * se, ce };
+    s.toward = { sa * ce, ca * ce, se };
     s.r  = r;
     s.k  = std::min(a.w - c.dp(16), a.h - c.dp(TOP + BOT + 4)) / (2 * r) * cam.zoom;
     s.cx = a.x + a.w / 2;
     s.cy = a.y + c.dp(TOP) + (a.h - c.dp(TOP + BOT)) / 2;
     return s;
-}
-
-/* The axes from the origin toward the reach, each named at its end. */
-void axes(Canvas& c, const View& s)
-{
-    if (!s.look.axes) return;
-    const double r = s.r * 0.92;
-    const Double3 ends[3] = { { r, 0, 0 }, { 0, r, 0 }, { 0, 0, r } };
-    const char* names[3] = { "x", "y", "z" };
-    for (int i = 0; i < 3; i++) {
-        c.line(s(0, 0, 0), s(ends[i]), axis_colour(i), THIN);
-        const Rml::Vector2f e = s(ends[i]);
-        c.text(names[i], e.x + (i == 2 ? 0 : c.dp(8)), e.y + (i == 2 ? -c.dp(6) : c.dp(5)), Canvas::Center, axis_colour(i), LABEL);
-    }
 }
 
 /* ------------------------------------------------------------------ solids */
@@ -589,19 +575,6 @@ void basis(const Double3& axis, Double3& a, Double3& b)
     b = math::double3_cross(n, a);
 }
 
-/* A circle in space around an axis, as screen points. */
-std::vector<Rml::Vector2f> ring(const View& s, const Double3& centre, const Double3& axis, double radius)
-{
-    Double3 a, b;
-    basis(axis, a, b);
-    std::vector<Rml::Vector2f> out;
-    for (int i = 0; i < 48; i++) {
-        const double t = 6.28318530717959 * i / 48;
-        out.push_back(s(centre + (a * std::cos(t) + b * std::sin(t)) * radius));
-    }
-    return out;
-}
-
 /* A circle on the screen, or the part of it from turn t0 to t1 in radians. */
 std::vector<Rml::Vector2f> circle(Rml::Vector2f centre, float radius, double t0 = 0, double t1 = 6.28318530717959)
 {
@@ -609,21 +582,6 @@ std::vector<Rml::Vector2f> circle(Rml::Vector2f centre, float radius, double t0 
     for (int i = 0; i <= 48; i++) {
         const double t = t0 + (t1 - t0) * i / 48;
         out.push_back({ centre.x + radius * (float)std::cos(t), centre.y + radius * (float)std::sin(t) });
-    }
-    return out;
-}
-
-/* The ring points furthest to each side of a screen direction, where an outline running
-   along it touches the ring. */
-std::pair<Rml::Vector2f, Rml::Vector2f> sides(const std::vector<Rml::Vector2f>& ring, Rml::Vector2f along)
-{
-    const Rml::Vector2f n(-along.y, along.x);
-    std::pair<Rml::Vector2f, Rml::Vector2f> out{ ring[0], ring[0] };
-    float lo = 1e30f, hi = -1e30f;
-    for (const Rml::Vector2f& p : ring) {
-        const float d = p.x * n.x + p.y * n.y;
-        if (d < lo) { lo = d; out.first = p; }
-        if (d > hi) { hi = d; out.second = p; }
     }
     return out;
 }
@@ -701,117 +659,104 @@ void hold(Reach& reach, const Solid& o)
     std::visit([&](const auto& v) { hold_one(reach, v); }, o);
 }
 
-/* A solid as lines: the edges of a box, the outline and rings of a round one, a plane as a
-   square patch with its normal. */
-void edges(Canvas& c, const View& s, const std::array<types::Segment, 12>& lines, Rml::Colourb colour)
+/* How faint a solid's faces are, as a share of its colour's alpha, and the angle in radians
+   past which its faces meet at an edge drawn as a line. */
+constexpr float  FILL   = 0.25f;
+constexpr double CREASE = 0.5;
+
+Rml::Vector3f floats(const Double3& p)
 {
-    for (const types::Segment& l : lines) c.line(s(l.a), s(l.b), colour, STROKE);
+    return { (float)p.x, (float)p.y, (float)p.z };
 }
 
-void draw_one(Canvas&, const View&, const std::monostate&, Rml::Colourb) {}
-void draw_one(Canvas& c, const View& s, const types::AlignedBox& b, Rml::Colourb colour) { edges(c, s, math::aligned_box_edges(b), colour); }
-void draw_one(Canvas& c, const View& s, const types::OrientedBox& b, Rml::Colourb colour) { edges(c, s, math::oriented_box_edges(b), colour); }
+void stroke(Batch& b, Batch::Mark mark, const Double3& from, const Double3& to, Rml::Colourb colour, float px)
+{
+    b.stroke(mark, floats(from), floats(to), colour, px);
+}
 
-void draw_one(Canvas& c, const View& s, const types::Plane& o, Rml::Colourb colour)
+/* A shape as math meshes it: faint lit faces, and a line along each side no other face
+   shares. Math splits a mesh's corners where its faces meet at a crease, so those sides are
+   the creases and the open ends. False when the shape is too thin to have faces. */
+bool put_shape(Batch& b, const math::Shape& shape, Rml::Colourb colour, float px)
+{
+    math::Mesh m;
+    try {
+        m = math::shape_mesh(shape, 0, CREASE);
+    } catch (const math::MathError&) {
+        return false;
+    }
+    /* shape_mesh lays each corner out as x, y, z and its normal, six floats */
+    const uint32_t first = (uint32_t)b.corners.size();
+    const size_t   step  = m.vertices.point_step;
+    const Rml::Colourb fill = faded(colour, FILL);
+    for (size_t at = 0; at + step <= m.vertices.data.size(); at += step) {
+        float v[6];
+        std::memcpy(v, m.vertices.data.data() + at, sizeof v);
+        b.corners.push_back({ { v[0], v[1], v[2] }, { v[3], v[4], v[5] }, fill });
+    }
+    std::vector<uint64_t> sides;
+    for (size_t t = 0; t + 2 < m.triangles.size(); t += 3)
+        for (size_t k = 0; k < 3; k++) {
+            const uint32_t from = m.triangles[t + k], to = m.triangles[t + (k + 1) % 3];
+            b.triangles.push_back(first + from);
+            sides.push_back((uint64_t)from << 32 | to);
+        }
+    std::sort(sides.begin(), sides.end());
+    for (const uint64_t side : sides) {
+        const uint32_t from = (uint32_t)(side >> 32), to = (uint32_t)side;
+        if (!std::binary_search(sides.begin(), sides.end(), (uint64_t)to << 32 | from))
+            b.stroke(Batch::Mark::Line, b.corners[first + from].at, b.corners[first + to].at, colour, px);
+    }
+    return true;
+}
+
+void put_one(Batch&, const View&, float, const std::monostate&, Rml::Colourb) {}
+void put_one(Batch& b, const View&, float px, const types::AlignedBox& o, Rml::Colourb colour) { put_shape(b, math::shape_from_aligned_box(o), colour, THIN * px); }
+void put_one(Batch& b, const View&, float px, const types::OrientedBox& o, Rml::Colourb colour) { put_shape(b, math::shape_from_oriented_box(o), colour, THIN * px); }
+void put_one(Batch& b, const View&, float px, const types::Sphere& o, Rml::Colourb colour) { put_shape(b, math::shape_from_sphere(o), colour, THIN * px); }
+void put_one(Batch& b, const View&, float px, const types::Capsule& o, Rml::Colourb colour) { put_shape(b, math::shape_from_capsule(o), colour, THIN * px); }
+void put_one(Batch& b, const View&, float px, const types::Cylinder& o, Rml::Colourb colour) { put_shape(b, math::shape_from_cylinder(o), colour, THIN * px); }
+void put_one(Batch& b, const View&, float px, const types::Cone& o, Rml::Colourb colour) { put_shape(b, math::shape_from_cone(o), colour, THIN * px); }
+
+/* A polygon on a line has no faces, so its points are joined instead. */
+void put_one(Batch& b, const View&, float px, const types::Polygon& o, Rml::Colourb colour)
+{
+    if (put_shape(b, math::shape_from_polygon(o.points), colour, THIN * px)) return;
+    for (size_t i = 1; i < o.points.size(); i++) stroke(b, Batch::Mark::Line, o.points[i - 1], o.points[i], colour, THIN * px);
+}
+
+/* A plane has no end, so it shows as a square patch a share of the reach wide, with its normal. */
+void put_one(Batch& b, const View& s, float px, const types::Plane& o, Rml::Colourb colour)
 {
     Double3 u, v;
     basis(o.normal, u, v);
     const double h = 0.35 * s.r;
-    const Double3& at = o.position;
-    c.polyline({ s(at + (u + v) * h), s(at + (u - v) * h), s(at - (u + v) * h), s(at - (u - v) * h) }, colour, STROKE, true);
-    c.line(s(at - u * h), s(at + u * h), faded(colour, 0.5f), THIN);
-    c.line(s(at - v * h), s(at + v * h), faded(colour, 0.5f), THIN);
-    c.arrow(s(at), s(at + math::double3_normalize(o.normal) * (0.3 * s.r)), colour, ARROW);
+    const Double3 at = o.position, n = math::double3_normalize(o.normal);
+    const Double3 corners[4] = { at + (u + v) * h, at + (v - u) * h, at - (u + v) * h, at + (u - v) * h };
+    const uint32_t first = (uint32_t)b.corners.size();
+    for (const Double3& p : corners) b.corners.push_back({ floats(p), floats(n), faded(colour, FILL) });
+    b.triangles.insert(b.triangles.end(), { first, first + 1, first + 2, first, first + 2, first + 3 });
+    for (int i = 0; i < 4; i++) stroke(b, Batch::Mark::Line, corners[i], corners[(i + 1) % 4], colour, THIN * px);
+    stroke(b, Batch::Mark::Arrow, at, at + n * (0.3 * s.r), colour, ARROW * px);
 }
 
-void draw_one(Canvas& c, const View& s, const types::Segment& l, Rml::Colourb colour)
+void put_one(Batch& b, const View&, float px, const types::Segment& l, Rml::Colourb colour)
 {
-    c.line(s(l.a), s(l.b), colour, STROKE);
-    c.dot(s(l.a), colour, 4);
-    c.dot(s(l.b), colour, 4);
+    stroke(b, Batch::Mark::Line, l.a, l.b, colour, STROKE * px);
+    stroke(b, Batch::Mark::Dot, l.a, l.a, colour, 4 * px);
+    stroke(b, Batch::Mark::Dot, l.b, l.b, colour, 4 * px);
 }
 
-void draw_one(Canvas& c, const View& s, const types::Sphere& o, Rml::Colourb colour)
+/* px is pixels per dp. */
+void put_solid(Batch& b, const View& s, float px, const Solid& o, Rml::Colourb colour)
 {
-    c.polyline(circle(s(o.center), (float)(o.radius * s.k)), colour, STROKE);
-    c.polyline(ring(s, o.center, Double3{ 0, 0, 1 }, o.radius), faded(colour, 0.5f), THIN, true);
-}
-
-/* A cylinder or a capsule: a ring at each end, and their outline along the axis. */
-void draw_round(Canvas& c, const View& s, const types::Segment& axis, double radius, bool capsule, Rml::Colourb colour)
-{
-    const float rk = (float)(radius * s.k);
-    const Rml::Vector2f a = s(axis.a), b = s(axis.b), d = b - a;
-    const float len = std::sqrt(d.x * d.x + d.y * d.y);
-    const std::vector<Rml::Vector2f> ra = ring(s, axis.a, axis.b - axis.a, radius), rb = ring(s, axis.b, axis.b - axis.a, radius);
-    c.polyline(ra, capsule ? faded(colour, 0.5f) : colour, capsule ? THIN : STROKE, true);
-    c.polyline(rb, capsule ? faded(colour, 0.5f) : colour, capsule ? THIN : STROKE, true);
-    if (len < 1e-3f) {
-        if (capsule) c.polyline(circle(a, rk), colour, STROKE);
-        return;
-    }
-    const Rml::Vector2f along = d / len;
-    if (capsule) {
-        /* the outline of two balls joined: an arc around each end, a line along each side */
-        const Rml::Vector2f n(-along.y * rk, along.x * rk);
-        const double angle = std::atan2(along.y, along.x), half = 1.5707963267949;
-        c.line(a + n, b + n, colour, STROKE);
-        c.line(a - n, b - n, colour, STROKE);
-        c.polyline(circle(a, rk, angle + half, angle + 3 * half), colour, STROKE);
-        c.polyline(circle(b, rk, angle - half, angle + half), colour, STROKE);
-    } else {
-        const auto ea = sides(ra, along), eb = sides(rb, along);
-        c.line(ea.first, eb.first, colour, STROKE);
-        c.line(ea.second, eb.second, colour, STROKE);
-    }
-}
-
-void draw_one(Canvas& c, const View& s, const types::Capsule& o, Rml::Colourb colour) { draw_round(c, s, o.axis, o.radius, true, colour); }
-void draw_one(Canvas& c, const View& s, const types::Cylinder& o, Rml::Colourb colour) { draw_round(c, s, o.axis, o.radius, false, colour); }
-
-void draw_one(Canvas& c, const View& s, const types::Cone& o, Rml::Colourb colour)
-{
-    const std::vector<Rml::Vector2f> base = ring(s, o.base, o.tip - o.base, o.radius);
-    c.polyline(base, colour, STROKE, true);
-    /* the lines from the tip touch the base where they turn furthest each way */
-    const Rml::Vector2f tip = s(o.tip), toward = s(o.base) - tip;
-    const float len = std::sqrt(toward.x * toward.x + toward.y * toward.y);
-    if (len > 1e-3f) {
-        const Rml::Vector2f d = toward / len;
-        float lo = 1e30f, hi = -1e30f;
-        Rml::Vector2f left = base[0], right = base[0];
-        for (const Rml::Vector2f& p : base) {
-            const Rml::Vector2f q = p - tip;
-            const float turn = std::atan2(d.x * q.y - d.y * q.x, d.x * q.x + d.y * q.y);
-            if (turn < lo) { lo = turn; left = p; }
-            if (turn > hi) { hi = turn; right = p; }
-        }
-        /* a tip inside the base's outline has no outline lines */
-        if (hi - lo < 3.14159f) {
-            c.line(tip, left, colour, STROKE);
-            c.line(tip, right, colour, STROKE);
-        }
-    }
-    c.dot(tip, colour, 4);
-}
-
-void draw_one(Canvas& c, const View& s, const types::Polygon& o, Rml::Colourb colour)
-{
-    std::vector<Rml::Vector2f> p;
-    for (const Double3& v : o.points) p.push_back(s(v));
-    c.polyline(p, colour, STROKE, true);
-    for (const Rml::Vector2f& v : p) c.dot(v, colour, 3.5f);
-}
-
-void draw_solid(Canvas& c, const View& s, const Solid& o, Rml::Colourb colour)
-{
-    std::visit([&](const auto& v) { draw_one(c, s, v, colour); }, o);
+    std::visit([&](const auto& v) { put_one(b, s, px, v, colour); }, o);
 }
 
 /* ------------------------------------------------------------------ the scene list */
 
 /* What a 3D card shows, in world coordinates, for one renderer to draw. Each item belongs
-   to the body begun before it, and items added before the first body lie under every body. */
+   to the body begun before it. */
 struct Scene {
     enum class Shape : uint8_t { Line, Dashed, Path, Arrow, Dot, Solid, Label };
 
@@ -823,8 +768,8 @@ struct Scene {
         Rml::Colourb colour;
         float        size;
     };
-    /* Drawn whole at its anchor's depth over the anchor's drop line, its items running from
-       first up to the next body's. */
+    /* An element of the scene, its items running from first up to the next body's. Its
+       anchor has the drop line to the floor. */
     struct Body {
         Double3  anchor;
         uint32_t first;
@@ -836,7 +781,7 @@ struct Scene {
         Rml::Vector2f offset;
         Canvas::Align align;
     };
-    /* Points drawn as dots of the trail colour, each at its own depth. */
+    /* Points drawn as dots of the trail colour. */
     struct Trail {
         uint32_t first, count;
     };
@@ -929,64 +874,73 @@ void curl(Scene& w, const Double3& axis, double rho, double sweep, Rml::Colourb 
     w.arrow(arc.back(), tip, colour, STROKE);
 }
 
-void draw_item(Canvas& c, const View& s, const Scene& w, const Scene::Item& item)
+/* Puts a scene on the canvas: the floor grid, the axes, the drop lines and the trails go to
+   the GPU as guides under the rest, then the items depth tested, and the labels on top as
+   text. */
+void draw_scene(Canvas& c, const View& s, const Scene& w, Batch& b)
 {
-    const Double3* p = w.points.data() + item.first;
-    switch (item.shape) {
-    case Scene::Shape::Line:   c.line(s(p[0]), s(p[1]), item.colour, item.size); break;
-    case Scene::Shape::Dashed: c.dashed(s(p[0]), s(p[1]), item.colour, item.size); break;
-    case Scene::Shape::Arrow:  c.arrow(s(p[0]), s(p[1]), item.colour, item.size); break;
-    case Scene::Shape::Dot:    c.dot(s(p[0]), item.colour, item.size); break;
-    case Scene::Shape::Path: {
-        std::vector<Rml::Vector2f> drawn(item.count);
-        for (uint32_t i = 0; i < item.count; i++) drawn[i] = s(p[i]);
-        c.polyline(drawn, item.colour, item.size);
-        break;
+    using Mark = Batch::Mark;
+    b.clear();
+    const double r = s.r;
+    if (s.look.grid) {
+        /* the floor grid at a round step, running off the sides where it will */
+        const double step = nice(2 * r / 4);
+        for (double m = std::ceil(-r / step) * step; m <= r + 1e-9; m += step) {
+            stroke(b, Mark::Line, { m, -r, 0 }, { m, r, 0 }, ink.grid, c.dp(1));
+            stroke(b, Mark::Line, { -r, m, 0 }, { r, m, 0 }, ink.grid, c.dp(1));
+        }
     }
-    case Scene::Shape::Solid: draw_solid(c, s, w.solids[item.first], item.colour); break;
-    case Scene::Shape::Label: {
-        const Scene::Label& l = w.labels[item.first];
-        const Rml::Vector2f at = s(l.at);
-        c.text(l.text, at.x + c.dp(l.offset.x), at.y + c.dp(l.offset.y), l.align, item.colour, item.size);
-        break;
+    if (s.look.axes) {
+        /* each named just past its end, whichever way it points on the screen */
+        const Double3 ends[3] = { { 0.92 * r, 0, 0 }, { 0, 0.92 * r, 0 }, { 0, 0, 0.92 * r } };
+        const char* names[3] = { "x", "y", "z" };
+        const Rml::Vector2f origin = s(Double3{});
+        for (int i = 0; i < 3; i++) {
+            stroke(b, Mark::Line, Double3{}, ends[i], axis_colour(i), c.dp(THIN));
+            const Rml::Vector2f e = s(ends[i]), d = e - origin;
+            const float len = std::sqrt(d.x * d.x + d.y * d.y), out = len > 1 ? c.dp(9) / len : 0;
+            c.text(names[i], e.x + d.x * out, e.y + d.y * out + c.dp(4), Canvas::Center, axis_colour(i), LABEL);
+        }
     }
+    if (s.look.drops)
+        for (const Scene::Body& body : w.bodies) {
+            const Double3& v = body.anchor;
+            stroke(b, Mark::Dot, { v.x, v.y, 0 }, { v.x, v.y, 0 }, ink.ground, c.dp(3));
+            stroke(b, Mark::Dashed, { v.x, v.y, 0 }, v, ink.ground, c.dp(THIN));
+        }
+    for (const Scene::Trail& t : w.trails)
+        for (uint32_t i = t.first; i < t.first + t.count; i++) stroke(b, Mark::Dot, w.points[i], w.points[i], ink.trail, c.dp(2));
+    b.under = b.strokes.size();
+    for (const Scene::Item& item : w.items) {
+        const Double3* p = w.points.data() + item.first;
+        const float size = c.dp(item.size);
+        switch (item.shape) {
+        case Scene::Shape::Line:   stroke(b, Mark::Line, p[0], p[1], item.colour, size); break;
+        case Scene::Shape::Dashed: stroke(b, Mark::Dashed, p[0], p[1], item.colour, size); break;
+        case Scene::Shape::Arrow:  stroke(b, Mark::Arrow, p[0], p[1], item.colour, size); break;
+        case Scene::Shape::Dot:    stroke(b, Mark::Dot, p[0], p[0], item.colour, size); break;
+        case Scene::Shape::Path:
+            for (uint32_t i = 1; i < item.count; i++) stroke(b, Mark::Line, p[i - 1], p[i], item.colour, size);
+            break;
+        case Scene::Shape::Solid: put_solid(b, s, c.dp(1), w.solids[item.first], item.colour); break;
+        case Scene::Shape::Label: {
+            const Scene::Label& l = w.labels[item.first];
+            const Rml::Vector2f at = s(l.at);
+            c.text(l.text, at.x + c.dp(l.offset.x), at.y + c.dp(l.offset.y), l.align, item.colour, item.size);
+            break;
+        }
+        }
     }
-}
 
-/* Paints a scene back to front: the grid, what lies under every body, the bodies behind the
-   origin, the axes, the bodies in front. A trail's dots go under the bodies on their side. */
-void draw_scene(Canvas& c, const View& s, const Scene& w)
-{
-    /* the floor grid at a round step, running off the sides where it will */
-    const double r = s.r, step = nice(2 * r / 4);
-    for (double m = std::ceil(-r / step) * step; s.look.grid && m <= r + 1e-9; m += step) {
-        c.line(s(m, -r, 0), s(m, r, 0), ink.grid);
-        c.line(s(-r, m, 0), s(r, m, 0), ink.grid);
-    }
-    const uint32_t under = w.bodies.empty() ? (uint32_t)w.items.size() : w.bodies[0].first;
-    for (uint32_t i = 0; i < under; i++) draw_item(c, s, w, w.items[i]);
-    std::vector<size_t> order(w.bodies.size());
-    for (size_t i = 0; i < order.size(); i++) order[i] = i;
-    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return s.depth(w.bodies[a].anchor) < s.depth(w.bodies[b].anchor); });
-    size_t next = 0;
-    for (const bool front : { false, true }) {
-        for (const Scene::Trail& t : w.trails) {
-            Dots dots(c, ink.trail, 2);
-            for (uint32_t i = t.first; i < t.first + t.count; i++)
-                if (s.front(w.points[i]) == front) dots.add(s(w.points[i]));
-        }
-        for (; next < order.size() && (front || !s.front(w.bodies[order[next]].anchor)); next++) {
-            const size_t b = order[next];
-            const Double3& v = w.bodies[b].anchor;
-            if (s.look.drops) {
-                c.dot(s(v.x, v.y, 0), ink.ground, 3);
-                c.dashed(s(v.x, v.y, 0), s(v), ink.ground, THIN);
-            }
-            const uint32_t end = b + 1 < w.bodies.size() ? w.bodies[b + 1].first : (uint32_t)w.items.size();
-            for (uint32_t i = w.bodies[b].first; i < end; i++) draw_item(c, s, w, w.items[i]);
-        }
-        if (!front) axes(c, s);
-    }
+    /* the depth runs from -1 to 1 across everything drawn, nearest first */
+    const double deep = std::max((double)b.extent(), r) * 1.01;
+    auto row = [](const Double3& d, double scale, double shift) {
+        return Rml::Vector4f((float)(d.x * scale), (float)(d.y * scale), (float)(d.z * scale), (float)shift);
+    };
+    const Rml::Matrix4f to_area = Rml::Matrix4f::FromRows(row(s.right, s.k, s.cx), row(s.up, -s.k, s.cy),
+                                                          row(s.toward, -1 / deep, 0), { 0, 0, 0, 1 });
+    /* lit from above, to the left of the viewer */
+    c.scene(b, to_area, floats(math::double3_normalize(s.right * -0.4 + s.up * 0.6 + s.toward * 0.7)));
 }
 
 std::string point(const Double3& p)
@@ -1515,7 +1469,7 @@ private:
     /* Draws the scene this frame's draw filled, its reach r meeting the edge. */
     void show(Canvas& c, double r)
     {
-        draw_scene(c, view(c, c.all(), r, camera(), backdrop()), scene_);
+        draw_scene(c, view(c, c.all(), r, camera(), backdrop()), scene_, batch_);
     }
 
     /* The readings along the bottom, unless the card hides them. */
@@ -1867,7 +1821,7 @@ private:
     Camera& camera()
     {
         const float ratio = GetContext() ? GetContext()->GetDensityIndependentPixelRatio() : 1.f;
-        cam_.a -= turn_.x / ratio * 0.5;
+        cam_.a += turn_.x / ratio * 0.5;
         cam_.e  = std::max(-90.0, std::min(90.0, cam_.e + turn_.y / ratio * 0.5));
         if (wheel_ != 0) cam_.zoom = std::max(0.25, std::min(8.0, cam_.zoom * std::pow(1.15, -wheel_)));
         if (reset_) cam_ = Camera();
@@ -2786,6 +2740,7 @@ private:
 
     Rml::Mesh            shapes_;   /* the canvas mesh, kept so its memory is reused */
     Scene                scene_;    /* a 3D draw's scene, filled each frame */
+    Batch                batch_;    /* the scene's strokes and faces for the GPU */
 };
 
 /* A row per Visual. */

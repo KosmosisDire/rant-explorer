@@ -183,6 +183,13 @@ void Canvas::picture(float x, float y, float w, float h, Rml::Texture texture, R
     pictures_.push_back(Picture{ { x, y }, { w, h }, texture, from, to });
 }
 
+void Canvas::scene(const Batch& batch, const Rml::Matrix4f& to_area, Rml::Vector3f light)
+{
+    batch_   = &batch;
+    to_area_ = to_area;
+    light_   = light;
+}
+
 void Canvas::render()
 {
     Rml::RenderManager* rm = element_.GetRenderManager();
@@ -192,12 +199,21 @@ void Canvas::render()
     const Rml::Rectanglei box = Rml::Rectanglei::FromPositionSize(
         Rml::Vector2i((int)std::floor(origin_.x), (int)std::floor(origin_.y)),
         Rml::Vector2i((int)std::ceil(size_.x), (int)std::ceil(size_.y)));
-    rm->SetScissorRegion(box.IntersectIfValid(saved.scissor_region));
+    const Rml::Rectanglei shown = box.IntersectIfValid(saved.scissor_region);
+    if (!shown.Valid()) return;
+    rm->SetScissorRegion(shown);
     for (const Picture& p : pictures_) {
         Rml::Mesh quad;
         Rml::MeshUtilities::GenerateQuad(quad, p.at, p.size, Rml::ColourbPremultiplied(255, 255, 255, 255),
                                          p.from, p.to);
         rm->MakeGeometry(std::move(quad)).Render(origin_, p.texture);
+    }
+    if (batch_) {
+        const Rml::Vector2i window = rm->GetViewport();
+        const float sx = 2.f / window.x, sy = 2.f / window.y;
+        const Rml::Matrix4f to_clip = Rml::Matrix4f::FromRows({ sx, 0, 0, origin_.x * sx - 1 }, { 0, -sy, 0, 1 - origin_.y * sy },
+                                                              { 0, 0, 1, 0 }, { 0, 0, 0, 1 });
+        draw_batch(*batch_, to_clip * to_area_, light_, ratio_, window);
     }
     if (!mesh_.indices.empty()) {
         Rml::Geometry shapes = rm->MakeGeometry(std::move(mesh_));

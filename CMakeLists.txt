@@ -207,6 +207,7 @@ add_executable(rant_explorer
   src/editor.cpp
   src/format.cpp
   src/frame.cpp
+  src/gpu.cpp
   src/icons.cpp
   src/image.cpp
   src/keyboard.cpp

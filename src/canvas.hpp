@@ -3,6 +3,8 @@
 #ifndef CANVAS_HPP
 #define CANVAS_HPP
 
+#include "gpu.hpp"
+
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/Mesh.h>
 #include <RmlUi/Core/Texture.h>
@@ -31,8 +33,8 @@ struct Area {
     float x = 0, y = 0, w = 0, h = 0;
 };
 
-/* A drawing in an element's content box: pictures, then shapes in one mesh, then text.
-   The mesh is the element's, so its memory is kept from frame to frame. */
+/* A drawing in an element's content box: pictures, then a 3D scene, then shapes in one mesh,
+   then text. The mesh is the element's, so its memory is kept from frame to frame. */
 class Canvas {
 public:
     enum Align { Left, Center, Right };
@@ -77,6 +79,10 @@ public:
     void picture(float x, float y, float w, float h, Rml::Texture texture, Rml::Vector2i texels,
                  Rml::Vector2f from = { 0, 0 }, Rml::Vector2f to = { 1, 1 });
 
+    /* A 3D scene, kept by the caller until render. to_area takes the world to the drawing's
+       pixels and to a depth from -1 near to 1 far. light points at the light. */
+    void scene(const Batch& batch, const Rml::Matrix4f& to_area, Rml::Vector3f light);
+
     void render();
 
 private:
@@ -101,6 +107,9 @@ private:
     Rml::Mesh&           mesh_;
     std::vector<Label>   labels_;
     std::vector<Picture> pictures_;
+    const Batch*         batch_ = nullptr;
+    Rml::Matrix4f        to_area_;
+    Rml::Vector3f        light_;
 };
 
 #endif /* CANVAS_HPP */

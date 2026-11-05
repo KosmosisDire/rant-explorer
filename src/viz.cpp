@@ -661,6 +661,7 @@ struct Ellipsoid {
 struct Shaded {
     math::Mesh                mesh;
     std::vector<Rml::Colourb> colours;
+    bool                      solid = false;   /* opaque in its own colours, or else grey */
     std::vector<uint64_t>     sides;
     types::AlignedBox         bounds;
 };
@@ -808,16 +809,16 @@ std::vector<uint64_t> open_sides(const math::Mesh& m, bool whole)
     return out;
 }
 
-/* A mesh as faint lit faces, or solid in its corners' own colours, with lines along the sides
-   given. Place moves each corner and normal. */
+/* A mesh as faint lit faces, or solid in its corners' own colours or else grey, with lines
+   along the sides given. Place moves each corner and normal. */
 template <class Place>
 void put_mesh(Batch& b, const math::Mesh& m, const std::vector<uint64_t>& sides, const std::vector<Rml::Colourb>& own,
-              Rml::Colourb colour, float px, Place place)
+              bool solid, Rml::Colourb colour, float px, Place place)
 {
     /* shape_mesh lays each corner out as x, y, z and its normal, six floats */
     const uint32_t first = (uint32_t)b.corners.size();
     const size_t   step  = m.vertices.point_step;
-    const Rml::Colourb fill = faded(colour, FILL);
+    const Rml::Colourb fill = solid ? ink.gray : faded(colour, FILL);
     for (size_t at = 0, i = 0; at + step <= m.vertices.data.size(); at += step, i++) {
         float v[6];
         std::memcpy(v, m.vertices.data.data() + at, sizeof v);
@@ -839,7 +840,7 @@ bool put_shape(Batch& b, const math::Shape& shape, Rml::Colourb colour, float px
     } catch (const math::MathError&) {
         return false;
     }
-    put_mesh(b, m, open_sides(m, false), {}, colour, px, [](Double3&, Double3&) {});
+    put_mesh(b, m, open_sides(m, false), {}, false, colour, px, [](Double3&, Double3&) {});
     return true;
 }
 
@@ -898,7 +899,7 @@ void put_one(Batch& b, const View&, float px, const Ellipsoid& o, Rml::Colourb c
     static const math::Mesh unit = math::shape_mesh(math::shape_from_sphere(types::Sphere{ {}, 1 }), 0, CREASE);
     static const std::vector<uint64_t> sides = open_sides(unit, false);
     const Double3& r = o.radii;
-    put_mesh(b, unit, sides, {}, colour, THIN * px, [&](Double3& point, Double3& normal) {
+    put_mesh(b, unit, sides, {}, false, colour, THIN * px, [&](Double3& point, Double3& normal) {
         point  = o.center + o.turn * Double3{ point.x * r.x, point.y * r.y, point.z * r.z };
         normal = o.turn * math::double3_normalize(Double3{ normal.x * r.y * r.z, normal.y * r.x * r.z, normal.z * r.x * r.y });
     });
@@ -906,7 +907,8 @@ void put_one(Batch& b, const View&, float px, const Ellipsoid& o, Rml::Colourb c
 
 void put_one(Batch& b, const View&, float px, const Surface& o, Rml::Colourb colour)
 {
-    if (o.shaded) put_mesh(b, o.shaded->mesh, o.shaded->sides, o.shaded->colours, colour, THIN * px, [](Double3&, Double3&) {});
+    if (o.shaded)
+        put_mesh(b, o.shaded->mesh, o.shaded->sides, o.shaded->colours, o.shaded->solid, colour, THIN * px, [](Double3&, Double3&) {});
 }
 
 /* px is pixels per dp. */
@@ -1710,9 +1712,9 @@ Cloud cloud_of(const Nodes& nodes, int index, const std::vector<uint8_t>& messag
     return out;
 }
 
-/* A surface as math shades it, split where faces meet past CREASE or their colours differ. In
-   colours of its own it is drawn whole, lines only at its open ends. None when it has no faces. */
-Surface shaded(const types::Mesh& m)
+/* A surface as math shades it, split where faces meet past CREASE or their colours differ. Solid,
+   or in colours of its own, it is drawn whole with lines only at its open ends. None when it has no faces. */
+Surface shaded(const types::Mesh& m, bool solid)
 {
     auto out = std::make_shared<Shaded>();
     try {
@@ -1724,7 +1726,8 @@ Surface shaded(const types::Mesh& m)
         return {};
     }
     if (out->mesh.triangles.empty()) return {};
-    out->sides = open_sides(out->mesh, !out->colours.empty());
+    out->solid = solid || !out->colours.empty();
+    out->sides = open_sides(out->mesh, out->solid);
     return { out };
 }
 
@@ -1748,7 +1751,7 @@ Surfaced mesh_of(const Nodes& nodes, int index, const std::vector<uint8_t>& mess
         out.left[1] = "corners not readable";
         return out;
     }
-    out.solid = shaded(m);
+    out.solid = shaded(m, true);
     const Described d = describe_one(out.solid);
     out.left[1] = out.solid.shaded ? d.first : "no faces";
     out.right   = d.second;
@@ -1832,7 +1835,7 @@ Surfaced voxels_of(const Nodes& nodes, int index, const std::string& std_name, c
     } catch (const math::MathError&) {
         return out;
     }
-    out.solid = shaded(m);
+    out.solid = shaded(m, false);
     return out;
 }
 

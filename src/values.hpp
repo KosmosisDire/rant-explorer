@@ -77,7 +77,8 @@ struct ValueView {
    name, everything else by shape. Kv is the fallback, a plain list of the fields. */
 enum class Visual {
     None, Plot, State, Text, Time, Duration, Uuid, Hex, Chips, Bars, Cells, Table, Matrix, Multi, Calls,
-    Vec2, Vec3, Vec4, Quat, Pose, Pose2D, Twist, Twist2D, Wrench, Wrench2D, Accel, Accel2D, Solid, Figure, Geo,
+    Vec2, Vec3, Vec4, Quat, Pose, Pose2D, Twist, Twist2D, Wrench, Wrench2D, Accel, Accel2D, PoseCovariance,
+    TwistCovariance, Odometry, Imu, Inertia, Gnss, Range, Detection, Detection2D, Solid, Figure, Geo,
     Color, Joints, Image, Video, Stream, File,
     Vec2s, Vec3s, Poses, Poses2D, Path, Path2D, Polyline, Polyline2D, Solids, Figures, Geos, Colors, Kv,
 };

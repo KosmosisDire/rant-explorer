@@ -28,6 +28,10 @@ Visual struct_visual(const std::string& name)
         { "Pose2D", Visual::Pose2D }, { "Transform2D", Visual::Pose2D },
         { "Twist", Visual::Twist }, { "Wrench", Visual::Wrench }, { "Accel", Visual::Accel },
         { "Twist2D", Visual::Twist2D }, { "Wrench2D", Visual::Wrench2D }, { "Accel2D", Visual::Accel2D },
+        { "PoseWithCovariance", Visual::PoseCovariance }, { "TwistWithCovariance", Visual::TwistCovariance },
+        { "Odometry", Visual::Odometry }, { "Imu", Visual::Imu }, { "Inertia", Visual::Inertia },
+        { "GnssFix", Visual::Gnss }, { "RangeReading", Visual::Range },
+        { "Detection3D", Visual::Detection }, { "Detection2D", Visual::Detection2D },
         { "AlignedBox", Visual::Solid }, { "OrientedBox", Visual::Solid }, { "Plane", Visual::Solid },
         { "Segment", Visual::Solid }, { "Ray", Visual::Solid }, { "Sphere", Visual::Solid },
         { "Capsule", Visual::Solid }, { "Cylinder", Visual::Solid }, { "Cone", Visual::Solid },
@@ -57,6 +61,7 @@ Visual array_of_struct(const std::string& name)
         { "Transform2D", Visual::Poses2D },
         { "GeoPoint", Visual::Geos },
         { "Color", Visual::Colors },
+        { "Detection3D", Visual::Detection }, { "Detection2D", Visual::Detection2D },
     };
     for (const auto& entry : table)
         if (name == entry.name) return entry.visual;

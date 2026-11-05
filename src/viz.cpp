@@ -27,6 +27,8 @@
 #include <cstring>
 #include <iterator>
 #include <memory>
+#include <set>
+#include <tuple>
 #include <variant>
 
 namespace {
@@ -85,13 +87,14 @@ constexpr size_t LABELLED = 16;
 /* ------------------------------------------------------------------ what a card shows */
 
 /* A part of a visual its card can show or hide. Colours off draws every element in one. */
-enum class Show { History, Arrows, Orientation, Line, Path, Turn, Torque, Labels, Colours, Drops, Grid, Axes, Readings };
+enum class Show { History, Arrows, Orientation, Line, Path, Turn, Torque, Uncertainty, Labels, Colours, Drops, Grid, Axes,
+                  Readings };
 
 const VizShow SHOW_NAMES[] = {
     { "history", "History" }, { "arrows", "Arrows" }, { "orientation", "Orientation" }, { "line", "Line" },
-    { "path", "Path" },       { "turn", "Turn" },     { "torque", "Torque" },           { "labels", "Labels" },
-    { "colors", "Colors" },   { "drops", "Drop lines" }, { "grid", "Grid" },           { "axes", "Axes" },
-    { "readings", "Readings" },
+    { "path", "Path" },       { "turn", "Turn" },     { "torque", "Torque" },           { "uncertainty", "Uncertainty" },
+    { "labels", "Labels" },   { "colors", "Colors" }, { "drops", "Drop lines" },       { "grid", "Grid" },
+    { "axes", "Axes" },       { "readings", "Readings" },
 };
 
 /* A set of parts, a bit per Show. */
@@ -306,6 +309,12 @@ Pose2D placed_2d(const Nodes& nodes, int index)
     return Pose2D{ p >= 0 ? vec_2d(nodes, p) : Double2{}, number(nodes, index, "angle") };
 }
 
+/* A point as the readings give it. */
+std::string xyz(const Double3& v)
+{
+    return "x " + f3(v.x) + "  y " + f3(v.y) + "  z " + f3(v.z);
+}
+
 /* Roll, pitch and yaw in degrees. */
 std::string euler(const Quaternion& q)
 {
@@ -365,6 +374,13 @@ public:
         col_ = col;
         first_ = lo_ = hi_ = last_ = { p, 0 };
         n_ = 1;
+    }
+
+    /* A break no line crosses, such as a value that is not finite. */
+    void gap()
+    {
+        flush();
+        out_.push_back({ NAN, NAN });
     }
 
     const std::vector<Rml::Vector2f>& points()
@@ -522,10 +538,16 @@ void side_by_side(Canvas& c, const Area& a, const std::vector<std::string>& name
 /* Where an element's index sits from the point it is drawn at, in dp. */
 constexpr float BESIDE_X = 8, BESIDE_Y = -6;
 
+/* Text beside the point it names. */
+void beside(Canvas& c, Rml::Vector2f at, const std::string& text, Rml::Colourb colour)
+{
+    c.text(text, at.x + c.dp(BESIDE_X), at.y + c.dp(BESIDE_Y), Canvas::Left, colour, LABEL);
+}
+
 /* An element's index beside the point it is drawn at, in its colour. */
 void index_label(Canvas& c, Rml::Vector2f at, size_t i, Rml::Colourb colour)
 {
-    c.text(std::to_string(i), at.x + c.dp(BESIDE_X), at.y + c.dp(BESIDE_Y), Canvas::Left, colour, LABEL);
+    beside(c, at, std::to_string(i), colour);
 }
 
 /* A value shown alone in the middle of an area, as large as fits up to ALONE dp. */
@@ -622,10 +644,18 @@ std::vector<Rml::Vector2f> circle(Rml::Vector2f centre, float radius, double t0 
     return out;
 }
 
+/* The region a covariance's error stays inside: a unit sphere stretched by radii along x, y
+   and z, turned, then moved to center. */
+struct Ellipsoid {
+    Double3    center;
+    Quaternion turn;
+    Double3    radii;
+};
+
 /* A standard 3D shape read from its node, nothing for a kind with no drawing. */
 using Solid = std::variant<std::monostate, types::AlignedBox, types::OrientedBox, types::Plane, types::Segment,
                            types::Ray, types::Sphere, types::Capsule, types::Cylinder, types::Cone, types::Polygon,
-                           types::Prism>;
+                           types::Prism, Ellipsoid>;
 
 Solid solid(const Nodes& nodes, int index, const std::string& kind)
 {
@@ -679,6 +709,7 @@ Double3 middle_of(const types::Cylinder& o) { return math::cylinder_centroid(o);
 Double3 middle_of(const types::Cone& o) { return math::double3_lerp(o.base, o.tip, 0.5); }
 Double3 middle_of(const types::Polygon& p) { return math::polygon_centroid(p.points); }
 Double3 middle_of(const types::Prism& p) { return math::prism_centroid(p); }
+Double3 middle_of(const Ellipsoid& o) { return o.center; }
 
 Double3 middle(const Solid& o)
 {
@@ -705,6 +736,7 @@ void hold_one(Reach& r, const types::Cylinder& o) { take(r, o.axis.a, o.radius);
 void hold_one(Reach& r, const types::Cone& o) { take(r, o.base, o.radius); take(r, o.tip, 0); }
 void hold_one(Reach& r, const types::Polygon& p) { for (const Double3& v : p.points) take(r, v, 0); }
 void hold_one(Reach& r, const types::Prism& p) { for (const Double3& v : math::prism_corners(p)) take(r, v, 0); }
+void hold_one(Reach& r, const Ellipsoid& o) { take(r, o.center, std::max({ o.radii.x, o.radii.y, o.radii.z })); }
 
 void hold(Reach& reach, const Solid& o)
 {
@@ -726,17 +758,11 @@ void stroke(Batch& b, Batch::Mark mark, const Double3& from, const Double3& to, 
     b.stroke(mark, floats(from), floats(to), colour, px);
 }
 
-/* A shape as math meshes it: faint lit faces, and a line along each side no other face
-   shares. Math splits a mesh's corners where its faces meet at a crease, so those sides are
-   the creases and the open ends. False when the shape is too thin to have faces. */
-bool put_shape(Batch& b, const math::Shape& shape, Rml::Colourb colour, float px)
+/* A mesh as faint lit faces, with lines along its creases and open ends, the sides no other
+   face shares since math splits corners at a crease. Place moves each corner and normal. */
+template <class Place>
+void put_mesh(Batch& b, const math::Mesh& m, Rml::Colourb colour, float px, Place place)
 {
-    math::Mesh m;
-    try {
-        m = math::shape_mesh(shape, 0, CREASE);
-    } catch (const math::MathError&) {
-        return false;
-    }
     /* shape_mesh lays each corner out as x, y, z and its normal, six floats */
     const uint32_t first = (uint32_t)b.corners.size();
     const size_t   step  = m.vertices.point_step;
@@ -744,7 +770,9 @@ bool put_shape(Batch& b, const math::Shape& shape, Rml::Colourb colour, float px
     for (size_t at = 0; at + step <= m.vertices.data.size(); at += step) {
         float v[6];
         std::memcpy(v, m.vertices.data.data() + at, sizeof v);
-        b.corners.push_back({ { v[0], v[1], v[2] }, { v[3], v[4], v[5] }, fill });
+        Double3 point{ v[0], v[1], v[2] }, normal{ v[3], v[4], v[5] };
+        place(point, normal);
+        b.corners.push_back({ floats(point), floats(normal), fill });
     }
     std::vector<uint64_t> sides;
     for (size_t t = 0; t + 2 < m.triangles.size(); t += 3)
@@ -759,6 +787,18 @@ bool put_shape(Batch& b, const math::Shape& shape, Rml::Colourb colour, float px
         if (!std::binary_search(sides.begin(), sides.end(), (uint64_t)to << 32 | from))
             b.stroke(Batch::Mark::Line, b.corners[first + from].at, b.corners[first + to].at, colour, px);
     }
+}
+
+/* A shape as math meshes it. False when it is too thin to have faces. */
+bool put_shape(Batch& b, const math::Shape& shape, Rml::Colourb colour, float px)
+{
+    math::Mesh m;
+    try {
+        m = math::shape_mesh(shape, 0, CREASE);
+    } catch (const math::MathError&) {
+        return false;
+    }
+    put_mesh(b, m, colour, px, [](Double3&, Double3&) {});
     return true;
 }
 
@@ -809,6 +849,17 @@ void put_one(Batch& b, const View& s, float px, const types::Ray& o, Rml::Colour
     const double end = inside > 0 ? std::sqrt(inside) - along : 0;
     if (end > 0 && math::double3_length(d) > 0) stroke(b, Batch::Mark::Arrow, o.origin, o.origin + d * end, colour, STROKE * px);
     stroke(b, Batch::Mark::Dot, o.origin, o.origin, colour, 4 * px);
+}
+
+/* The unit sphere stretched, its normals by the other two radii so a flat one stays lit. */
+void put_one(Batch& b, const View&, float px, const Ellipsoid& o, Rml::Colourb colour)
+{
+    static const math::Mesh unit = math::shape_mesh(math::shape_from_sphere(types::Sphere{ {}, 1 }), 0, CREASE);
+    const Double3& r = o.radii;
+    put_mesh(b, unit, colour, THIN * px, [&](Double3& point, Double3& normal) {
+        point  = o.center + o.turn * Double3{ point.x * r.x, point.y * r.y, point.z * r.z };
+        normal = o.turn * math::double3_normalize(Double3{ normal.x * r.y * r.z, normal.y * r.x * r.z, normal.z * r.x * r.y });
+    });
 }
 
 /* px is pixels per dp. */
@@ -907,10 +958,14 @@ private:
     }
 };
 
-/* An element's index beside the point it is drawn at, in its colour. */
+void beside(Scene& w, const Double3& at, const std::string& text, Rml::Colourb colour)
+{
+    w.label(at, text, colour, Rml::Vector2f(BESIDE_X, BESIDE_Y), Canvas::Left, LABEL);
+}
+
 void index_label(Scene& w, const Double3& at, size_t i, Rml::Colourb colour)
 {
-    w.label(at, std::to_string(i), colour, Rml::Vector2f(BESIDE_X, BESIDE_Y), Canvas::Left, LABEL);
+    beside(w, at, std::to_string(i), colour);
 }
 
 /* A rotation as three arrows along its turned axes. */
@@ -1053,6 +1108,8 @@ Described describe_one(const types::Prism& p)
 {
     return { format_number((double)p.base.points.size()) + " corners  height " + f3(p.height), "at " + point(p.pose.position) };
 }
+
+Described describe_one(const Ellipsoid& o) { return { "radii " + point(o.radii), "at " + point(o.center) }; }
 
 Described describe(const Solid& o)
 {
@@ -1305,6 +1362,86 @@ void curl_2d(Canvas& c, const Plane& p, const Double2& centre, double rho, doubl
     arc.pop_back();
     c.polyline(arc, colour, STROKE);
     c.arrow(arc.back(), tip, colour, STROKE);
+}
+
+/* ------------------------------------------------------------------ uncertainty */
+
+/* 95 in 100 errors lie within this many standard deviations, in 3D and in 2D. */
+constexpr double SURE_3D = 2.80, SURE_2D = 2.45;
+
+/* The top left 3 by 3 of the covariance at index, read as rows of numbers: all of a
+   Covariance3, or a Covariance6's position or linear part. */
+types::Covariance3 covariance3(const Nodes& nodes, int index, const std::vector<uint8_t>& message)
+{
+    types::Covariance3 out;
+    const std::vector<int> rows = index >= 0 ? children_of(nodes, index) : std::vector<int>();
+    for (size_t i = 0; i < 3 && i < rows.size(); i++) {
+        const std::vector<double> row = numbers_of(nodes, rows[i], message);
+        for (size_t j = 0; j < 3 && j < row.size(); j++) out.m[i][j] = row[j];
+    }
+    return out;
+}
+
+/* What a covariance says of an error: its axes, and its 1 sigma radii longest first. */
+struct Spread {
+    Quaternion turn = NO_TURN;
+    Double3    sigma;
+    bool       any = false;   /* false for no spread, or one math refuses as the -1 of a value not measured */
+
+    Ellipsoid region(const Double3& at, double deviations) const { return { at, turn, sigma * deviations }; }
+    double    extent(double deviations) const { return any ? sigma.x * deviations : 0; }
+
+    /* the first n radii, empty when there is no spread */
+    std::string text(int n, const char* unit) const
+    {
+        if (!any) return {};
+        const double r[3] = { sigma.x, sigma.y, sigma.z };
+        std::string out = "\xC2\xB1";
+        for (int i = 0; i < n; i++) out += " " + f3(r[i]);
+        return out + " " + unit;
+    }
+};
+
+Spread spread(const types::Covariance3& c)
+{
+    Spread out;
+    try {
+        std::tie(out.turn, out.sigma) = math::covariance3_ellipsoid(c, 1);
+    } catch (const math::MathError&) {
+        return Spread();
+    }
+    out.any = out.sigma.x > 0;
+    return out;
+}
+
+/* How far ahead a twist's path looks: TWIST_AHEAD seconds, short of a second full turn. */
+double ahead_of(const types::Twist& body)
+{
+    const double spin = math::double3_length(body.angular);
+    return spin > 1e-9 ? std::min(TWIST_AHEAD, 6.28318530717959 / spin) : TWIST_AHEAD;
+}
+
+/* The screw a pose runs along for ahead seconds while a twist in its own frame holds. */
+std::vector<Double3> screw(const Pose& from, const types::Twist& body, double ahead)
+{
+    std::vector<Double3> path{ from.position };
+    Pose at = from;
+    const int steps = 64;
+    for (int i = 0; i < steps; i++) {
+        at = math::pose_integrate(at, body, ahead / steps);
+        path.push_back(at.position);
+    }
+    return path;
+}
+
+/* ------------------------------------------------------------------ detections */
+
+/* A detection's label and score, as its box is named. */
+std::string detected(const Nodes& nodes, int index)
+{
+    const int label = kid(nodes, index, "label");
+    const std::string name = label >= 0 ? nodes[label].text : std::string();
+    return (name.empty() ? "" : name + " ") + print("%.2f", number(nodes, index, "score"));
 }
 
 /* ------------------------------------------------------------------ the element */
@@ -1591,6 +1728,25 @@ private:
     void foot(Canvas& c, const Area& a, const std::string& left, const std::string& right = {}) const
     {
         foot(c, a, std::vector<Part>{ { left, ink.dim } }, right);
+    }
+
+    /* What the covariance member of the struct at index says, while the card shows uncertainty. */
+    Spread error_of(const Nodes& nodes, int index) const
+    {
+        return on(Show::Uncertainty) ? spread(covariance3(nodes, kid(nodes, index, "covariance"), message())) : Spread();
+    }
+
+    /* The detections at the card's value, one or an array of them. */
+    std::vector<int> detections_of(const Nodes& nodes, const ValueNode& node) const
+    {
+        return node.kind == ValueNode::Array ? children_of(nodes, found_) : std::vector<int>{ found_ };
+    }
+
+    /* A detection in its track's colour, the accent when untracked or the card hides colours. */
+    Rml::Colourb track_tint(const Nodes& nodes, int index) const
+    {
+        const long long track = (long long)number(nodes, index, "track");
+        return track && on(Show::Colours) ? palette(track) : ink.accent;
     }
 
     /* ---------------------------------------------------------------- building */
@@ -1952,11 +2108,12 @@ private:
        The range is every value seen since the card opened plus a margin, eased so it never
        jumps. Before any trace it is around the first value. */
     void lines(Canvas& c, const std::vector<std::string>& paths, const std::vector<Rml::Colourb>& colours,
-               double first, bool is_float)
+               double first, bool is_float, float left = 0)
     {
         const double now = Capture::now_s();
         for (const std::string& path : paths)
             for (const Capture::TracePoint& p : trace(path)) {
+                if (!std::isfinite(p.v)) continue;
                 if (!seen_) { lo_seen_ = hi_seen_ = p.v; seen_ = true; }
                 lo_seen_ = std::min(lo_seen_, p.v);
                 hi_seen_ = std::max(hi_seen_, p.v);
@@ -1968,24 +2125,27 @@ private:
         ease_range(lo, hi);
 
         const float top = c.dp(TOP), bottom = c.h() - c.dp(BOT + LINE);
-        const float x0 = c.dp(GUTTER), x1 = c.w() - c.dp(10);
+        const float x0 = left + c.dp(GUTTER), x1 = c.w() - c.dp(10);
         auto X = [&](double t) { return (float)(x0 + (x1 - x0) * (1 - (now - t) / PLOT_SECONDS)); };
         auto Y = [&](double v) { return (float)(top + (bottom - top) * (1 - (v - lo_) / (hi_ - lo_))); };
 
         time_grid(c, X, now, top, bottom, on(Show::Grid));
         value_grid(c, x0, x1, lo_, hi_, Y, is_float, on(Show::Grid));
-        /* Each line is cut to the plot so its tail slides off the left edge and a new extreme
-           the range has not eased out to yet stays inside. The newest value holds until now. */
+        /* Each line is cut to the plot, so its tail slides off the left and a new extreme stays
+           inside. The newest value holds until now, and one that is not finite leaves a gap. */
         for (size_t k = 0; k < paths.size(); k++) {
             const auto& points = trace(paths[k]);
             Columns columns;
-            for (const Capture::TracePoint& p : points) columns.add({ X(p.t), Y(p.v) });
-            if (!points.empty() && points.back().t < now) columns.add({ X(now), Y(points.back().v) });
+            for (const Capture::TracePoint& p : points) {
+                if (std::isfinite(p.v)) columns.add({ X(p.t), Y(p.v) });
+                else                    columns.gap();
+            }
+            if (!points.empty() && points.back().t < now && std::isfinite(points.back().v)) columns.add({ X(now), Y(points.back().v) });
             const std::vector<Rml::Vector2f>& line = columns.points();
             std::vector<Rml::Vector2f> run;
             for (size_t i = 1; i < line.size(); i++) {
                 float ax = line[i - 1].x, ay = line[i - 1].y, bx = line[i].x, by = line[i].y;
-                if (!clip(ax, ay, bx, by, x0, top, x1, bottom)) continue;
+                if (!std::isfinite(ay) || !std::isfinite(by) || !clip(ax, ay, bx, by, x0, top, x1, bottom)) continue;
                 if (run.empty() || run.back().x != ax || run.back().y != ay) {
                     c.polyline(run, colours[k], STROKE);
                     run.assign(1, { ax, ay });
@@ -2009,6 +2169,46 @@ private:
         }
         lines(c, { path_ }, { ink.accent }, node.number, node.is_float);
         foot(c, over_time(c), { { value_text(node), ink.accent } });
+    }
+
+    /* A RangeReading: its cone from the sensor out to the distance and on to its max faint,
+       beside the distance over time. Nothing in range leaves the cone empty and the line a gap. */
+    void range(Canvas& c, const Nodes& nodes, const ValueNode& node)
+    {
+        const double d = number(nodes, found_, "distance"), lo = number(nodes, found_, "min"), hi = number(nodes, found_, "max");
+        const double fov = std::fabs(number(nodes, found_, "field_of_view")), half = std::min(fov / 2, 1.5);
+        const bool hit = std::isfinite(d), history = on(Show::History);
+        /* the cone meets its max, or the farthest distance seen when that is unstated */
+        const double far = reach_[0].grow({ std::isfinite(hi) ? hi : 0, hit ? d : 0 }, dt_, 1.0);
+        const float top = c.dp(TOP), low = c.h() - c.dp(BOT + (history ? LINE : 0));
+        const float width = history ? std::min(c.w() / 2, (low - top) * 1.6f) : c.w();
+        const Rml::Vector2f apex(c.dp(12), (top + low) / 2);
+        const double k = std::min((width - c.dp(24)) / far, (low - top) / 2 / (far * std::max(std::sin(half), 1e-6)));
+        auto arc = [&](double r) {
+            std::vector<Rml::Vector2f> out;
+            for (int i = 0; i <= 24; i++) {
+                const double t = -half + 2 * half * i / 24;
+                out.push_back({ apex.x + (float)(r * std::cos(t) * k), apex.y - (float)(r * std::sin(t) * k) });
+            }
+            return out;
+        };
+        const std::vector<Rml::Vector2f> edge = arc(far);
+        c.line(apex, edge.front(), ink.faint, THIN);
+        c.line(apex, edge.back(), ink.faint, THIN);
+        c.polyline(edge, ink.faint, THIN);
+        if (lo > 0 && lo < far) c.polyline(arc(lo), ink.faint, THIN);
+        if (hit) {
+            const std::vector<Rml::Vector2f> reached = arc(std::min(d, far));
+            for (size_t i = 1; i < reached.size(); i++) c.triangle(apex, reached[i - 1], reached[i], faded(ink.accent, FILL));
+            c.polyline(reached, ink.accent, STROKE);
+            c.dot(reached[12], ink.accent, 4);
+        }
+        c.dot(apex, ink.dim, 3);
+        if (history) lines(c, fed(node), { ink.accent }, hit ? d : far, true, width);
+        const int kind = kid(nodes, found_, "kind");
+        const std::string sensor = kind >= 0 && nodes[kind].text != "Unknown" ? value_text(nodes[kind]) + "  " : "";
+        foot(c, history ? over_time(c) : c.all(), { { hit ? "distance " + f3(d) + " m" : "nothing in range", hit ? ink.accent : ink.dim } },
+             sensor + "fov " + print("%.1f\xC2\xB0", fov * 180 / 3.14159265358979));
     }
 
     /* A Float4, Double4 or Int4: a line per component in its own colour, named in the foot,
@@ -2234,6 +2434,25 @@ private:
         foot(c, c.all(), counted(list.size(), node.elem_std));
     }
 
+    /* Detection2Ds, one or an array, as Detection3Ds are drawn but on a plane. */
+    void detections_2d(Canvas& c, const Nodes& nodes, const ValueNode& node)
+    {
+        const std::vector<int> items = detections_of(nodes, node);
+        std::vector<Figure> boxes;
+        std::set<long long> tracks;
+        for (const int i : items) {
+            boxes.push_back(figure(nodes, kid(nodes, i, "bounds"), "OrientedBox2D"));
+            hold(reach_[0], boxes.back());
+            if (const long long track = (long long)number(nodes, i, "track")) tracks.insert(track);
+        }
+        const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_), backdrop());
+        for (size_t k = 0; k < items.size(); k++) {
+            draw_figure(c, p, boxes[k], track_tint(nodes, items[k]));
+            if (on(Show::Labels)) beside(c, p(middle(boxes[k])), detected(nodes, items[k]), track_tint(nodes, items[k]));
+        }
+        detected_foot(c, nodes, node, items, tracks.size(), boxes.empty() ? Described() : describe(boxes.back()));
+    }
+
     /* ---------------------------------------------------------------- scenes */
 
     /* An arrow from the origin in a scene, its foot, drop line and trail. */
@@ -2245,7 +2464,7 @@ private:
         scene_.body(v);
         ray(scene_, Double3{}, v, ink.accent);
         show(c, r);
-        foot(c, c.all(), "x " + f3(v.x) + "  y " + f3(v.y) + "  z " + f3(v.z));
+        foot(c, c.all(), xyz(v));
     }
 
     void quaternion(Canvas& c, const Nodes& nodes, const ValueNode&)
@@ -2257,43 +2476,75 @@ private:
         foot(c, c.all(), euler(q));
     }
 
-    /* A Pose or a Transform: its triad at its position joined to the origin, and the
-       position's trail. */
-    void pose(Canvas& c, const Nodes& nodes, const ValueNode& node)
+    /* A pose as its card shows it: the position's trail, a line from the origin, its triad or
+       a dot, and the region its error stays inside. r is the reach. */
+    void put_pose(const ValueNode& node, const Pose& p, const Spread& error, double r)
     {
-        const bool framed = node.std_name == "Transform";
-        const Pose p = placed(nodes, framed ? kid(nodes, found_, "pose") : found_);
-        /* the margin keeps the triad inside */
-        const double r = reach_[0].grow({ math::double3_length(p.position) }, dt_, 1.3);
         if (on(Show::History)) scene_.trail(trail(node));
         scene_.body(p.position);
         if (on(Show::Line)) scene_.line(Double3{}, p.position, ink.faint, THIN);
         if (on(Show::Orientation)) triad(scene_, p.position, p.orientation, 0.2 * r);
         else                       scene_.dot(p.position, ink.accent, 4);
-        show(c, r);
-        const int parent = framed ? kid(nodes, found_, "parent") : -2;
-        foot(c, c.all(), { { "x " + f3(p.position.x) + "  y " + f3(p.position.y) + "  z " + f3(p.position.z), ink.dim }, { euler(p.orientation), ink.dim } },
-             parent >= 0 && !nodes[parent].text.empty() ? "in " + nodes[parent].text : std::string());
+        if (error.any) scene_.solid(error.region(p.position, SURE_3D), ink.accent);
     }
 
-    /* A twist in the moving body's frame: velocity arrow, turn curl, the path while it
-       holds, and the turn axis. The path stops short of a second full turn. */
-    void twist(Canvas& c, const Nodes& nodes, const ValueNode&)
+    /* The frame a value names, for the right of its readings. */
+    std::string parent_of(const Nodes& nodes) const
     {
-        const int li = kid(nodes, found_, "linear"), ai = kid(nodes, found_, "angular");
+        const int parent = kid(nodes, found_, "parent");
+        return parent >= 0 && !nodes[parent].text.empty() ? "in " + nodes[parent].text : std::string();
+    }
+
+    /* A Pose, a Transform or a PoseWithCovariance: its triad at its position joined to the
+       origin, the position's trail, and the region the position's error stays inside. */
+    void pose(Canvas& c, const Nodes& nodes, const ValueNode& node)
+    {
+        const bool framed = node.std_name == "Transform" || node.std_name == "PoseWithCovariance";
+        const Pose p = placed(nodes, framed ? kid(nodes, found_, "pose") : found_);
+        const Spread error = error_of(nodes, found_);
+        /* the margin keeps the triad inside */
+        const double r = reach_[0].grow({ math::double3_length(p.position) + error.extent(SURE_3D) }, dt_, 1.3);
+        put_pose(node, p, error, r);
+        show(c, r);
+        foot(c, c.all(), { { xyz(p.position), ink.dim }, { euler(p.orientation), ink.dim }, { error.text(3, "m"), ink.dim } },
+             parent_of(nodes));
+    }
+
+    /* An Odometry: its pose as the pose card draws it, and its twist as the path ahead in the
+       parent while it holds. */
+    void odometry(Canvas& c, const Nodes& nodes, const ValueNode& node)
+    {
+        const int pi = kid(nodes, found_, "pose"), ti = kid(nodes, kid(nodes, found_, "twist"), "twist");
+        const Pose p = placed(nodes, kid(nodes, pi, "pose"));
+        const Spread error = error_of(nodes, pi);
+        const int li = kid(nodes, ti, "linear"), ai = kid(nodes, ti, "angular");
+        const types::Twist body{ li >= 0 ? vec(nodes, li) : Double3{}, ai >= 0 ? vec(nodes, ai) : Double3{} };
+        const std::vector<Double3> path = screw(p, body, ahead_of(body));
+        for (const Double3& e : path) reach_[0].seen = std::max(reach_[0].seen, math::double3_length(e));
+        const double r = reach_[0].grow({ math::double3_length(p.position) + error.extent(SURE_3D) }, dt_, 1.3);
+        put_pose(node, p, error, r);
+        if (on(Show::Path)) {
+            scene_.path(path, ink.purple, STROKE);
+            scene_.dot(path.back(), ink.purple, 4);
+        }
+        show(c, r);
+        foot(c, c.all(), { { xyz(p.position), ink.dim }, { "speed " + f3(math::double3_length(body.linear)) + " m/s", ink.dim },
+                           { error.text(3, "m"), ink.dim } }, parent_of(nodes));
+    }
+
+    /* A twist in the moving body's frame: velocity arrow, turn curl, the path while it holds,
+       the turn axis, and for a TwistWithCovariance the region its velocity's error stays inside. */
+    void twist(Canvas& c, const Nodes& nodes, const ValueNode& node)
+    {
+        const int at = node.std_name == "TwistWithCovariance" ? kid(nodes, found_, "twist") : found_;
+        const int li = kid(nodes, at, "linear"), ai = kid(nodes, at, "angular");
         const types::Twist body{ li >= 0 ? vec(nodes, li) : Double3{}, ai >= 0 ? vec(nodes, ai) : Double3{} };
         const Double3 &v = body.linear, &w = body.angular;
         const double speed = math::double3_length(v), spin = math::double3_length(w);
         const bool turning = spin > 1e-9;
-        const double ahead = turning ? std::min(TWIST_AHEAD, 6.28318530717959 / spin) : TWIST_AHEAD;
-        /* the screw the body runs along while the twist holds */
-        std::vector<Double3> path{ Double3{} };
-        Pose at{ Double3{}, NO_TURN };
-        const int steps = 64;
-        for (int i = 0; i < steps; i++) {
-            at = math::pose_integrate(at, body, ahead / steps);
-            path.push_back(at.position);
-        }
+        const double ahead = ahead_of(body);
+        const std::vector<Double3> path = screw(Pose{ Double3{}, NO_TURN }, body, ahead);
+        const Spread error = error_of(nodes, found_);
         /* The view holds the path, and the turn centre while it is near enough to read as a
            turn: a far one would shrink the scene for good, since the reach only grows. */
         const Double3 centre = turning ? math::double3_cross(w, v) * (1 / (spin * spin)) : Double3{};
@@ -2302,7 +2553,7 @@ private:
         auto hold = [this](const Double3& p) { reach_[0].seen = std::max(reach_[0].seen, math::double3_length(p)); };
         for (const Double3& p : path) hold(p);
         if (turning && math::double3_length(centre) <= 2 * extent) hold(centre);
-        const double r = reach_[0].grow({ speed }, dt_);
+        const double r = reach_[0].grow({ speed + error.extent(SURE_3D) }, dt_);
 
         if (turning && on(Show::Turn)) {
             const Double3 axis = w * (1 / spin);
@@ -2322,8 +2573,10 @@ private:
         if (turning && on(Show::Turn)) curl(scene_, w * (1 / spin), 0.15 * r, 5 * spin / fastest, ink.amber);
         scene_.body(v);
         scene_.arrow(Double3{}, v, ink.accent, ARROW);
+        if (error.any) scene_.solid(error.region(v, SURE_3D), ink.accent);
         show(c, r);
-        foot(c, c.all(), "speed " + f3(speed) + " m/s  turn " + f3(spin) + " rad/s", "next " + print("%.1f", ahead) + " s");
+        foot(c, c.all(), { { "speed " + f3(speed) + " m/s  turn " + f3(spin) + " rad/s", ink.dim }, { error.text(3, "m/s"), ink.dim } },
+             "next " + print("%.1f", ahead) + " s");
     }
 
     /* A Twist2D in the moving body's frame: the velocity arrow, the turn as an arc about the
@@ -2452,6 +2705,86 @@ private:
         foot(c, c.all(), w.reading(math::double3_length(f), turn));
     }
 
+    /* An Imu as its orientation turns it: its axes, its acceleration as an arrow and its turn
+       as a curl. With no orientation measured all stay in its own frame. */
+    void imu(Canvas& c, const Nodes& nodes, const ValueNode&)
+    {
+        const int oi = kid(nodes, found_, "orientation"), wi = kid(nodes, found_, "angular_velocity");
+        const int ai = kid(nodes, found_, "linear_acceleration");
+        const bool turned = oi >= 0 && covariance3(nodes, kid(nodes, found_, "orientation_covariance"), message()).m[0][0] >= 0;
+        const Quaternion q = turned ? quat(nodes, oi) : NO_TURN;
+        const Double3 a = q * (ai >= 0 ? vec(nodes, ai) : Double3{}), w = q * (wi >= 0 ? vec(nodes, wi) : Double3{});
+        const double r = reach_[0].grow({ math::double3_length(a) }, dt_);
+        const double spin = math::double3_length(w), fastest = reach_[1].grow({ spin }, dt_, 1.0);
+        if (turned && on(Show::Orientation)) triad(scene_, Double3{}, q, 0.45 * r);
+        if (spin > 1e-9 && on(Show::Turn)) curl(scene_, w * (1 / spin), 0.25 * r, 5 * spin / fastest, ink.amber);
+        scene_.body(a);
+        scene_.arrow(Double3{}, a, ink.accent, ARROW);
+        show(c, r);
+        foot(c, c.all(), { { turned ? euler(q) : "", ink.dim }, { "accel " + f3(math::double3_length(a)) + " m/s\xC2\xB2", ink.dim },
+                           { "turn " + f3(spin) + " rad/s", ink.dim } });
+    }
+
+    /* An Inertia as the box of even density that turns like it, at its center of mass. */
+    void inertia(Canvas& c, const Nodes& nodes, const ValueNode&)
+    {
+        types::Inertia body;
+        body.mass = number(nodes, found_, "mass");
+        const int ci = kid(nodes, found_, "center");
+        if (ci >= 0) body.center = vec(nodes, ci);
+        body.ixx = number(nodes, found_, "ixx");
+        body.ixy = number(nodes, found_, "ixy");
+        body.ixz = number(nodes, found_, "ixz");
+        body.iyy = number(nodes, found_, "iyy");
+        body.iyz = number(nodes, found_, "iyz");
+        body.izz = number(nodes, found_, "izz");
+        Solid one;
+        try {
+            one = math::inertia_box(body);
+        } catch (const math::MathError&) {
+        }
+        hold(reach_[0], one);
+        scene_.body(body.center);
+        scene_.solid(one, ink.accent);
+        show(c, reach_[0].grow({ math::double3_length(body.center) }, dt_));
+        const auto* box = std::get_if<types::OrientedBox>(&one);
+        foot(c, c.all(), { { "mass " + f3(body.mass) + " kg", ink.dim },
+                           { box ? "box " + f3(box->size.x) + " x " + f3(box->size.y) + " x " + f3(box->size.z) : "", ink.dim } },
+             "at " + point(body.center));
+    }
+
+    /* Detection3Ds, one or an array: each box in its track's colour, its label and score beside it. */
+    void detections(Canvas& c, const Nodes& nodes, const ValueNode& node)
+    {
+        const std::vector<int> items = detections_of(nodes, node);
+        std::set<long long> tracks;
+        Solid last;
+        for (const int i : items) {
+            last = solid(nodes, kid(nodes, i, "bounds"), "OrientedBox");
+            hold(reach_[0], last);
+            scene_.body(middle(last));
+            scene_.solid(last, track_tint(nodes, i));
+            if (on(Show::Labels)) beside(scene_, middle(last), detected(nodes, i), track_tint(nodes, i));
+            if (const long long track = (long long)number(nodes, i, "track")) tracks.insert(track);
+        }
+        show(c, reach_[0].grow({}, dt_));
+        detected_foot(c, nodes, node, items, tracks.size(), describe(last));
+    }
+
+    /* One detection's label, score and size with where it is, or how many there are and in how many tracks. */
+    void detected_foot(Canvas& c, const Nodes& nodes, const ValueNode& node, const std::vector<int>& items, size_t tracks,
+                       const Described& last) const
+    {
+        if (node.kind == ValueNode::Array) {
+            foot(c, c.all(), format_number((double)items.size()) + (items.size() == 1 ? " detection" : " detections"),
+                 tracks ? format_number((double)tracks) + (tracks == 1 ? " track" : " tracks") : std::string());
+            return;
+        }
+        const long long track = (long long)number(nodes, found_, "track");
+        foot(c, c.all(), { { detected(nodes, found_), ink.dim }, { last.first, ink.dim }, { track ? "track " + std::to_string(track) : "", ink.dim } },
+             last.second);
+    }
+
     /* One standard shape in a scene that grows to hold it, with its drop line. */
     void solid_one(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
@@ -2525,12 +2858,37 @@ private:
         c.arrow({ c.w() - c.dp(16), top + c.dp(36) }, { c.w() - c.dp(16), top + c.dp(17) }, ink.dim, THIN);
     }
 
+    /* A GeoPoint, or a GnssFix's position with its status and the region its error east and
+       north stays inside. */
     void geo(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
-        const Double3 now{ number(nodes, found_, "lat"), number(nodes, found_, "lon"), number(nodes, found_, "alt") };
+        const bool fix = visual_ == Visual::Gnss;
+        const int at = fix ? kid(nodes, found_, "position") : found_;
+        const Double3 now{ number(nodes, at, "lat"), number(nodes, at, "lon"), number(nodes, at, "alt") };
         std::vector<Double3> points = on(Show::History) ? trail(node) : std::vector<Double3>();
         if (points.empty()) points.push_back(now);
-        map(c, points, [&](auto P, float left, float top, float right, float bottom) {
+        /* the error east and north, its up row and column left out */
+        types::Covariance3 flat = covariance3(nodes, fix ? kid(nodes, found_, "covariance") : -2, message());
+        for (int i = 0; i < 3; i++) flat.m[2][i] = flat.m[i][2] = 0;
+        const Spread error = on(Show::Uncertainty) ? spread(flat) : Spread();
+        /* the region's ring as latitude and longitude, framed with the trail, which ends at now */
+        std::vector<Double3> framed;
+        for (int i = 0; error.any && i <= 48; i++) {
+            const double t = 6.28318530717959 * i / 48;
+            const Double3 east_north = error.turn * Double3{ std::cos(t) * error.sigma.x * SURE_2D, std::sin(t) * error.sigma.y * SURE_2D, 0 };
+            const types::GeoPoint g = math::geo_point_from_enu(types::GeoPoint{ now.x, now.y, now.z }, east_north);
+            framed.push_back({ g.lat, g.lon, g.alt });
+        }
+        const size_t ring = framed.size();
+        framed.insert(framed.end(), points.begin(), points.end());
+        map(c, framed, [&](auto P, float left, float top, float right, float bottom) {
+            if (ring) {
+                std::vector<Rml::Vector2f> edge;
+                for (size_t i = 0; i < ring; i++) edge.push_back(P(framed[i].x, framed[i].y));
+                const Rml::Vector2f middle = P(now.x, now.y);
+                for (size_t i = 1; i < edge.size(); i++) c.triangle(middle, edge[i - 1], edge[i], faded(ink.accent, FILL));
+                c.polyline(edge, ink.accent, THIN);
+            }
             /* a point within half a pixel of the last one drawn adds nothing to the path */
             std::vector<Rml::Vector2f> run{ P(points[0].x, points[0].y) };
             Rml::Vector2f from = run[0];
@@ -2546,10 +2904,12 @@ private:
                 run.push_back(b);
             }
             c.polyline(run, ink.accent, STROKE);
-            const Rml::Vector2f at = P(now.x, now.y);
-            if (inside(at, left, top, right, bottom)) c.dot(at, ink.accent, 5);
+            const Rml::Vector2f here = P(now.x, now.y);
+            if (inside(here, left, top, right, bottom)) c.dot(here, ink.accent, 5);
         });
-        foot(c, c.all(), "lat " + print("%.6f", now.x) + "  lon " + print("%.6f", now.y) + "  alt " + print("%.1f", now.z) + " m");
+        const std::string place = "lat " + print("%.6f", now.x) + "  lon " + print("%.6f", now.y) + "  alt " + print("%.1f", now.z) + " m";
+        const int status = fix ? kid(nodes, found_, "status") : -2;
+        foot(c, c.all(), { { status >= 0 ? value_text(nodes[status]) : "", ink.dim }, { place, ink.dim }, { error.text(2, "m"), ink.dim } });
     }
 
     void geos(Canvas& c, const Nodes& nodes, const ValueNode&)
@@ -2943,6 +3303,20 @@ const VizElement::Row& VizElement::row_of(Visual v)
           { TRAIL_SECONDS, "linear", { "x", "y", "z" } } },
         { V::Accel2D,  K::Canvas,   { 1.3, 1 },        &E::wrench_2d,  bits({ S::History, S::Turn }) | PLANE_PARTS, 0,
           { TRAIL_SECONDS, "linear", { "x", "y" } } },
+        { V::PoseCovariance, K::Scene, { 1, 1.5 },     &E::pose,       bits({ S::History, S::Orientation, S::Line, S::Uncertainty }) | SCENE_PARTS, 0,
+          { TRAIL_SECONDS, "pose.position", { "x", "y", "z" } } },
+        { V::TwistCovariance, K::Scene, { 1, 1.5 },    &E::twist,      bits({ S::Path, S::Turn, S::Uncertainty }) | SCENE_PARTS },
+        /* odometry runs from where it started, so the line from the origin starts hidden */
+        { V::Odometry, K::Scene,    { 1, 1.5 },        &E::odometry,   bits({ S::History, S::Orientation, S::Line, S::Path, S::Uncertainty }) | SCENE_PARTS,
+          bits({ S::Line }), { TRAIL_SECONDS, "pose.pose.position", { "x", "y", "z" } } },
+        { V::Imu,      K::Scene,    { 1, 1.5 },        &E::imu,        bits({ S::Orientation, S::Turn }) | SCENE_PARTS },
+        { V::Inertia,  K::Scene,    { 1, 1.5 },        &E::inertia,    SCENE_PARTS },
+        { V::Gnss,     K::Canvas,   { 1.5, 1 },        &E::geo,        bits({ S::History, S::Uncertainty, S::Grid, S::Readings }), 0,
+          { TRAIL_SECONDS, "position", { "lat", "lon" } } },
+        { V::Range,    K::Canvas,   { 3, 1 },          &E::range,      bits({ S::History, S::Grid, S::Readings }), 0,
+          { PLOT_SECONDS, nullptr, { "distance" } } },
+        { V::Detection, K::Scene,   { 1, 1.5 },        &E::detections, bits({ S::Labels, S::Colours }) | SCENE_PARTS },
+        { V::Detection2D, K::Canvas, { 1.3, 1 },       &E::detections_2d, bits({ S::Labels, S::Colours }) | PLANE_PARTS },
         { V::Solid,    K::Scene,    { 1, 1.5 },        &E::solid_one,  SCENE_PARTS },
         { V::Figure,   K::Canvas,   { 1.3, 1 },        &E::figure_one, PLANE_PARTS },
         { V::Geo,      K::Canvas,   { 1.5, 1 },        &E::geo,        bits({ S::History, S::Grid, S::Readings }), 0,

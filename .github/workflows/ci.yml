@@ -72,31 +72,34 @@ jobs:
           name: rant-explorer-web
           path: out/*
 
-  # Linux builds on ubuntu-22.04 so the binary runs on glibc 2.35 and newer.
+  # Linux builds in the manylinux_2_28 container, as the bridge does, so the explorer runs on
+  # any glibc since 2.28.
   build:
     name: ${{ matrix.name }}
     needs: [web]
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
           - { os: windows-latest, name: win-x64,   preset: windows }
-          - { os: ubuntu-22.04,   name: linux-x64, preset: linux }
+          - { os: ubuntu-latest,  name: linux-x64, preset: linux, container: 'quay.io/pypa/manylinux_2_28_x86_64' }
           - { os: macos-latest,   name: osx-arm64, preset: macos }
 
     steps:
       - uses: actions/checkout@v7
 
-      # Ninja, plus the X11, Wayland and GL headers SDL3 compiles against.
+      # CMake and Ninja, plus the X11, Wayland and GL headers SDL3 compiles against.
       - name: Linux build deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev libegl1-mesa-dev \
-            libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev libxfixes-dev \
-            libxkbcommon-dev libxss-dev libxtst-dev libwayland-dev wayland-protocols
+          /opt/python/cp312-cp312/bin/pip install cmake ninja
+          echo /opt/python/cp312-cp312/bin >> "$GITHUB_PATH"
+          dnf install -y pkgconf-pkg-config mesa-libGL-devel mesa-libEGL-devel libX11-devel libXext-devel \
+            libXrandr-devel libXi-devel libXcursor-devel libXfixes-devel libxkbcommon-devel libXScrnSaver-devel \
+            libXtst-devel wayland-devel wayland-protocols-devel
 
       - name: macOS build deps
         if: runner.os == 'macOS'
@@ -133,9 +136,28 @@ jobs:
           name: rant-explorer-${{ matrix.name }}
           path: out/*
 
+  # The Linux explorer must start on the oldest and newest distributions people run.
+  check-linux:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: rant-explorer-linux-x64
+          path: bin
+
+      - name: The explorer starts everywhere
+        run: |
+          chmod +x bin/rant-explorer-*-linux-x64
+          for image in rockylinux:8 debian:10 ubuntu:20.04 ubuntu:22.04 ubuntu:24.04; do
+            echo "== $image"
+            docker run --rm -v "$PWD/bin:/b" "$image" sh -c 'b=$(ls /b/rant-explorer-*-linux-x64) && $b --version'
+          done
+
   # The release makes the tag v<VERSION> on this commit, once every check above passed
   release:
-    needs: [plan, web, build]
+    needs: [plan, web, build, check-linux]
     if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -41,6 +41,10 @@ CPMAddPackage(NAME rant
 if(NOT EMSCRIPTEN)
   include("${rant_SOURCE_DIR}/tools/static_runtime.cmake")
 endif()
+# libstdc++ and libgcc go inside the Linux exe too, so it needs only a glibc as old as the build's.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_link_options(-static-libstdc++ -static-libgcc)
+endif()
 
 # Geometry, images and clouds on the standard types. The local presets set CPM_math_SOURCE to
 # ../math-rant.

@@ -12,8 +12,8 @@
 /* What one 3D drawing puts on the GPU. A stroke keeps its size in pixels however far away it
    lies. Faces are lit triangles over corners, drawn behind the strokes that lie on them. */
 struct Batch {
-    /* A line with round ends, a dashed line, a line with a head at b, or a dot at a. */
-    enum class Mark { Line, Dashed, Arrow, Dot };
+    /* A line with round ends, a dashed line, or a dot at a. */
+    enum class Mark { Line, Dashed, Dot };
 
     struct Stroke {
         Rml::Vector3f a, b;

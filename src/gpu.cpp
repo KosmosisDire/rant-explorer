@@ -18,8 +18,8 @@
 
 namespace {
 
-/* A stroke is a quad laid out in window pixels around its line, wide enough for its width or
-   its arrow head plus a pixel to smooth the edge. Its ends take its points' depths. */
+/* A stroke is a quad laid out in window pixels around its line, wide enough for its width
+   plus a pixel to smooth the edge. Its ends take its points' depths. */
 const char* const STROKE_VERTEX = R"(
 uniform mat4 to_clip;
 uniform vec2 window;
@@ -30,7 +30,7 @@ layout(location = 2) in vec4 colour;
 layout(location = 3) in vec2 shape;
 out vec4 tint;
 out vec2 at;
-flat out vec4 form;
+flat out vec3 form;
 const vec2 corners[6] = vec2[6](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
                                 vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
 void main()
@@ -39,45 +39,40 @@ void main()
     vec2 pa = (a.xy * 0.5 + 0.5) * window, pb = (b.xy * 0.5 + 0.5) * window;
     float len = length(pb - pa);
     vec2 along = len > 0.001 ? (pb - pa) / len : vec2(1.0, 0.0), across = vec2(-along.y, along.x);
-    float mark = shape.y, half_width = mark > 2.5 ? shape.x : shape.x * 0.5;
-    float head = mark > 1.5 && mark < 2.5 ? 3.0 * dp + 2.0 * shape.x : 0.0;
-    float reach = max(half_width, 0.4 * head) + 1.0;
+    float mark = shape.y, half_width = mark > 1.5 ? shape.x : shape.x * 0.5;
+    float reach = half_width + 1.0;
     vec2 corner = corners[gl_VertexID];
     float t = mix(-reach, len + reach, corner.x), s = mix(-reach, reach, corner.y);
     float depth = mix(a.z, b.z, len > 0.001 ? clamp(t / len, 0.0, 1.0) : 0.0);
     gl_Position = vec4((pa + along * t + across * s) / window * 2.0 - 1.0, depth, 1.0);
     tint = vec4(colour.rgb * colour.a, colour.a);
     at = vec2(t, s);
-    form = vec4(len, half_width, mark, head);
+    form = vec3(len, half_width, mark);
 }
 )";
 
 /* How much of each pixel the stroke covers, from its distance to the shape in pixels. A dash
-   is 3 dp on and 3 off. An arrow's shaft stops inside its head, whose sides leave the tip at
-   0.4 radians. Part 1 draws only the pixels a stroke covers whole, part 2 only its soft edge,
-   and part 0 both. */
+   is 3 dp on and 3 off. Part 1 draws only the pixels a stroke covers whole, part 2 only its
+   soft edge, and part 0 both. */
 const char* const STROKE_FRAGMENT = R"(
 uniform float dp;
 uniform float part;
 in vec4 tint;
 in vec2 at;
-flat in vec4 form;
+flat in vec3 form;
 out vec4 frag;
 void main()
 {
-    float len = form.x, half_width = form.y, mark = form.z, head = form.w;
+    float len = form.x, half_width = form.y, mark = form.z;
     float cover;
-    if (mark > 2.5) {
+    if (mark > 1.5) {
         cover = half_width + 0.5 - length(at);
     } else {
-        float end = mark > 1.5 ? max(0.0, len - 0.8 * head) : len;
-        cover = half_width + 0.5 - length(vec2(at.x - clamp(at.x, 0.0, end), at.y));
-        if (mark > 0.5 && mark < 1.5) {
+        cover = half_width + 0.5 - length(vec2(at.x - clamp(at.x, 0.0, len), at.y));
+        if (mark > 0.5) {
             float m = mod(at.x, 6.0 * dp);
             cover = min(cover, min(m, 3.0 * dp - m) + 0.5);
         }
-        if (mark > 1.5)
-            cover = max(cover, min((len - at.x) * 0.3894 - abs(at.y) * 0.9211, at.x - len + 0.9211 * head) + 0.5);
     }
     if (cover <= 0.0 || (part > 0.5 && part < 1.5 && cover < 1.0) || (part > 1.5 && cover >= 1.0)) discard;
     frag = tint * min(cover, 1.0);

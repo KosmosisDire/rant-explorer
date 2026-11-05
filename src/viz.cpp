@@ -809,16 +809,15 @@ std::vector<uint64_t> open_sides(const math::Mesh& m, bool whole)
     return out;
 }
 
-/* A mesh as faint lit faces, or solid in its corners' own colours or else grey, with lines
-   along the sides given. Place moves each corner and normal. */
+/* A mesh as lit faces in its corners' own colours or else in fill, with lines along the sides
+   given in colour. Place moves each corner and normal. */
 template <class Place>
 void put_mesh(Batch& b, const math::Mesh& m, const std::vector<uint64_t>& sides, const std::vector<Rml::Colourb>& own,
-              bool solid, Rml::Colourb colour, float px, Place place)
+              Rml::Colourb fill, Rml::Colourb colour, float px, Place place)
 {
     /* shape_mesh lays each corner out as x, y, z and its normal, six floats */
     const uint32_t first = (uint32_t)b.corners.size();
     const size_t   step  = m.vertices.point_step;
-    const Rml::Colourb fill = solid ? ink.gray : faded(colour, FILL);
     for (size_t at = 0, i = 0; at + step <= m.vertices.data.size(); at += step, i++) {
         float v[6];
         std::memcpy(v, m.vertices.data.data() + at, sizeof v);
@@ -840,8 +839,28 @@ bool put_shape(Batch& b, const math::Shape& shape, Rml::Colourb colour, float px
     } catch (const math::MathError&) {
         return false;
     }
-    put_mesh(b, m, open_sides(m, false), {}, false, colour, px, [](Double3&, Double3&) {});
+    put_mesh(b, m, open_sides(m, false), {}, faded(colour, FILL), colour, px, [](Double3&, Double3&) {});
     return true;
+}
+
+/* An arrow from a to b: a line, then a lit cone ending at b that keeps its size in pixels as
+   the view zooms, its sides 0.4 radians off its axis. */
+void arrow(Batch& b, const View& s, float px, const Double3& from, const Double3& to, Rml::Colourb colour, float width)
+{
+    static const math::Mesh unit = math::shape_mesh(math::shape_from_cone(types::Cone{ {}, { 0, 0, 1 }, 1 }), 12, CREASE);
+    const Double3 d = to - from;
+    const double len = math::double3_length(d);
+    if (!(len > 0) || !(s.k > 0)) return;
+    const Double3 n = d * (1 / len);
+    const double head = std::min((3 * px + 2 * width) / s.k, len), wide = head * std::tan(0.4);
+    const Double3 base = to - n * head;
+    Double3 u, v;
+    basis(n, u, v);
+    if (len > head) stroke(b, Batch::Mark::Line, from, base, colour, width);
+    put_mesh(b, unit, {}, {}, colour, colour, width, [&](Double3& point, Double3& normal) {
+        point  = base + u * (point.x * wide) + v * (point.y * wide) + n * (point.z * head);
+        normal = math::double3_normalize(u * (normal.x / wide) + v * (normal.y / wide) + n * (normal.z / head));
+    });
 }
 
 void put_one(Batch&, const View&, float, const std::monostate&, Rml::Colourb) {}
@@ -872,7 +891,7 @@ void put_one(Batch& b, const View& s, float px, const types::Plane& o, Rml::Colo
     for (const Double3& p : corners) b.corners.push_back({ floats(p), floats(n), faded(colour, FILL) });
     b.triangles.insert(b.triangles.end(), { first, first + 1, first + 2, first, first + 2, first + 3 });
     for (int i = 0; i < 4; i++) stroke(b, Batch::Mark::Line, corners[i], corners[(i + 1) % 4], colour, THIN * px);
-    stroke(b, Batch::Mark::Arrow, at, at + n * (0.3 * s.r), colour, ARROW * px);
+    arrow(b, s, px, at, at + n * (0.3 * s.r), colour, ARROW * px);
 }
 
 void put_one(Batch& b, const View&, float px, const types::Segment& l, Rml::Colourb colour)
@@ -889,7 +908,7 @@ void put_one(Batch& b, const View& s, float px, const types::Ray& o, Rml::Colour
     const double along = math::double3_dot(o.origin, d);
     const double inside = along * along - math::double3_dot(o.origin, o.origin) + s.r * s.r;
     const double end = inside > 0 ? std::sqrt(inside) - along : 0;
-    if (end > 0 && math::double3_length(d) > 0) stroke(b, Batch::Mark::Arrow, o.origin, o.origin + d * end, colour, STROKE * px);
+    if (end > 0 && math::double3_length(d) > 0) arrow(b, s, px, o.origin, o.origin + d * end, colour, STROKE * px);
     stroke(b, Batch::Mark::Dot, o.origin, o.origin, colour, 4 * px);
 }
 
@@ -899,7 +918,7 @@ void put_one(Batch& b, const View&, float px, const Ellipsoid& o, Rml::Colourb c
     static const math::Mesh unit = math::shape_mesh(math::shape_from_sphere(types::Sphere{ {}, 1 }), 0, CREASE);
     static const std::vector<uint64_t> sides = open_sides(unit, false);
     const Double3& r = o.radii;
-    put_mesh(b, unit, sides, {}, false, colour, THIN * px, [&](Double3& point, Double3& normal) {
+    put_mesh(b, unit, sides, {}, faded(colour, FILL), colour, THIN * px, [&](Double3& point, Double3& normal) {
         point  = o.center + o.turn * Double3{ point.x * r.x, point.y * r.y, point.z * r.z };
         normal = o.turn * math::double3_normalize(Double3{ normal.x * r.y * r.z, normal.y * r.x * r.z, normal.z * r.x * r.y });
     });
@@ -908,7 +927,8 @@ void put_one(Batch& b, const View&, float px, const Ellipsoid& o, Rml::Colourb c
 void put_one(Batch& b, const View&, float px, const Surface& o, Rml::Colourb colour)
 {
     if (o.shaded)
-        put_mesh(b, o.shaded->mesh, o.shaded->sides, o.shaded->colours, o.shaded->solid, colour, THIN * px, [](Double3&, Double3&) {});
+        put_mesh(b, o.shaded->mesh, o.shaded->sides, o.shaded->colours, o.shaded->solid ? ink.gray : faded(colour, FILL), colour,
+                 THIN * px, [](Double3&, Double3&) {});
 }
 
 /* px is pixels per dp. */
@@ -1096,7 +1116,7 @@ void draw_scene(Canvas& c, const View& s, const Scene& w, Batch& b)
         switch (item.shape) {
         case Scene::Shape::Line:   stroke(b, Mark::Line, p[0], p[1], item.colour, size); break;
         case Scene::Shape::Dashed: stroke(b, Mark::Dashed, p[0], p[1], item.colour, size); break;
-        case Scene::Shape::Arrow:  stroke(b, Mark::Arrow, p[0], p[1], item.colour, size); break;
+        case Scene::Shape::Arrow:  arrow(b, s, c.dp(1), p[0], p[1], item.colour, size); break;
         case Scene::Shape::Dot:    stroke(b, Mark::Dot, p[0], p[0], item.colour, size); break;
         case Scene::Shape::Dots:
             for (uint32_t i = 0; i < item.count; i++) stroke(b, Mark::Dot, p[i], p[i], w.tints[item.first + i], size);

@@ -50,7 +50,7 @@ endif()
 # ../math-rant.
 CPMAddPackage(NAME math
   GITHUB_REPOSITORY KosmosisDire/rant-math
-  VERSION 0.0.2
+  VERSION 0.0.3
   EXCLUDE_FROM_ALL YES)
 
 # FreeType is RmlUi's font engine. Its CMake spells Freetype::Freetype as an export name

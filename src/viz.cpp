@@ -1122,7 +1122,9 @@ void draw_scene(Canvas& c, const View& s, const Scene& w, Batch& b)
             for (uint32_t i = 0; i < item.count; i++) stroke(b, Mark::Dot, p[i], p[i], w.tints[item.first + i], size);
             break;
         case Scene::Shape::Path:
-            for (uint32_t i = 1; i < item.count; i++) stroke(b, Mark::Line, p[i - 1], p[i], item.colour, size);
+            for (uint32_t i = 1; i < item.count; i++)
+                b.joined(floats(p[i > 1 ? i - 2 : 0]), floats(p[i - 1]), floats(p[i]), floats(p[i + 1 < item.count ? i + 1 : i]), item.colour,
+                         size);
             break;
         case Scene::Shape::Solid: put_solid(b, s, c.dp(1), w.solids[item.first], item.colour); break;
         case Scene::Shape::Label: {

@@ -20,6 +20,7 @@ struct Batch {
         Rml::Colourb  colour;
         float         size;   /* a line's width or a dot's radius, in pixels */
         float         mark;   /* a Mark, as the shader reads it */
+        Rml::Vector3f before, after;   /* the lines a polyline runs on with, a and b when none */
     };
     struct Corner {
         Rml::Vector3f at, normal;
@@ -43,7 +44,13 @@ struct Batch {
 
     void stroke(Mark mark, Rml::Vector3f a, Rml::Vector3f b, Rml::Colourb colour, float size)
     {
-        strokes.push_back({ a, b, colour, size, (float)mark });
+        strokes.push_back({ a, b, colour, size, (float)mark, a, b });
+    }
+
+    /* A line of a polyline coming from before and going on to after, so its joins blend as one. */
+    void joined(Rml::Vector3f before, Rml::Vector3f a, Rml::Vector3f b, Rml::Vector3f after, Rml::Colourb colour, float size)
+    {
+        strokes.push_back({ a, b, colour, size, (float)Mark::Line, before, after });
     }
 
     /* The furthest any point lies from the origin. */

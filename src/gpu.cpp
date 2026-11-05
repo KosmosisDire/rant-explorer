@@ -19,7 +19,8 @@
 namespace {
 
 /* A stroke is a quad laid out in window pixels around its line, wide enough for its width
-   plus a pixel to smooth the edge. Its ends take its points' depths. */
+   plus a pixel to smooth the edge. Its ends take its points' depths. The lines it joins are
+   laid in its own frame: along it from a, then across. */
 const char* const STROKE_VERTEX = R"(
 uniform mat4 to_clip;
 uniform vec2 window;
@@ -28,9 +29,13 @@ layout(location = 0) in vec3 from;
 layout(location = 1) in vec3 to;
 layout(location = 2) in vec4 colour;
 layout(location = 3) in vec2 shape;
+layout(location = 4) in vec3 before;
+layout(location = 5) in vec3 after;
 out vec4 tint;
 out vec2 at;
 flat out vec3 form;
+flat out vec4 sides;
+flat out vec2 joins;
 const vec2 corners[6] = vec2[6](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
                                 vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
 void main()
@@ -41,6 +46,10 @@ void main()
     vec2 along = len > 0.001 ? (pb - pa) / len : vec2(1.0, 0.0), across = vec2(-along.y, along.x);
     float mark = shape.y, half_width = mark > 1.5 ? shape.x : shape.x * 0.5;
     float reach = half_width + 1.0;
+    vec2 pc = ((to_clip * vec4(before, 1.0)).xy * 0.5 + 0.5) * window - pa;
+    vec2 pd = ((to_clip * vec4(after, 1.0)).xy * 0.5 + 0.5) * window - pa;
+    sides = vec4(dot(pc, along), dot(pc, across), dot(pd, along), dot(pd, across));
+    joins = vec2(any(notEqual(before, from)) ? 1.0 : 0.0, any(notEqual(after, to)) ? 1.0 : 0.0);
     vec2 corner = corners[gl_VertexID];
     float t = mix(-reach, len + reach, corner.x), s = mix(-reach, reach, corner.y);
     float depth = mix(a.z, b.z, len > 0.001 ? clamp(t / len, 0.0, 1.0) : 0.0);
@@ -52,15 +61,24 @@ void main()
 )";
 
 /* How much of each pixel the stroke covers, from its distance to the shape in pixels. A dash
-   is 3 dp on and 3 off. Part 1 draws only the pixels a stroke covers whole, part 2 only its
-   soft edge, and part 0 both. */
+   is 3 dp on and 3 off. A pixel of a polyline clearly nearer the line before or after is
+   left to that line, so each is drawn once, and depth settles a tie. Part 1 draws only the
+   pixels a stroke covers whole, part 2 only its soft edge, and part 0 both. */
 const char* const STROKE_FRAGMENT = R"(
 uniform float dp;
 uniform float part;
 in vec4 tint;
 in vec2 at;
 flat in vec3 form;
+flat in vec4 sides;
+flat in vec2 joins;
 out vec4 frag;
+float apart(vec2 p, vec2 u, vec2 v)
+{
+    vec2 e = v - u;
+    float k = dot(e, e) > 0.0 ? clamp(dot(p - u, e) / dot(e, e), 0.0, 1.0) : 0.0;
+    return length(p - u - e * k);
+}
 void main()
 {
     float len = form.x, half_width = form.y, mark = form.z;
@@ -68,7 +86,10 @@ void main()
     if (mark > 1.5) {
         cover = half_width + 0.5 - length(at);
     } else {
-        cover = half_width + 0.5 - length(vec2(at.x - clamp(at.x, 0.0, len), at.y));
+        float own = length(vec2(at.x - clamp(at.x, 0.0, len), at.y));
+        if (joins.x > 0.5 && apart(at, sides.xy, vec2(0.0)) < own - 0.05) discard;
+        if (joins.y > 0.5 && apart(at, vec2(len, 0.0), sides.zw) < own - 0.05) discard;
+        cover = half_width + 0.5 - own;
         if (mark > 0.5) {
             float m = mod(at.x, 6.0 * dp);
             cover = min(cover, min(m, 3.0 * dp - m) + 0.5);
@@ -176,6 +197,8 @@ void point_strokes(size_t first)
     attribute(1, 3, GL_FLOAT, false, sizeof(Stroke), at + offsetof(Stroke, b));
     attribute(2, 4, GL_UNSIGNED_BYTE, true, sizeof(Stroke), at + offsetof(Stroke, colour));
     attribute(3, 2, GL_FLOAT, false, sizeof(Stroke), at + offsetof(Stroke, size));
+    attribute(4, 3, GL_FLOAT, false, sizeof(Stroke), at + offsetof(Stroke, before));
+    attribute(5, 3, GL_FLOAT, false, sizeof(Stroke), at + offsetof(Stroke, after));
 }
 
 /* The programs and buffers, made on the first draw and kept for the process. */
@@ -199,7 +222,7 @@ Gpu& gpu()
     glBindVertexArray(g.stroke_array);
     glBindBuffer(GL_ARRAY_BUFFER, g.stroke_buffer);
     point_strokes(0);
-    for (GLuint i = 0; i < 4; i++) glVertexAttribDivisor(i, 1);
+    for (GLuint i = 0; i < 6; i++) glVertexAttribDivisor(i, 1);
 
     using Corner = Batch::Corner;
     glGenVertexArrays(1, &g.face_array);

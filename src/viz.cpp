@@ -1581,8 +1581,9 @@ bool holds_colours(const types::GridField& f)
     return f.name == "rgba" || f.name == "rgb";
 }
 
-/* A Grid with its fields, one GridField with its grid as a grid of that one field, or a 2D
-   Tensor as one, its last dimension as x. No field when there is none, problem saying why. */
+/* A Grid with its fields, one GridField with its grid as a grid of that one field, or a Tensor
+   of two or more dimensions above 1 as one: its last as x, the one before as y, any before
+   those stacked as z. No field when there is none, problem saying why. */
 types::Grid grid_of(const Nodes& nodes, int index, const std::string& std_name, const std::vector<uint8_t>& message,
                     std::string& problem)
 {
@@ -1592,11 +1593,12 @@ types::Grid grid_of(const Nodes& nodes, int index, const std::string& std_name, 
         std::vector<uint32_t> big;
         for (const double d : numbers_of(nodes, kid(nodes, index, "shape"), message))
             if (d > 1) big.push_back((uint32_t)d);
-        if (big.size() != 2) return grid;
-        grid.cells_y    = big[0];
-        grid.cells_x    = big[1];
+        if (big.size() < 2) return grid;
+        grid.cells_x    = big.back();
+        grid.cells_y    = big[big.size() - 2];
         grid.cells_z    = 1;
         grid.resolution = 1;
+        for (size_t i = 0; i + 2 < big.size(); i++) grid.cells_z *= big[i];
         fields.push_back(index);
     } else {
         const int owner = std_name == "GridField" ? holder_of(nodes, holder_of(nodes, index)) : index;
@@ -1622,6 +1624,20 @@ types::Grid grid_of(const Nodes& nodes, int index, const std::string& std_name, 
     return grid;
 }
 
+/* A Tensor's kind and its dimensions above 1, outermost first, as its readings name it. */
+std::string tensor_text(const Nodes& nodes, int index, const std::vector<uint8_t>& message)
+{
+    const int kind = kid(nodes, index, "kind");
+    std::string out = kind >= 0 ? value_text(nodes[kind]) : std::string();
+    const char* gap = "  ";
+    for (const double d : numbers_of(nodes, kid(nodes, index, "shape"), message))
+        if (d > 1) {
+            out += gap + std::to_string((uint64_t)d);
+            gap = " x ";
+        }
+    return out;
+}
+
 /* A grid's colour per cell, none when it holds none. */
 std::vector<types::Color> colours_of(const types::Grid& grid)
 {
@@ -1643,11 +1659,9 @@ Cells cells_of(const Nodes& nodes, int index, const std::string& std_name, const
     const std::vector<types::Color> hues = tensor ? std::vector<types::Color>() : colours_of(grid);
     const auto named = std::find_if(grid.fields.begin(), grid.fields.end(), holds_colours);
     const types::GridField& field = hues.empty() || named == grid.fields.end() ? grid.fields[0] : *named;
-    const int kind = kid(nodes, index, "kind");
-    const std::string kind_text = tensor && kind >= 0 ? value_text(nodes[kind]) : std::string();
     const uint32_t w = grid.cells_x, h = grid.cells_y;
     out.floats = field.kind == types::ScalarKind::F32 || field.kind == types::ScalarKind::F64;
-    out.text   = tensor ? kind_text + "  " + std::to_string(h) + " x " + std::to_string(w)
+    out.text   = tensor ? tensor_text(nodes, index, message)
                         : field.name + "  " + std::to_string(w) + " x " + std::to_string(h) + "  cell " + f3(grid.resolution) + " m";
     /* a grid's y points up, so its last row is the picture's first */
     if (!hues.empty()) {
@@ -1803,8 +1817,9 @@ Surfaced voxels_of(const Nodes& nodes, int index, const std::string& std_name, c
     const auto numbers = std::find_if_not(grid.fields.begin(), grid.fields.end(), holds_colours);
     const types::GridField& field = numbers != grid.fields.end() ? *numbers : grid.fields[0];
     const int64_t nx = grid.cells_x, ny = grid.cells_y, nz = grid.cells_z;
-    out.left[0] = field.name + "  " + std::to_string(nx) + " x " + std::to_string(ny) + " x " + std::to_string(nz) + "  cell " +
-                  f3(grid.resolution) + " m";
+    out.left[0] = std_name == "Tensor" ? tensor_text(nodes, index, message)
+                                       : field.name + "  " + std::to_string(nx) + " x " + std::to_string(ny) + " x " + std::to_string(nz) +
+                                             "  cell " + f3(grid.resolution) + " m";
     std::vector<double> v;
     if (numbers == grid.fields.end()) {
         for (const types::Color& k : hues) v.push_back(k.a);
@@ -1815,7 +1830,7 @@ Surfaced voxels_of(const Nodes& nodes, int index, const std::string& std_name, c
         }
     }
     if (v.empty()) {
-        out.left[1] = field.name + " not readable";
+        out.left[1] = (std_name == "Tensor" ? std::string("tensor") : field.name) + " not readable";
         return out;
     }
     double lo = INFINITY, hi = -INFINITY;

@@ -91,18 +91,22 @@ bool holds_picture(const std::vector<ValueNode>& nodes, int index)
            image_file_format((const uint8_t*)data->text.data(), data->text.size(), format);
 }
 
+/* How many of a Tensor's dimensions are above 1. */
+size_t tensor_dims(const std::vector<ValueNode>& nodes, int index, const std::vector<uint8_t>& message)
+{
+    size_t big = 0;
+    for (const int k : children_of(nodes, index))
+        if (nodes[k].name == "shape")
+            for (const double d : numbers_of(nodes, k, message)) big += d > 1;
+    return big;
+}
+
 /* A Grid one cell high or a field of one, or a Tensor with two dimensions above 1, which
-   draw as a picture. A deeper grid draws its cells in a scene. */
+   draw as a picture. A deeper grid or tensor draws its cells in a scene. */
 bool is_flat(const std::vector<ValueNode>& nodes, int index, const std::string& std_name,
              const std::vector<uint8_t>& message)
 {
-    if (std_name == "Tensor") {
-        size_t big = 0;
-        for (const int k : children_of(nodes, index))
-            if (nodes[k].name == "shape")
-                for (const double d : numbers_of(nodes, k, message)) big += d > 1;
-        return big == 2;
-    }
+    if (std_name == "Tensor") return tensor_dims(nodes, index, message) == 2;
     const int grid = std_name == "GridField" ? holder_of(nodes, holder_of(nodes, index)) : index;
     const ValueNode* z = member(nodes, grid, "cells_z");
     return z && z->integer == 1;
@@ -163,7 +167,8 @@ Visual visual_at(const Capture::WatchView& watch, const std::vector<ValueNode>& 
     if (visual == Visual::File && holds_picture(nodes, index)) return Visual::Image;
     if (visual == Visual::Grid) {
         const std::string& kind = index == -1 ? watch.root_std : nodes[index].std_name;
-        if (!is_flat(nodes, index, kind, watch.message)) return kind == "Tensor" ? Visual::Kv : Visual::Voxels;
+        if (!is_flat(nodes, index, kind, watch.message))
+            return kind == "Tensor" && tensor_dims(nodes, index, watch.message) < 2 ? Visual::Kv : Visual::Voxels;
     }
     return visual;
 }

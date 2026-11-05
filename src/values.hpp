@@ -6,6 +6,7 @@
 #include "capture.hpp"
 #include "image.hpp"
 
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -103,7 +104,7 @@ bool is_open(const Capture::ValueNode& node, const ValueView& view);
 std::string value_text(const Capture::ValueNode& node);
 
 /* The standard Uuid at index in its 8-4-4-4-12 hex form, empty when it is not 16 bytes. */
-std::string uuid_text(const std::vector<Capture::ValueNode>& nodes, int index);
+std::string uuid_text(const std::vector<Capture::ValueNode>& nodes, int index, const std::vector<uint8_t>& message);
 
 /* The newest value on one line for the topic tree: a bare root's value, a standard
    struct's fields, an image's or a video's size. A plain struct stays blank. */
@@ -112,9 +113,21 @@ std::string preview_text(const Capture::WatchView& view);
 /* The nodes directly under index, -1 for the top level. */
 std::vector<int> children_of(const std::vector<Capture::ValueNode>& nodes, int index);
 
+/* Each element or member under index in order, until visit returns false: the nodes listed
+   after it, or a packed array's elements read from the message, whose at is -2. */
+void each_element(const std::vector<Capture::ValueNode>& nodes, int index, const std::vector<uint8_t>& message,
+                  const std::function<bool(const Capture::ValueNode& element, int at)>& visit);
+/* How many each_element visits, and the number of each. */
+size_t element_count(const std::vector<Capture::ValueNode>& nodes, int index);
+std::vector<double> numbers_of(const std::vector<Capture::ValueNode>& nodes, int index, const std::vector<uint8_t>& message);
+
 /* The node at path, -1 for a struct root, which has no node of its own, -2 for none. */
 int find_node(const std::vector<Capture::ValueNode>& nodes, const Capture::WatchView& view,
               const std::string& path);
+/* The element a path such as ranges[3] names in a packed array, read from the message.
+   False when it names none. */
+bool packed_element(const std::vector<Capture::ValueNode>& nodes, const std::string& path,
+                    const std::vector<uint8_t>& message, Capture::ValueNode& out);
 
 /* A path with [*] names a field of every element of an array, pick[*].pose for each pose. */
 bool is_gathered(const std::string& path);

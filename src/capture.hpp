@@ -193,6 +193,8 @@ public:
     struct ValueNode {
         /* A Part heads one part of a function or task: name is its label, text its state. */
         enum Kind : uint8_t { Number, Bool, Enum, Text, Struct, Array, Blob, Map, Gap, Part };
+        /* A number's type on the wire, as an array of numbers or bools holds it. */
+        enum class Scalar : uint8_t { None, U8, U16, U32, U64, I8, I16, I32, I64, F32, F64, Bool };
         Kind        kind = Number;
         std::string name;          /* "x", "[3]", or "value" for a root that is not a struct */
         std::string path;          /* "pose.position.x", "points[3].id", "" for that root */
@@ -204,8 +206,13 @@ public:
         int64_t     integer = 0;   /* an integer exactly, unsigned ones by bit pattern */
         uint32_t    count = 0;     /* array elements, blob bytes, map entries, or elements a gap hides */
         std::string text;          /* a string's contents, an enum's option name, a blob's first bytes */
-        uint32_t    offset = 0;    /* where a blob's bytes start in WatchView::message */
+        /* Where a blob's bytes start in the message it came in, or the first element of an
+           array of numbers or bools, the rest following back to back. */
+        uint32_t    offset = 0;
+        Scalar      scalar = Scalar::None;   /* such an array's element type */
+        bool        packed = false;  /* such an array's elements stay in the message, not listed after it */
         Kind        elem = Number; /* an array's element kind */
+        std::string elem_type;     /* and the element's type */
         std::string elem_std;      /* and the element's standard type name */
 
         /* Where the value lives, so an edit can be written back: the flat field index, the
@@ -334,10 +341,18 @@ public:
        gap was. It holds for every later message while the name stays subscribed. */
     void reveal(const std::string& path);
 
-    /* The newest value with every array element, not only the tree's window. Decoded on
-       the first call after a message and kept until the next, for cards that draw a whole
-       array. Empty for a name that is not subscribed. */
+    /* The newest value with every array element, not only the tree's window, for copying
+       and pasting past a gap. Decoded on the first call after a message and kept until the
+       next. Empty for a name that is not subscribed. */
     const std::vector<ValueNode>& whole(const std::string& key) const;
+    /* The same, but each array of numbers or bools is one node with its elements left packed
+       in the message, so a long one costs one node. What cards draw from. */
+    const std::vector<ValueNode>& packed(const std::string& key) const;
+    /* Element k of a packed array as the tree lists it, read from the message the array
+       came in. Out of the message it reads as 0. */
+    static void element(const ValueNode& array, uint32_t k, const std::vector<uint8_t>& message, ValueNode& out);
+    /* Only its number, for drawing many. */
+    static double number(const ValueNode& array, uint32_t k, const std::vector<uint8_t>& message);
 
     /* The scalar fields of the watch that keep a history, by path, each with how many
        seconds it holds. Every message adds a point, so a plot misses nothing between

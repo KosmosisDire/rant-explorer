@@ -166,44 +166,48 @@ double nice(double x)
    as deep as it goes and cut short past BRIEF characters. */
 constexpr size_t BRIEF = 60;
 
-void brief_into(const Nodes& nodes, int index, std::string& out)
+/* The node is nodes[index], or an element read in place with no index. */
+void brief_into(const Nodes& nodes, const ValueNode& node, int index, const std::vector<uint8_t>& message,
+                std::string& out)
 {
-    const ValueNode& node = nodes[index];
     if (node.kind != ValueNode::Struct && node.kind != ValueNode::Array) {
         out += node.kind == ValueNode::Gap ? "..." : human(node);
         return;
     }
     out += node.kind == ValueNode::Array ? '[' : '(';
     bool first = true;
-    for (const int k : children_of(nodes, index)) {
-        if (out.size() > BRIEF) break;
+    each_element(nodes, index, message, [&](const ValueNode& e, int at) {
+        if (out.size() > BRIEF) return false;
         if (!first) out += ", ";
         first = false;
-        brief_into(nodes, k, out);
-    }
+        brief_into(nodes, e, at, message, out);
+        return true;
+    });
     out += node.kind == ValueNode::Array ? ']' : ')';
 }
 
-std::string brief(const Nodes& nodes, int index)
+std::string brief(const Nodes& nodes, const ValueNode& node, int index, const std::vector<uint8_t>& message)
 {
     std::string out;
-    brief_into(nodes, index, out);
+    brief_into(nodes, node, index, message, out);
     if (out.size() > BRIEF) out = out.substr(0, BRIEF) + "...";
     return out;
 }
 
-/* A whole message in one line: a struct's fields each named, a bare root as its value. */
+/* A whole message in one line: a struct's fields each named, a bare root as its value.
+   A call's parts list every element they show, so they need no message. */
 std::string brief_message(const Nodes& nodes)
 {
+    static const std::vector<uint8_t> listed;
     const std::vector<int> top = children_of(nodes, -1);
     if (top.empty()) return DASH;
-    if (top.size() == 1 && nodes[top[0]].path.empty()) return brief(nodes, top[0]);
+    if (top.size() == 1 && nodes[top[0]].path.empty()) return brief(nodes, nodes[top[0]], top[0], listed);
     std::string out;
     for (const int k : top) {
         if (out.size() > BRIEF) break;
         if (!out.empty()) out += ", ";
         out += nodes[k].name + ": ";
-        brief_into(nodes, k, out);
+        brief_into(nodes, nodes[k], k, listed, out);
     }
     if (out.size() > BRIEF) out = out.substr(0, BRIEF) + "...";
     return out;
@@ -1286,7 +1290,7 @@ protected:
         const Capture::WatchView* watch = source ? source->view(topic_) : nullptr;
         if (watch) {
             if (gathers_) {
-                const Nodes& whole = source->whole(topic_);
+                const Nodes& whole = source->packed(topic_);
                 const std::string key = std::to_string(watch->seq) + ":" + std::to_string(whole.size()) + ":" + path;
                 if (key != gathered_key_) {
                     gathered_key_ = key;
@@ -1298,9 +1302,13 @@ protected:
             found_ = find_node(nodes, *watch, path);
             visual = visual_at(*watch, nodes, found_);
             if (found_ == -1) {
-                root_.kind     = ValueNode::Struct;
-                root_.std_name = watch->root_std;
-                root_.depth    = -1;
+                held_          = ValueNode();
+                held_.kind     = ValueNode::Struct;
+                held_.std_name = watch->root_std;
+                held_.depth    = -1;
+            } else if (found_ == -2 && packed_element(nodes, path, watch->message, held_)) {
+                found_ = -1;
+                visual = visual_for(held_);
             }
         }
         if (path != path_ || visual != visual_ || !built_) build(path, visual);
@@ -1315,7 +1323,7 @@ protected:
         const Fill fill = row_of(visual_).draw.fill;
         if (found_ >= -1 && fill) {
             const Nodes& nodes = this->nodes();
-            (this->*fill)(nodes, found_ < 0 ? root_ : nodes[found_]);
+            (this->*fill)(nodes, found_ < 0 ? held_ : nodes[found_]);
         }
     }
 
@@ -1335,7 +1343,7 @@ protected:
         if (c.w() < 1 || c.h() < 1) return;
         read_ink(*this);
 
-        (this->*paint)(c, nodes, found_ < 0 ? root_ : nodes[found_]);
+        (this->*paint)(c, nodes, found_ < 0 ? held_ : nodes[found_]);
         c.render();
         turn_  = Rml::Vector2f(0, 0);
         wheel_ = 0;
@@ -1346,10 +1354,19 @@ private:
     static constexpr Rml::EventId GESTURES[] = { Rml::EventId::Dragstart, Rml::EventId::Drag,
                                                  Rml::EventId::Mousescroll, Rml::EventId::Dblclick };
 
-    /* The value the path is found in: the topic's whole value, or what the path gathers from it. */
+    /* The value the path is found in: the topic's whole value packed, or what the path
+       gathers from it. */
     const Nodes& nodes() const
     {
-        return gathers_ ? gathered_ : source->whole(topic_);
+        return gathers_ ? gathered_ : source->packed(topic_);
+    }
+
+    /* The message the nodes' packed arrays lie in. */
+    const std::vector<uint8_t>& message() const
+    {
+        static const std::vector<uint8_t> none;
+        const Capture::WatchView* watch = source ? source->view(topic_) : nullptr;
+        return watch ? watch->message : none;
     }
 
     bool on(Show part) const
@@ -1481,7 +1498,7 @@ private:
     void uuid(const Nodes& nodes, const ValueNode& node)
     {
         html("uuid", "<div class=\"big mono slot\"></div>");
-        put(0, uuid_text(nodes, found_), node.path);
+        put(0, uuid_text(nodes, found_, message()), node.path);
     }
 
     /* A stream handed over by URL: its name, the URL, and the hints about it. */
@@ -1523,13 +1540,16 @@ private:
     void chips(const Nodes& nodes, const ValueNode& node)
     {
         const bool named = node.kind == ValueNode::Struct;
-        const std::vector<int> children = children_of(nodes, named ? kid(nodes, found_, "name") : found_);
+        std::vector<std::pair<std::string, std::string>> chips;   /* each text and path */
+        each_element(nodes, named ? kid(nodes, found_, "name") : found_, message(), [&](const ValueNode& e, int) {
+            chips.emplace_back((named ? std::to_string(chips.size()) + " " : "") + human(e), e.path);
+            return true;
+        });
         std::string rml = "<div class=\"chips\">";
-        for (size_t i = 0; i < children.size(); i++) rml += "<span class=\"chip mono slot\"></span>";
-        if (children.empty()) rml += "<span class=\"faint\">empty</span>";
-        html("chips:" + std::to_string(children.size()), rml + "</div>");
-        for (size_t i = 0; i < children.size(); i++)
-            put(i, (named ? std::to_string(i) + " " : "") + human(nodes[children[i]]), nodes[children[i]].path);
+        for (size_t i = 0; i < chips.size(); i++) rml += "<span class=\"chip mono slot\"></span>";
+        if (chips.empty()) rml += "<span class=\"faint\">empty</span>";
+        html("chips:" + std::to_string(chips.size()), rml + "</div>");
+        for (size_t i = 0; i < chips.size(); i++) put(i, chips[i].first, chips[i].second);
     }
 
     void kv(const Nodes& nodes, const ValueNode&)
@@ -1541,21 +1561,22 @@ private:
             rml += "<div class=\"pair\"><span class=\"pair-key slot\"></span><span class=\"pair-value slot\"></span></div>";
         html("kv:" + count, rml + "</div>");
         for (size_t i = 0; i < children.size(); i++) {
-            put(i * 2, nodes[children[i]].name);
-            put(i * 2 + 1, brief(nodes, children[i]), nodes[children[i]].path);
+            const ValueNode& member = nodes[children[i]];
+            put(i * 2, member.name);
+            put(i * 2 + 1, brief(nodes, member, children[i], message()), member.path);
         }
     }
 
     void cells(const Nodes& nodes, const ValueNode&)
     {
-        const std::vector<int> children = children_of(nodes, found_);
-        const std::string count = std::to_string(children.size());
+        const std::vector<double> values = numbers_of(nodes, found_, message());
+        const std::string count = std::to_string(values.size());
         std::string rml = "<div class=\"cells\">";
-        for (size_t i = 0; i < children.size(); i++)
+        for (size_t i = 0; i < values.size(); i++)
             rml += "<span class=\"cell\"><span class=\"lamp\"></span><span class=\"idx mono\">" + std::to_string(i) + "</span></span>";
         html("cells:" + count, rml + "</div>");
-        for (size_t i = 0; i < children.size() && i < lamps_.size(); i++) {
-            const int on = nodes[children[i]].number != 0 ? 1 : 0;
+        for (size_t i = 0; i < values.size() && i < lamps_.size(); i++) {
+            const int on = values[i] != 0 ? 1 : 0;
             if (lamp_states_[i] == on) continue;
             lamp_states_[i] = on;
             lamps_[i]->SetClass("on", on != 0);
@@ -1570,24 +1591,32 @@ private:
         std::string rml = "<div class=\"matrix mono\">";
         for (const int row : children) {
             rml += "<div class=\"matrix-row\">";
-            for (size_t col = 0; col < children_of(nodes, row).size(); col++) rml += "<span><span class=\"slot\"></span></span>";
+            for (size_t col = 0; col < element_count(nodes, row); col++) rml += "<span><span class=\"slot\"></span></span>";
             rml += "</div>";
         }
         html("matrix:" + count, rml + "</div>");
         size_t slot = 0;
         for (const int row : children)
-            for (const int cell : children_of(nodes, row)) put(slot++, value_text(nodes[cell]), nodes[cell].path);
+            each_element(nodes, row, message(), [&](const ValueNode& cell, int) {
+                put(slot++, value_text(cell), cell.path);
+                return true;
+            });
     }
 
     /* A column per member of the element, a row per element. */
     void table(const Nodes& nodes, const ValueNode&)
     {
         const std::vector<int> children = children_of(nodes, found_);
-        const std::vector<int> columns = children.empty() ? std::vector<int>() : children_of(nodes, children[0]);
+        std::vector<std::string> columns;
+        if (!children.empty())
+            each_element(nodes, children[0], message(), [&columns](const ValueNode& e, int) {
+                columns.push_back(e.name);
+                return true;
+            });
         std::string key = "table:" + std::to_string(children.size()), rml = "<div class=\"scroll-table\"><table><tr>";
-        for (const int col : columns) {
-            key += ":" + nodes[col].name;
-            rml += "<th>" + Rml::StringUtilities::EncodeRml(nodes[col].name) + "</th>";
+        for (const std::string& col : columns) {
+            key += ":" + col;
+            rml += "<th>" + Rml::StringUtilities::EncodeRml(col) + "</th>";
         }
         rml += "</tr>";
         for (size_t r = 0; r < children.size(); r++) {
@@ -1598,7 +1627,10 @@ private:
         html(key, rml + "</table></div>");
         size_t slot = 0;
         for (const int row : children)
-            for (const int cell : children_of(nodes, row)) put(slot++, brief(nodes, cell), nodes[cell].path);
+            each_element(nodes, row, message(), [&](const ValueNode& cell, int at) {
+                put(slot++, brief(nodes, cell, at, message()), cell.path);
+                return true;
+            });
     }
 
     /* A row per call by any node, newest first. */
@@ -1869,18 +1901,22 @@ private:
     /* Bars from zero, the range grown from every value seen, labelled while few. */
     void bars(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
-        const std::vector<int> items = children_of(nodes, found_);
-        const size_t n = items.size();
+        const std::vector<double> values = numbers_of(nodes, found_, message());
+        const size_t n = values.size();
         if (!seen_) { lo_seen_ = hi_seen_ = 0; seen_ = true; }
-        for (const int i : items) {
-            lo_seen_ = std::min(lo_seen_, nodes[i].number);
-            hi_seen_ = std::max(hi_seen_, nodes[i].number);
+        for (const double v : values) {
+            lo_seen_ = std::min(lo_seen_, v);
+            hi_seen_ = std::max(hi_seen_, v);
         }
         ease_range(lo_seen_, hi_seen_);
         const double lo = lo_, hi = hi_ - lo_ > 1e-12 ? hi_ : lo_ + 1;
         const float top = c.dp(TOP), bottom = c.h() - c.dp(BOT), x0 = c.dp(GUTTER), x1 = c.w() - c.dp(10);
         auto Y = [&](double v) { return (float)(top + (bottom - top) * (1 - (v - lo) / (hi - lo))); };
-        const bool is_float = n && nodes[items[0]].is_float;
+        bool is_float = false;
+        each_element(nodes, found_, message(), [&is_float](const ValueNode& first, int) {
+            is_float = first.is_float;
+            return false;
+        });
         value_grid(c, x0, x1, lo, hi, Y, is_float, on(Show::Grid));
         const float gap = n <= LABELLED ? 0.3f : 0, width = n ? (x1 - x0) / n : 0;
         const float base = Y(std::max(lo_seen_, std::min(0.0, hi_seen_)));
@@ -1889,10 +1925,10 @@ private:
             /* whole pixel edges, so dense neighbours meet without a seam */
             const float x = std::floor(x0 + i * width + width * gap / 2);
             float right = std::floor(x0 + i * width + width * (1 - gap / 2));
-            float y_top = std::min(base, Y(nodes[items[i]].number)), y_bot = std::max(base, Y(nodes[items[i]].number));
+            float y_top = std::min(base, Y(values[i])), y_bot = std::max(base, Y(values[i]));
             const size_t first = i;
             for (i++; i < n && std::floor(x0 + i * width + width * gap / 2) == x; i++) {
-                const float y = Y(nodes[items[i]].number);
+                const float y = Y(values[i]);
                 y_top = std::min(y_top, y);
                 y_bot = std::max(y_bot, y);
                 right = std::floor(x0 + i * width + width * (1 - gap / 2));
@@ -2368,11 +2404,11 @@ private:
     void joints(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
         const char* names[3] = { "position", "velocity", "effort" };
-        std::vector<int> columns[3];
+        std::vector<double> columns[3];
         size_t rows = 0;
         for (int f = 0; f < 3; f++) {
             const int k = kid(nodes, found_, names[f]);
-            if (k >= 0) columns[f] = children_of(nodes, k);
+            if (k >= 0) columns[f] = numbers_of(nodes, k, message());
             rows = std::max(rows, columns[f].size());
         }
         const float gutter = c.dp(28), gap = c.dp(10), top = c.dp(TOP) + c.dp(16), bottom = c.h() - c.dp(8);
@@ -2380,14 +2416,14 @@ private:
         const float row_h = rows ? std::min(c.dp(26), (bottom - top) / rows) : 0, bar_h = std::max(1.f, row_h - c.dp(4));
         for (int f = 0; f < 3; f++) {
             double biggest = 0;
-            for (const int i : columns[f]) biggest = std::max(biggest, std::fabs(nodes[i].number));
+            for (const double v : columns[f]) biggest = std::max(biggest, std::fabs(v));
             scale_[f].seen = std::max(scale_[f].seen, biggest);
             const double m = scale_[f].grow({}, dt_, 1.0);
             const float x = gutter + f * (col_w + gap);
             c.text(std::string(names[f]) + "  \xC2\xB1" + short_number(m), x, c.dp(TOP) + c.dp(6), Canvas::Left, ink.faint, LABEL);
             for (size_t r = 0; r < columns[f].size(); r++) {
                 const float y = top + r * row_h;
-                const double v = nodes[columns[f][r]].number;
+                const double v = columns[f][r];
                 c.rect(x, y, col_w, bar_h, ink.panel);
                 for (int q = 1; q < 4 && on(Show::Grid); q++) c.line(x + col_w * q / 4, y, x + col_w * q / 4, y + bar_h, ink.grid);
                 const float mid = x + col_w / 2, len = (float)(std::max(-1.0, std::min(1.0, v / m)) * col_w / 2);
@@ -2526,7 +2562,7 @@ private:
     Tile table_tile(const Nodes* nodes) const
     {
         const std::vector<int> rows = nodes ? children_of(*nodes, found_) : std::vector<int>();
-        return grid_tile(rows.empty() ? 1 : children_of(*nodes, rows[0]).size(), rows.size());
+        return grid_tile(rows.empty() ? 1 : element_count(*nodes, rows[0]), rows.size());
     }
 
     Tile calls_tile(const Nodes*) const
@@ -2576,13 +2612,15 @@ private:
     std::string                topic_;   /* the subscribed name the value comes from */
     Visual                     visual_ = Visual::None;
     bool                       built_ = false;
-    int                        found_ = -2;      /* the node index, -1 the struct root, -2 none */
+    /* The node index, -2 none, -1 one held_ stands for: the struct root, or an element of a
+       packed array read from the message. */
+    int                        found_ = -2;
     bool                       gathers_ = false; /* the path has [*], so it reads gathered_ */
     Nodes                      gathered_;
     std::string                gathered_key_;    /* the message and path gathered_ was made for */
     std::string                shows_text_;      /* the shows attribute shown_ was read from */
     unsigned                   shown_ = 0;       /* a bit per Show the card draws */
-    ValueNode                  root_;
+    ValueNode                  held_;
 
     std::string                html_key_;        /* what the children were built for */
     std::vector<Rml::Element*> slots_;           /* the elements whose text fill writes */

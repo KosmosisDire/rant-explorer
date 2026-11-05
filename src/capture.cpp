@@ -231,7 +231,7 @@ std::string field_type(const std::vector<Field>& fields, size_t i)
 }
 
 /* An array element read straight from the array's packed bytes: a number or a capped string. */
-static bool packed(const Field& e)
+static bool is_packed(const Field& e)
 {
     switch (e.kind) {
     case FieldType::Struct: case FieldType::Array: case FieldType::VArray: case FieldType::VString:
@@ -264,34 +264,85 @@ bool is_number(FieldType kind)
     return kind <= FieldType::F64;   /* U8 through F64 lead the enum */
 }
 
-int scalar_size(FieldType kind)
+using Scalar = ValueNode::Scalar;
+
+/* A number's or a bool's wire type, None for any other field. */
+Scalar scalar_of(FieldType kind)
 {
     switch (kind) {
-    case FieldType::U16: case FieldType::I16: return 2;
-    case FieldType::U32: case FieldType::I32: case FieldType::F32: return 4;
-    case FieldType::U64: case FieldType::I64: case FieldType::F64: return 8;
+    case FieldType::U8:  return Scalar::U8;  case FieldType::U16: return Scalar::U16;
+    case FieldType::U32: return Scalar::U32; case FieldType::U64: return Scalar::U64;
+    case FieldType::I8:  return Scalar::I8;  case FieldType::I16: return Scalar::I16;
+    case FieldType::I32: return Scalar::I32; case FieldType::I64: return Scalar::I64;
+    case FieldType::F32: return Scalar::F32; case FieldType::F64: return Scalar::F64;
+    case FieldType::Bool: return Scalar::Bool;
+    default:             return Scalar::None;
+    }
+}
+
+int scalar_size(Scalar kind)
+{
+    switch (kind) {
+    case Scalar::U16: case Scalar::I16: return 2;
+    case Scalar::U32: case Scalar::I32: case Scalar::F32: return 4;
+    case Scalar::U64: case Scalar::I64: case Scalar::F64: return 8;
     default: return 1;
     }
 }
 
-/* One scalar from the wire, little endian whatever the host. */
-void read_scalar(FieldType kind, const uint8_t* p, ValueNode& n)
+/* One scalar from the wire, little endian whatever the host: its value, and an integer's
+   exact bits in integer. */
+double scalar_value(Scalar kind, const uint8_t* p, int64_t& integer)
 {
     uint64_t bits = 0;
-    const int size = scalar_size(kind);
-    for (int i = 0; i < size; i++) bits |= (uint64_t)p[i] << (8 * i);
-
-    n.kind = kind == FieldType::Bool ? ValueNode::Bool : ValueNode::Number;
+    for (int i = 0, size = scalar_size(kind); i < size; i++) bits |= (uint64_t)p[i] << (8 * i);
     switch (kind) {
-    case FieldType::F32: { uint32_t b = (uint32_t)bits; float f; std::memcpy(&f, &b, 4); n.number = f; n.is_float = true; return; }
-    case FieldType::F64: { double d; std::memcpy(&d, &bits, 8); n.number = d; n.is_float = true; return; }
-    case FieldType::I8:  n.integer = (int8_t)bits;  break;
-    case FieldType::I16: n.integer = (int16_t)bits; break;
-    case FieldType::I32: n.integer = (int32_t)bits; break;
-    case FieldType::I64: n.integer = (int64_t)bits; break;
-    default:             n.integer = (int64_t)bits; n.is_unsigned = true; break;
+    case Scalar::F32: { const uint32_t b = (uint32_t)bits; float f; std::memcpy(&f, &b, 4); return f; }
+    case Scalar::F64: { double d; std::memcpy(&d, &bits, 8); return d; }
+    case Scalar::I8:  integer = (int8_t)bits;  return (double)integer;
+    case Scalar::I16: integer = (int16_t)bits; return (double)integer;
+    case Scalar::I32: integer = (int32_t)bits; return (double)integer;
+    case Scalar::I64: integer = (int64_t)bits; return (double)integer;
+    default:          integer = (int64_t)bits; return (double)bits;
     }
-    n.number = n.is_unsigned ? (double)(uint64_t)n.integer : (double)n.integer;
+}
+
+void read_scalar(Scalar kind, const uint8_t* p, ValueNode& n)
+{
+    n.kind        = kind == Scalar::Bool ? ValueNode::Bool : ValueNode::Number;
+    n.is_float    = kind == Scalar::F32 || kind == Scalar::F64;
+    n.is_unsigned = !n.is_float && (kind < Scalar::I8 || kind > Scalar::I64);
+    n.integer     = 0;
+    n.number      = scalar_value(kind, p, n.integer);
+}
+
+/* Element k's place under its array: its name, path, type and addressing. */
+void place_element(const ValueNode& array, uint32_t k, ValueNode& e)
+{
+    e.name     = "[" + std::to_string(k) + "]";
+    e.path     = array.path + e.name;
+    e.type     = array.elem_type;
+    e.std_name = array.elem_std;
+    e.depth    = array.depth + 1;
+    e.field    = array.field;
+    e.elems    = array.elems;
+    e.folded   = array.count > 1;
+}
+
+/* Element k of an array of numbers or bools, from the message of size bytes it came in. */
+void read_element(const ValueNode& array, uint32_t k, const uint8_t* message, size_t size, ValueNode& e)
+{
+    place_element(array, k, e);
+    e.element = (int32_t)k;
+    const size_t step = (size_t)scalar_size(array.scalar), at = array.offset + (size_t)k * step;
+    if (message && at + step <= size) {
+        read_scalar(array.scalar, message + at, e);
+        return;
+    }
+    e.kind        = ValueNode::Number;
+    e.is_float    = e.is_unsigned = false;
+    e.number      = 0;
+    e.integer     = 0;
 }
 
 /* The inverse, for an element of a plain array. */
@@ -310,7 +361,7 @@ void write_scalar(FieldType kind, uint8_t* p, const ValueNode& n)
     } else {
         bits = (uint64_t)n.integer;
     }
-    for (int i = 0, size = scalar_size(kind); i < size; i++) p[i] = (uint8_t)(bits >> (8 * i));
+    for (int i = 0, size = scalar_size(scalar_of(kind)); i < size; i++) p[i] = (uint8_t)(bits >> (8 * i));
 }
 
 /* Writes one edited node into a message buffer at the place its addressing names. A fixed
@@ -330,7 +381,7 @@ bool write_edit(const rant::Schema& schema, std::vector<uint8_t>& buf, const Val
             return false;
         elements.assign(now.bytes.data, now.bytes.data + now.bytes.len);
         /* the element is the array's next row */
-        if (!schema.field_at((uint16_t)(e.field + 1), el) || !packed(el)) return false;
+        if (!schema.field_at((uint16_t)(e.field + 1), el) || !is_packed(el)) return false;
         const size_t at = (size_t)e.element * el.size;
         if (at + el.size > elements.size()) return false;
         uint8_t* p = elements.data() + at;
@@ -364,6 +415,10 @@ bool write_edit(const rant::Schema& schema, std::vector<uint8_t>& buf, const Val
                                            (uint16_t)e.elems.size(), &v) != 0;
 }
 
+/* How a decode lists an array: the tree's few elements of a long one, every element, or every
+   element but those of an array of numbers or bools, which stay packed in the message. */
+enum class Form { Window, Whole, Packed };
+
 /* Walks the flat field table of one message into value nodes. A struct array's members are
    listed once as a template under the array, so they are walked again per element. */
 struct Decoder {
@@ -372,7 +427,7 @@ struct Decoder {
     rant::detail::RantBytes         msg;
     std::vector<ValueNode>&         out;
     std::string&                    shape;
-    bool                            whole = false;   /* every element, no gap */
+    Form                            form = Form::Window;
     const std::map<std::string, uint32_t>* revealed = nullptr;   /* extra head elements by array path */
 
     /* The field after i's subtree: the table is depth first. */
@@ -402,7 +457,7 @@ struct Decoder {
     std::vector<int64_t> visible(uint32_t count, uint32_t head) const
     {
         std::vector<int64_t> out;
-        if (whole || count <= Capture::ARRAY_WHOLE || head + ARRAY_TAIL >= count) {
+        if (form != Form::Window || count <= Capture::ARRAY_WHOLE || head + ARRAY_TAIL >= count) {
             for (uint32_t k = 0; k < count; k++) out.push_back(k);
             return out;
         }
@@ -495,7 +550,7 @@ struct Decoder {
         /* the element is the next row: numbers and capped strings come packed, the rest each
            through its own row */
         const Field& el = fields[i + 1];
-        const uint32_t elem_size = packed(el) ? el.size : 0;
+        const uint32_t elem_size = is_packed(el) ? el.size : 0;
         const uint32_t count = v.count;
 
         /* A variable byte array is one blob: an image, a file, a payload. */
@@ -516,53 +571,51 @@ struct Decoder {
                    : el.kind == FieldType::Enum ? ValueNode::Enum
                    : el.kind == FieldType::Map ? ValueNode::Map
                    : el.kind == FieldType::Bool ? ValueNode::Bool : ValueNode::Number;
-        n.elem_std = std_name(el.type_name);
+        n.elem_type = field_type(fields, i + 1);
+        n.elem_std  = std_name(el.type_name);
+        n.scalar    = scalar_of(el.kind);
+        if (n.scalar != Scalar::None && v.bytes.data) n.offset = (uint32_t)(v.bytes.data - msg.data);
+        n.packed    = form == Form::Packed && n.scalar != Scalar::None;
         const uint32_t head = head_of(n.path);
         shape  += std::to_string(count) + "+" + std::to_string(head) + ",";
-        const std::string elem_type = field_type(fields, i + 1);
-        const std::string elem_std = std_name(el.type_name);
-        const std::string path = n.path;
-        const int depth = n.depth;
         out.push_back(n);
+        if (n.packed) return;
 
         for (const int64_t k : visible(count, head)) {
             ValueNode e;
-            e.depth = depth + 1;
             if (k < 0) {
+                e.depth = n.depth + 1;
                 e.kind  = ValueNode::Gap;
-                e.path  = path + "[...]";
+                e.path  = n.path + "[...]";
                 e.count = count - head - ARRAY_TAIL;
                 out.push_back(e);
                 continue;
             }
-            e.name     = "[" + std::to_string(k) + "]";
-            e.path     = path + e.name;
-            e.folded   = count > 1;
-            e.type     = elem_type;
-            e.std_name = elem_std;
-            e.field    = (uint16_t)i;
-            e.elems    = elems;
+            if (n.scalar != Scalar::None) {
+                read_element(n, (uint32_t)k, msg.data, msg.len, e);
+                out.push_back(e);
+                continue;
+            }
+            place_element(n, (uint32_t)k, e);
             if (!elem_size) {
                 std::vector<uint32_t> inner = elems;
                 inner.push_back((uint32_t)k);
                 const size_t at = out.size();
-                field(i + 1, inner, path, depth + 1, &e.name);
+                field(i + 1, inner, n.path, n.depth + 1, &e.name);
                 out[at].folded = count > 1;
                 continue;
             }
+            /* a capped string, whose slot is [u16 length][capacity bytes] */
             e.element = (int32_t)k;
             const uint8_t* p = v.bytes.data ? v.bytes.data + (size_t)k * elem_size : nullptr;
             if (!p || (size_t)(k + 1) * elem_size > v.bytes.len) {
                 e.kind = ValueNode::Number;
-            } else if (el.kind == FieldType::String) {
-                /* a string slot is [u16 length][capacity bytes] */
+            } else {
                 e.kind = ValueNode::Text;
                 e.cap  = el.str_cap;
                 uint16_t len = (uint16_t)(p[0] | (p[1] << 8));
                 if (len > el.str_cap) len = el.str_cap;
                 e.text.assign((const char*)p + 2, len);
-            } else {
-                read_scalar(el.kind, p, e);
             }
             out.push_back(e);
         }
@@ -883,8 +936,12 @@ struct Capture::Impl {
             bool                     lost = false;
         };
         std::map<std::string, Stream> streams;   /* by the VideoFrame's path */
-        std::vector<ValueNode> whole;
-        uint64_t               whole_seq = ~0ull;
+        /* The newest message decoded whole and packed, each made on demand. */
+        struct Decoded {
+            std::vector<ValueNode> nodes;
+            uint64_t               seq = ~0ull;
+        };
+        Decoded                whole, packed;
         std::map<std::string, uint32_t> revealed;   /* elements shown past each long array's head */
 
         /* The rate window, and the spacing estimate behind the jitter. */
@@ -963,13 +1020,13 @@ struct Capture::Impl {
     }
 
     /* One message into the nodes the tree shows, with the root's type, each path under
-       prefix. A whole decode keeps every array element and leaves the message where it is. */
+       prefix. Any other form leaves the message where it is. */
     void decode(const std::vector<uint8_t>& data, uint64_t hash, Capture::WatchView& into,
-                bool whole = false, const std::string& prefix = {},
+                Form form = Form::Window, const std::string& prefix = {},
                 const std::map<std::string, uint32_t>* revealed = nullptr) const
     {
         into.nodes.clear();
-        if (!whole) into.message = data;
+        if (form == Form::Window) into.message = data;
         into.shape = std::to_string(hash) + ":";
         const auto found = schemas.find(hash);
         if (!hash || found == schemas.end() || found->second.empty()) {
@@ -988,7 +1045,7 @@ struct Capture::Impl {
         }
         const rant::Schema& schema = found->second;
         Decoder decoder{ schema.raw(), schema.fields(), rant::detail::rant_bytes(data.data(), data.size()),
-                         into.nodes, into.shape, whole, revealed };
+                         into.nodes, into.shape, form, revealed };
         for (size_t i = 0; i < decoder.fields.size(); i = decoder.end_of(i)) decoder.field(i, {}, prefix, 0);
         const bool bare  = !decoder.fields.empty() && decoder.fields[0].name.empty();
         into.root_struct = !bare;
@@ -1000,6 +1057,9 @@ struct Capture::Impl {
             if (into.nodes[0].std_name.empty()) into.nodes[0].std_name = into.root_std;
         }
     }
+
+    /* The key's newest message decoded whole or packed, kept until the next. */
+    const std::vector<ValueNode>& decoded(const std::string& key, Form form);
 
     /* The default message of a schema: zeros, and every variable field empty. */
     static std::vector<uint8_t> default_message(const rant::Schema& schema)
@@ -1383,7 +1443,7 @@ struct Capture::Impl {
                 add_packets(s, scratch.nodes, scratch.message);
             }
         }
-        decode(last.data, last.schema_hash, v, false, {}, &s.revealed);
+        decode(last.data, last.schema_hash, v, Form::Window, {}, &s.revealed);
         s.last_hash = last.schema_hash;
         v.schema    = last.schema_hash;
         v.forced    = last.forced;
@@ -1435,7 +1495,7 @@ struct Capture::Impl {
             for (const Sample& sample : progress) {
                 map_clock(s, sample.recv_us);
                 WatchView scratch;
-                decode(sample.data, sample.schema_hash, scratch, false, "progress");
+                decode(sample.data, sample.schema_hash, scratch, Form::Window, "progress");
                 add_trace_points(s, scratch.nodes, arrival_s(s, sample.recv_us));
             }
             if (!progress.empty()) {
@@ -1543,7 +1603,7 @@ struct Capture::Impl {
                   uint64_t hash, bool has_value, const std::string& state, uint8_t tone, bool input)
     {
         WatchView scratch;
-        decode(data, hash, scratch, false, prefix);
+        decode(data, hash, scratch, Form::Window, prefix);
         ValueNode part;
         part.kind  = ValueNode::Part;
         part.name  = label;
@@ -1825,25 +1885,50 @@ std::vector<Capture::Packet> Capture::take(const std::string& key, const std::st
     return out;
 }
 
-const std::vector<Capture::ValueNode>& Capture::whole(const std::string& key) const
+const std::vector<Capture::ValueNode>& Capture::Impl::decoded(const std::string& key, Form form)
 {
     static const std::vector<ValueNode> nothing;
-    Impl::Sub* s = impl_ ? impl_->find(key) : nullptr;
+    Sub* s = find(key);
     if (!s) return nothing;
     /* a call's parts are small and already whole */
     if (is_call(s->view.kind)) return s->view.nodes;
-    if (s->whole_seq != s->view.seq) {
-        s->whole_seq = s->view.seq;
+    Sub::Decoded& d = form == Form::Packed ? s->packed : s->whole;
+    if (d.seq != s->view.seq) {
+        d.seq = s->view.seq;
         WatchView scratch;
-        impl_->decode(s->view.message, s->last_hash, scratch, true);
-        s->whole.swap(scratch.nodes);
+        decode(s->view.message, s->last_hash, scratch, form);
+        d.nodes.swap(scratch.nodes);
         /* A bare root's node takes the schema's type, as the tree's does. */
-        if (!s->view.root_struct && !s->whole.empty() && !s->view.nodes.empty()) {
-            s->whole[0].type     = s->view.nodes[0].type;
-            s->whole[0].std_name = s->view.nodes[0].std_name;
+        if (!s->view.root_struct && !d.nodes.empty() && !s->view.nodes.empty()) {
+            d.nodes[0].type     = s->view.nodes[0].type;
+            d.nodes[0].std_name = s->view.nodes[0].std_name;
         }
     }
-    return s->whole;
+    return d.nodes;
+}
+
+const std::vector<Capture::ValueNode>& Capture::whole(const std::string& key) const
+{
+    static const std::vector<ValueNode> nothing;
+    return impl_ ? impl_->decoded(key, Form::Whole) : nothing;
+}
+
+const std::vector<Capture::ValueNode>& Capture::packed(const std::string& key) const
+{
+    static const std::vector<ValueNode> nothing;
+    return impl_ ? impl_->decoded(key, Form::Packed) : nothing;
+}
+
+void Capture::element(const ValueNode& array, uint32_t k, const std::vector<uint8_t>& message, ValueNode& out)
+{
+    read_element(array, k, message.data(), message.size(), out);
+}
+
+double Capture::number(const ValueNode& array, uint32_t k, const std::vector<uint8_t>& message)
+{
+    const size_t step = (size_t)scalar_size(array.scalar), at = array.offset + (size_t)k * step;
+    int64_t integer = 0;
+    return at + step <= message.size() ? scalar_value(array.scalar, message.data() + at, integer) : 0;
 }
 
 std::vector<uint8_t> Capture::encode(const std::vector<uint8_t>& base, uint64_t schema,
@@ -1918,7 +2003,7 @@ void Capture::reveal(const std::string& path)
     if (!s || !s->last_hash) return;
     s->revealed[path] += REVEAL_STEP;
     const std::vector<uint8_t> message = s->view.message;
-    impl_->decode(message, s->last_hash, s->view, false, {}, &s->revealed);
+    impl_->decode(message, s->last_hash, s->view, Form::Window, {}, &s->revealed);
 }
 
 /* A draft lists every element, so a fixed array shows whole and any element can be edited. */
@@ -1937,7 +2022,7 @@ bool Capture::draft(Draft& out) const
         out.message = Impl::default_message(e->schema);
     }
     WatchView scratch;
-    impl_->decode(out.message, out.schema, scratch, true);
+    impl_->decode(out.message, out.schema, scratch, Form::Whole);
     out.nodes       = std::move(scratch.nodes);
     out.root_std    = scratch.root_std;
     out.root_struct = scratch.root_struct;
@@ -1973,7 +2058,7 @@ bool Capture::rewrite(Draft& draft, uint16_t field, const std::function<void(std
     const auto found = impl_->schemas.find(draft.schema);
     Field f, el;
     if (found == impl_->schemas.end() || !found->second.field_at(field, f) ||
-        f.kind != FieldType::VArray || !found->second.field_at((uint16_t)(field + 1), el) || !packed(el)) {
+        f.kind != FieldType::VArray || !found->second.field_at((uint16_t)(field + 1), el) || !is_packed(el)) {
         error = "only a variable array of numbers or capped strings can change its length here";
         return false;
     }
@@ -1998,7 +2083,7 @@ bool Capture::rewrite(Draft& draft, uint16_t field, const std::function<void(std
     buf.resize(rant::detail::rant_schema_msg_len(raw, buf.data(), buf.size()));
     draft.message = std::move(buf);
     WatchView scratch;
-    impl_->decode(draft.message, draft.schema, scratch, true);
+    impl_->decode(draft.message, draft.schema, scratch, Form::Whole);
     draft.nodes = std::move(scratch.nodes);
     return true;
 }

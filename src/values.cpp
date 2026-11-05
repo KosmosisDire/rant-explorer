@@ -274,7 +274,7 @@ std::string preview_text(const Capture::WatchView& view)
         out += text;
     };
     const ValueNode& root = view.nodes[0];
-    if (!view.root_struct && root.std_name == "Uuid") return uuid_text(view.nodes, 0);
+    if (!view.root_struct && root.std_name == "Uuid") return uuid_text(view.nodes, 0, view.message);
     if (!view.root_struct && root.kind == ValueNode::Array) {
         if (root.elem == ValueNode::Struct) return format_number(root.count) + " x " + view.type;
         /* the leaves at any depth, so a list of lists such as a matrix reads as its numbers */
@@ -423,12 +423,63 @@ std::vector<int> children_of(const std::vector<ValueNode>& nodes, int index)
     return out;
 }
 
+void each_element(const std::vector<ValueNode>& nodes, int index, const std::vector<uint8_t>& message,
+                  const std::function<bool(const ValueNode& element, int at)>& visit)
+{
+    if (index < 0 || !nodes[index].packed) {
+        for (const int k : children_of(nodes, index))
+            if (!visit(nodes[k], k)) return;
+        return;
+    }
+    ValueNode element;
+    for (uint32_t k = 0; k < nodes[index].count; k++) {
+        Capture::element(nodes[index], k, message, element);
+        if (!visit(element, -2)) return;
+    }
+}
+
+size_t element_count(const std::vector<ValueNode>& nodes, int index)
+{
+    return index >= 0 && nodes[index].packed ? nodes[index].count : children_of(nodes, index).size();
+}
+
+std::vector<double> numbers_of(const std::vector<ValueNode>& nodes, int index, const std::vector<uint8_t>& message)
+{
+    std::vector<double> out;
+    if (index >= 0 && nodes[index].packed) {
+        out.resize(nodes[index].count);
+        for (uint32_t k = 0; k < nodes[index].count; k++) out[k] = Capture::number(nodes[index], k, message);
+        return out;
+    }
+    for (const int k : children_of(nodes, index))
+        if (nodes[k].kind != ValueNode::Gap) out.push_back(nodes[k].number);
+    return out;
+}
+
 int find_node(const std::vector<ValueNode>& nodes, const Capture::WatchView& view, const std::string& path)
 {
     if (path.empty() && view.root_struct && !nodes.empty()) return -1;
     for (size_t i = 0; i < nodes.size(); i++)
         if (nodes[i].path == path) return (int)i;
     return -2;
+}
+
+bool packed_element(const std::vector<ValueNode>& nodes, const std::string& path, const std::vector<uint8_t>& message,
+                    ValueNode& out)
+{
+    const size_t open = path.rfind('[');
+    if (open == std::string::npos || path.size() < open + 3 || path.back() != ']' ||
+        !std::all_of(path.begin() + open + 1, path.end() - 1, [](char c) { return c >= '0' && c <= '9'; }))
+        return false;
+    const std::string array = path.substr(0, open);
+    const unsigned long k = std::strtoul(path.c_str() + open + 1, nullptr, 10);
+    for (const ValueNode& node : nodes) {
+        if (node.path != array) continue;
+        if (!node.packed || k >= node.count) return false;
+        Capture::element(node, (uint32_t)k, message, out);
+        return true;
+    }
+    return false;
 }
 
 namespace {
@@ -475,13 +526,14 @@ std::vector<ValueNode> gather(const std::vector<ValueNode>& nodes, const std::st
     if (picked.empty()) return out;
     const ValueNode& first = nodes[picked[0]];
     ValueNode array;
-    array.kind     = ValueNode::Array;
-    array.name     = path;
-    array.path     = path;
-    array.type     = first.type + "[]";
-    array.count    = (uint32_t)picked.size();
-    array.elem     = first.kind;
-    array.elem_std = first.std_name;
+    array.kind      = ValueNode::Array;
+    array.name      = path;
+    array.path      = path;
+    array.type      = first.type + "[]";
+    array.count     = (uint32_t)picked.size();
+    array.elem      = first.kind;
+    array.elem_type = first.type;
+    array.elem_std  = first.std_name;
     out.push_back(std::move(array));
     for (size_t i = 0; i < picked.size(); i++) {
         const size_t at = picked[i], end = subtree_end(nodes, at), top = out.size();
@@ -697,7 +749,7 @@ std::string standard(const std::vector<ValueNode>& nodes, int index, const std::
         }
         return {};
     }
-    if (std_name == "Uuid") return uuid_text(nodes, index);
+    if (std_name == "Uuid") return uuid_text(nodes, index, message);
     std::map<std::string, const ValueNode*> field;
     for (const int k : children_of(nodes, index)) field[nodes[k].name] = &nodes[k];
     auto get = [&field](const char* name) { return field.count(name) ? field[name] : nullptr; };
@@ -714,17 +766,19 @@ std::string standard(const std::vector<ValueNode>& nodes, int index, const std::
 
 } /* namespace */
 
-std::string uuid_text(const std::vector<ValueNode>& nodes, int index)
+std::string uuid_text(const std::vector<ValueNode>& nodes, int index, const std::vector<uint8_t>& message)
 {
-    const std::vector<int> bytes = children_of(nodes, index);
-    if (bytes.size() != 16) return {};
+    if (element_count(nodes, index) != 16) return {};
     std::string out;
-    for (size_t i = 0; i < bytes.size(); i++) {
+    size_t i = 0;
+    each_element(nodes, index, message, [&out, &i](const ValueNode& byte, int) {
         char hex[4];
-        std::snprintf(hex, sizeof hex, "%02x", (unsigned)(nodes[bytes[i]].integer & 0xFF));
+        std::snprintf(hex, sizeof hex, "%02x", (unsigned)(byte.integer & 0xFF));
         if (i == 4 || i == 6 || i == 8 || i == 10) out += '-';
         out += hex;
-    }
+        i++;
+        return true;
+    });
     return out;
 }
 

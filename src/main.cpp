@@ -2437,9 +2437,11 @@ int main(int argc, char** argv)
                         lines.push_back(table_item(ui.menu_pending_tables, std::move(branch), "Copy field as table"));
                     }
                 }
-                if (std_name == "Image" || std_name == "VideoFrame") {
+                const Image file_picture = std_name == "File" ? image_of(*nodes, index, view->message) : Image();
+                if (std_name == "Image" || std_name == "VideoFrame" || file_picture.valid()) {
                     /* a picture is no table, but its raw data still copies */
-                    ui.menu_image = std_name == "Image" ? image_of(*nodes, index, view->message) : viz_picture(source);
+                    ui.menu_image = std_name == "Image"      ? image_of(*nodes, index, view->message)
+                                  : std_name == "VideoFrame" ? viz_picture(source) : file_picture;
                     MenuItem image;
                     image.label  = "Copy image";
                     image.action = "image";

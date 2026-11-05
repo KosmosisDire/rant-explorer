@@ -214,6 +214,42 @@ std::string brief_message(const Nodes& nodes)
     return out;
 }
 
+/* A blob's first bytes in rows of 16, up to four rows. */
+std::string hex_rows(const std::string& head)
+{
+    std::string out;
+    for (size_t row = 0; row * 16 < head.size() && row < 4; row++) {
+        for (size_t i = row * 16; i < head.size() && i < row * 16 + 16; i++) {
+            char byte[4];
+            std::snprintf(byte, sizeof byte, "%02x ", (unsigned char)head[i]);
+            out += byte;
+        }
+        out += "\n";
+    }
+    return out;
+}
+
+/* Bytes as text when they read as UTF-8 with no control characters but tabs and line ends.
+   A character cut at the end is dropped, and so are carriage returns. */
+bool read_text(const uint8_t* p, size_t n, std::string& out)
+{
+    out.clear();
+    for (size_t i = 0; i < n;) {
+        const uint8_t c = p[i];
+        const size_t len = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 0;
+        if (!len || c == 0x7F || (c < 0x20 && c != '\t' && c != '\n' && c != '\r')) return false;
+        if (i + len > n) break;
+        for (size_t k = 1; k < len; k++)
+            if ((p[i + k] & 0xC0) != 0x80) return false;
+        if (c != '\r') out.append((const char*)p + i, len);
+        i += len;
+    }
+    return true;
+}
+
+/* A text file shows up to this many bytes. */
+constexpr size_t FILE_TEXT = 8192;
+
 int kid(const Nodes& nodes, int index, const char* name)
 {
     for (const int k : children_of(nodes, index))
@@ -588,7 +624,8 @@ std::vector<Rml::Vector2f> circle(Rml::Vector2f centre, float radius, double t0 
 
 /* A standard 3D shape read from its node, nothing for a kind with no drawing. */
 using Solid = std::variant<std::monostate, types::AlignedBox, types::OrientedBox, types::Plane, types::Segment,
-                           types::Sphere, types::Capsule, types::Cylinder, types::Cone, types::Polygon>;
+                           types::Ray, types::Sphere, types::Capsule, types::Cylinder, types::Cone, types::Polygon,
+                           types::Prism>;
 
 Solid solid(const Nodes& nodes, int index, const std::string& kind)
 {
@@ -605,6 +642,7 @@ Solid solid(const Nodes& nodes, int index, const std::string& kind)
     if (kind == "OrientedBox") return types::OrientedBox{ placed(nodes, kid(nodes, index, "pose")), at("size") };
     if (kind == "Plane")       return types::Plane{ at("position"), at("normal") };
     if (kind == "Segment")     return types::Segment{ at("a"), at("b") };
+    if (kind == "Ray")         return types::Ray{ at("origin"), at("direction") };
     if (kind == "Sphere")      return types::Sphere{ at("center"), radius };
     if (kind == "Capsule")     return types::Capsule{ axis(), radius };
     if (kind == "Cylinder")    return types::Cylinder{ axis(), radius };
@@ -616,6 +654,15 @@ Solid solid(const Nodes& nodes, int index, const std::string& kind)
             for (const int k : children_of(nodes, points)) out.points.push_back(vec(nodes, k));
         return out;
     }
+    if (kind == "Prism") {
+        types::Prism out;
+        out.pose   = placed(nodes, kid(nodes, index, "pose"));
+        out.height = number(nodes, index, "height");
+        const int base = kid(nodes, index, "base"), points = base >= 0 ? kid(nodes, base, "points") : -2;
+        if (points >= 0)
+            for (const int k : children_of(nodes, points)) out.base.points.push_back(vec_2d(nodes, k));
+        return out;
+    }
     return std::monostate{};
 }
 
@@ -625,11 +672,13 @@ Double3 middle_of(const types::AlignedBox& b) { return math::aligned_box_centroi
 Double3 middle_of(const types::OrientedBox& b) { return b.pose.position; }
 Double3 middle_of(const types::Plane& p) { return p.position; }
 Double3 middle_of(const types::Segment& l) { return math::double3_lerp(l.a, l.b, 0.5); }
+Double3 middle_of(const types::Ray& o) { return o.origin; }
 Double3 middle_of(const types::Sphere& o) { return o.center; }
 Double3 middle_of(const types::Capsule& o) { return math::capsule_centroid(o); }
 Double3 middle_of(const types::Cylinder& o) { return math::cylinder_centroid(o); }
 Double3 middle_of(const types::Cone& o) { return math::double3_lerp(o.base, o.tip, 0.5); }
 Double3 middle_of(const types::Polygon& p) { return math::polygon_centroid(p.points); }
+Double3 middle_of(const types::Prism& p) { return math::prism_centroid(p); }
 
 Double3 middle(const Solid& o)
 {
@@ -648,11 +697,14 @@ void hold_one(Reach& r, const types::AlignedBox& b) { for (const Double3& p : ma
 void hold_one(Reach& r, const types::OrientedBox& b) { for (const Double3& p : math::oriented_box_corners(b)) take(r, p, 0); }
 void hold_one(Reach& r, const types::Plane& p) { take(r, p.position * 2, 0); }
 void hold_one(Reach& r, const types::Segment& l) { take(r, l.a, 0); take(r, l.b, 0); }
+/* A ray has no end either, so its origin is kept inside half the reach, and a unit past it. */
+void hold_one(Reach& r, const types::Ray& o) { take(r, o.origin * 2, 0); take(r, o.origin + math::double3_normalize(o.direction), 0); }
 void hold_one(Reach& r, const types::Sphere& o) { take(r, o.center, o.radius); }
 void hold_one(Reach& r, const types::Capsule& o) { take(r, o.axis.a, o.radius); take(r, o.axis.b, o.radius); }
 void hold_one(Reach& r, const types::Cylinder& o) { take(r, o.axis.a, o.radius); take(r, o.axis.b, o.radius); }
 void hold_one(Reach& r, const types::Cone& o) { take(r, o.base, o.radius); take(r, o.tip, 0); }
 void hold_one(Reach& r, const types::Polygon& p) { for (const Double3& v : p.points) take(r, v, 0); }
+void hold_one(Reach& r, const types::Prism& p) { for (const Double3& v : math::prism_corners(p)) take(r, v, 0); }
 
 void hold(Reach& reach, const Solid& o)
 {
@@ -717,6 +769,7 @@ void put_one(Batch& b, const View&, float px, const types::Sphere& o, Rml::Colou
 void put_one(Batch& b, const View&, float px, const types::Capsule& o, Rml::Colourb colour) { put_shape(b, math::shape_from_capsule(o), colour, THIN * px); }
 void put_one(Batch& b, const View&, float px, const types::Cylinder& o, Rml::Colourb colour) { put_shape(b, math::shape_from_cylinder(o), colour, THIN * px); }
 void put_one(Batch& b, const View&, float px, const types::Cone& o, Rml::Colourb colour) { put_shape(b, math::shape_from_cone(o), colour, THIN * px); }
+void put_one(Batch& b, const View&, float px, const types::Prism& o, Rml::Colourb colour) { put_shape(b, math::shape_from_prism(o), colour, THIN * px); }
 
 /* A polygon on a line has no faces, so its points are joined instead. */
 void put_one(Batch& b, const View&, float px, const types::Polygon& o, Rml::Colourb colour)
@@ -745,6 +798,17 @@ void put_one(Batch& b, const View&, float px, const types::Segment& l, Rml::Colo
     stroke(b, Batch::Mark::Line, l.a, l.b, colour, STROKE * px);
     stroke(b, Batch::Mark::Dot, l.a, l.a, colour, 4 * px);
     stroke(b, Batch::Mark::Dot, l.b, l.b, colour, 4 * px);
+}
+
+/* A ray as a dot at its origin and an arrow to where it leaves the reach. */
+void put_one(Batch& b, const View& s, float px, const types::Ray& o, Rml::Colourb colour)
+{
+    const Double3 d = math::double3_normalize(o.direction);
+    const double along = math::double3_dot(o.origin, d);
+    const double inside = along * along - math::double3_dot(o.origin, o.origin) + s.r * s.r;
+    const double end = inside > 0 ? std::sqrt(inside) - along : 0;
+    if (end > 0 && math::double3_length(d) > 0) stroke(b, Batch::Mark::Arrow, o.origin, o.origin + d * end, colour, STROKE * px);
+    stroke(b, Batch::Mark::Dot, o.origin, o.origin, colour, 4 * px);
 }
 
 /* px is pixels per dp. */
@@ -970,6 +1034,7 @@ Described describe_one(const types::OrientedBox& b)
 }
 Described describe_one(const types::Plane& p) { return { "normal " + point(math::double3_normalize(p.normal)), "at " + point(p.position) }; }
 Described describe_one(const types::Segment& l) { return { "length " + f3(math::segment_length(l)), "from " + point(l.a) }; }
+Described describe_one(const types::Ray& o) { return { "toward " + point(math::double3_normalize(o.direction)), "from " + point(o.origin) }; }
 Described describe_one(const types::Sphere& o) { return { radius_text(o.radius), "at " + point(o.center) }; }
 Described describe_one(const types::Capsule& o)
 {
@@ -984,6 +1049,10 @@ Described describe_one(const types::Cone& o)
     return { radius_text(o.radius) + "  height " + f3(math::double3_distance(o.base, o.tip)), "base " + point(o.base) };
 }
 Described describe_one(const types::Polygon& p) { return { format_number((double)p.points.size()) + " points", {} }; }
+Described describe_one(const types::Prism& p)
+{
+    return { format_number((double)p.base.points.size()) + " corners  height " + f3(p.height), "at " + point(p.pose.position) };
+}
 
 Described describe(const Solid& o)
 {
@@ -998,6 +1067,12 @@ std::string counted(size_t n, const std::string& kind)
     if (noun == "AlignedBox" || noun == "OrientedBox") noun = "box";
     std::transform(noun.begin(), noun.end(), noun.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
     return format_number((double)n) + " " + noun + (n == 1 ? "" : noun.back() == 'x' ? "es" : "s");
+}
+
+/* A route's count by kind and how far it runs through its points in order. */
+std::string route(size_t n, const std::string& kind, double length)
+{
+    return counted(n, kind) + "  length " + f3(length);
 }
 
 /* ------------------------------------------------------------------ figures */
@@ -1046,7 +1121,7 @@ std::string degrees(double radians)
 
 /* A standard 2D shape read from its node, nothing for a kind with no drawing. */
 using Figure = std::variant<std::monostate, types::AlignedBox2D, types::OrientedBox2D, types::Circle, types::Polygon2D,
-                            types::Plane2D, types::Segment2D, types::Capsule2D>;
+                            types::Plane2D, types::Segment2D, types::Ray2D, types::Capsule2D>;
 
 Figure figure(const Nodes& nodes, int index, const std::string& kind)
 {
@@ -1060,6 +1135,7 @@ Figure figure(const Nodes& nodes, int index, const std::string& kind)
     if (kind == "Circle")        return types::Circle{ at("center"), radius };
     if (kind == "Plane2D")       return types::Plane2D{ at("position"), at("normal") };
     if (kind == "Segment2D")     return types::Segment2D{ at("a"), at("b") };
+    if (kind == "Ray2D")         return types::Ray2D{ at("origin"), at("direction") };
     if (kind == "Capsule2D") {
         const int k = kid(nodes, index, "axis");
         const types::Segment2D axis = k >= 0 ? types::Segment2D{ vec_2d(nodes, kid(nodes, k, "a")), vec_2d(nodes, kid(nodes, k, "b")) }
@@ -1083,6 +1159,7 @@ Double2 middle_of(const types::Circle& o) { return o.center; }
 Double2 middle_of(const types::Polygon2D& p) { return math::polygon2d_centroid(p.points); }
 Double2 middle_of(const types::Plane2D& p) { return p.position; }
 Double2 middle_of(const types::Segment2D& l) { return math::double2_lerp(l.a, l.b, 0.5); }
+Double2 middle_of(const types::Ray2D& o) { return o.origin; }
 Double2 middle_of(const types::Capsule2D& o) { return math::double2_lerp(o.axis.a, o.axis.b, 0.5); }
 
 Double2 middle(const Figure& f)
@@ -1119,6 +1196,8 @@ void hold_one(Reach& r, const types::Polygon2D& p) { for (const Double2& v : p.p
 /* its point at most half way out, so the line shows */
 void hold_one(Reach& r, const types::Plane2D& p) { take_2d(r, p.position * 2, 0); }
 void hold_one(Reach& r, const types::Segment2D& l) { take_2d(r, l.a, 0); take_2d(r, l.b, 0); }
+/* its origin at most half way out and a unit past it, so the arrow shows */
+void hold_one(Reach& r, const types::Ray2D& o) { take_2d(r, o.origin * 2, 0); take_2d(r, o.origin + math::double2_normalize(o.direction), 0); }
 void hold_one(Reach& r, const types::Capsule2D& o) { take_2d(r, o.axis.a, o.radius); take_2d(r, o.axis.b, o.radius); }
 
 void hold(Reach& reach, const Figure& f)
@@ -1163,6 +1242,16 @@ void draw_one(Canvas& c, const Plane& p, const types::Segment2D& l, Rml::Colourb
     c.dot(p(l.b), colour, 3.5f);
 }
 
+void draw_one(Canvas& c, const Plane& p, const types::Ray2D& o, Rml::Colourb colour)
+{
+    /* the endless ray cut to the grid */
+    const Double2 d = math::double2_normalize(o.direction);
+    Rml::Vector2f a = p(o.origin), b = p(o.origin + d * (4 * p.r));
+    const Rml::Vector2f lo = p(-p.r, p.r), hi = p(p.r, -p.r);
+    if (math::double2_length(d) > 0 && clip(a.x, a.y, b.x, b.y, lo.x, lo.y, hi.x, hi.y)) c.arrow(a, b, colour, STROKE);
+    c.dot(p(o.origin), colour, 3.5f);
+}
+
 void draw_one(Canvas& c, const Plane& p, const types::Capsule2D& o, Rml::Colourb colour)
 {
     std::vector<Rml::Vector2f> drawn;
@@ -1194,6 +1283,7 @@ Described describe_one(const types::Circle& o) { return { radius_text(o.radius),
 Described describe_one(const types::Polygon2D& p) { return { format_number((double)p.points.size()) + " points", {} }; }
 Described describe_one(const types::Plane2D& p) { return { "normal " + point(math::double2_normalize(p.normal)), "at " + point(p.position) }; }
 Described describe_one(const types::Segment2D& l) { return { "length " + f3(math::segment2d_length(l)), "from " + point(l.a) }; }
+Described describe_one(const types::Ray2D& o) { return { "toward " + point(math::double2_normalize(o.direction)), "from " + point(o.origin) }; }
 Described describe_one(const types::Capsule2D& o)
 {
     return { radius_text(o.radius) + "  length " + f3(math::segment2d_length(o.axis)), "from " + point(o.axis.a) };
@@ -1244,6 +1334,24 @@ std::vector<std::string> fed_paths(const Feed& feed, const std::string& path, co
     return out;
 }
 
+/* What a push and turn card reads: a Wrench's force and torque, or an Accel's linear and
+   angular acceleration, and the part that hides the turn. */
+struct Pushes {
+    const char *push, *turn, *push_unit, *turn_unit;
+    Show part;
+
+    std::string reading(double push_size, double turn_size) const
+    {
+        return std::string(push) + " " + f3(push_size) + " " + push_unit + "  " + turn + " " + f3(turn_size) + " " + turn_unit;
+    }
+};
+
+Pushes pushes(Visual v)
+{
+    if (v == Visual::Accel || v == Visual::Accel2D) return { "linear", "angular", "m/s\xC2\xB2", "rad/s\xC2\xB2", Show::Turn };
+    return { "force", "torque", "N", "N m", Show::Torque };
+}
+
 /* A table wants the box its columns and rows fill. Past TABLE_ROWS it asks for that
    height and scrolls inside. */
 constexpr double TABLE_COL = 100, TABLE_ROW = 24;
@@ -1281,13 +1389,14 @@ public:
     /* One visual: what it draws into and how, its tile, the parts its card offers and which
        of them start hidden, and what its history traces. */
     struct Row {
-        Visual   visual;
-        Kind     kind;
-        Size     size;
-        Draw     draw;
-        unsigned parts;    /* a bit per Show, which the menu lists in Show's order */
-        unsigned hidden;
-        Feed     feed;
+        Visual      visual;
+        Kind        kind;
+        Size        size;
+        Draw        draw;
+        unsigned    parts;    /* a bit per Show, which the menu lists in Show's order */
+        unsigned    hidden;
+        Feed        feed;
+        const char* inside = nullptr;   /* the member a wrapping struct such as Path draws, as its own value */
 
         /* The parts that show, a bit per Show, by the card's choices over the defaults. */
         unsigned shown(const ShowChoices& choices) const
@@ -1375,6 +1484,7 @@ protected:
                 found_ = -1;
                 visual = visual_for(held_);
             }
+            if (const char* inside = row_of(visual).inside) found_ = kid(nodes, found_, inside);
         }
         if (path != path_ || visual != visual_ || !built_) build(path, visual);
         const std::string shows = GetAttribute<Rml::String>("shows", "");
@@ -1597,17 +1707,25 @@ private:
     void hex(const Nodes&, const ValueNode& node)
     {
         html("hex", "<div class=\"hex mono slot\"></div>");
-        std::string out;
-        const std::string& head = node.text;
-        for (size_t row = 0; row * 16 < head.size() && row < 4; row++) {
-            for (size_t i = row * 16; i < head.size() && i < row * 16 + 16; i++) {
-                char byte[4];
-                std::snprintf(byte, sizeof byte, "%02x ", (unsigned char)head[i]);
-                out += byte;
-            }
-            out += "\n";
-        }
-        put(0, out + (node.count > head.size() ? "... " : "") + format_bytes(node.count));
+        put(0, hex_rows(node.text) + (node.count > node.text.size() ? "... " : "") + format_bytes(node.count));
+    }
+
+    /* A File holding no picture: its text when it reads as text, else its first bytes,
+       under its name and size. */
+    void file(const Nodes& nodes, const ValueNode&)
+    {
+        const int name = kid(nodes, found_, "name"), d = kid(nodes, found_, "data");
+        const ValueNode* data = d >= 0 && nodes[d].kind == ValueNode::Blob ? &nodes[d] : nullptr;
+        const std::vector<uint8_t>& bytes = message();
+        std::string text;
+        const bool readable = data && (size_t)data->offset + data->count <= bytes.size() &&
+                              read_text(bytes.data() + data->offset, std::min<size_t>(data->count, FILE_TEXT), text);
+        html(readable ? "file" : "file:hex", std::string("<div class=\"file-name mono slot\"></div><div class=\"") +
+                                                 (readable ? "file" : "hex") + " mono slot\"></div>");
+        const std::string named = name >= 0 && !nodes[name].text.empty() ? nodes[name].text + "  " : std::string();
+        put(0, named + format_bytes(data ? data->count : 0));
+        if (readable)  put(1, data->count > FILE_TEXT ? text + "\n..." : text);
+        else if (data) put(1, hex_rows(data->text) + (data->count > data->text.size() ? "..." : ""));
     }
 
     /* A chip per element. JointNames shows its names, each numbered as a JointState counts its joints. */
@@ -2040,7 +2158,8 @@ private:
             ray(c, p(0, 0), p(v[i].x, v[i].y), tint(i));
             label(c, p(v[i].x, v[i].y), i);
         }
-        foot(c, c.all(), format_number((double)v.size()) + " vectors");
+        foot(c, c.all(), visual_ == Visual::Polyline2D ? route(v.size(), "Point", math::polyline2d_length(v))
+                                                       : format_number((double)v.size()) + " vectors");
     }
 
     /* A Pose2D or a Transform2D: its heading at its position joined to the origin, and the
@@ -2081,7 +2200,10 @@ private:
             else                       c.dot(p(list[i].position), tint(i), 4);
             label(c, p(list[i].position), i);
         }
-        foot(c, c.all(), counted(list.size(), node.elem_std));
+        std::vector<Double2> at;
+        for (const Pose2D& e : list) at.push_back(e.position);
+        foot(c, c.all(), visual_ == Visual::Path2D ? route(list.size(), node.elem_std, math::polyline2d_length(at))
+                                                   : counted(list.size(), node.elem_std));
     }
 
     /* One standard 2D shape on a plane that grows to hold it. */
@@ -2249,23 +2371,24 @@ private:
         foot(c, c.all(), "speed " + f3(speed) + " m/s  turn " + f3(w) + " rad/s", "next " + print("%.1f", ahead) + " s");
     }
 
-    /* A Wrench2D: the force as an arrow with its trail, the torque as a turn about the
-       origin that sweeps most of a turn at the strongest seen. */
+    /* A Wrench2D or an Accel2D: the push as an arrow with its trail, the turn about the
+       origin sweeping most of a turn at the strongest seen. */
     void wrench_2d(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
-        const int fi = kid(nodes, found_, "force");
+        const Pushes w = pushes(visual_);
+        const int fi = kid(nodes, found_, w.push);
         const Double2 f = fi >= 0 ? vec_2d(nodes, fi) : Double2{};
-        const double torque = number(nodes, found_, "torque");
+        const double turn = number(nodes, found_, w.turn);
         const double r = reach_[0].grow({ f.x, f.y }, dt_);
         const Plane p = plane(c, c.all(), r, backdrop());
-        const double strongest = reach_[1].grow({ torque }, dt_, 1.0);
-        if (std::fabs(torque) > 1e-9 && on(Show::Torque)) curl_2d(c, p, Double2{}, 0.2 * r, 5 * torque / strongest, ink.amber);
+        const double strongest = reach_[1].grow({ turn }, dt_, 1.0);
+        if (std::fabs(turn) > 1e-9 && on(w.part)) curl_2d(c, p, Double2{}, 0.2 * r, 5 * turn / strongest, ink.amber);
         if (on(Show::History)) {
             Dots dots(c, ink.trail, 2);
             for (const Double3& t : trail(node)) dots.add(p(t.x, t.y));
         }
         c.arrow(p(0, 0), p(f), ink.accent, ARROW);
-        foot(c, c.all(), "force " + f3(math::double2_length(f)) + " N  torque " + f3(torque) + " N m");
+        foot(c, c.all(), w.reading(math::double2_length(f), turn));
     }
 
     void vec3s(Canvas& c, const Nodes& nodes, const ValueNode&)
@@ -2280,7 +2403,8 @@ private:
             label(scene_, v[i], i);
         }
         show(c, reach_[0].grow({}, dt_));
-        foot(c, c.all(), format_number((double)v.size()) + " vectors");
+        foot(c, c.all(), visual_ == Visual::Polyline ? route(v.size(), "Point", math::polyline_length(v))
+                                                     : format_number((double)v.size()) + " vectors");
     }
 
     /* A chain of Poses or Transforms: consecutive ones joined in the air, a triad at each. */
@@ -2301,27 +2425,31 @@ private:
             label(scene_, p[i].position, i);
         }
         show(c, r);
-        foot(c, c.all(), format_number((double)p.size()) + (framed ? " transforms" : " poses"));
+        std::vector<Double3> at;
+        for (const Pose& e : p) at.push_back(e.position);
+        foot(c, c.all(), visual_ == Visual::Path ? route(p.size(), "Pose", math::polyline_length(at))
+                                                 : format_number((double)p.size()) + (framed ? " transforms" : " poses"));
     }
 
-    /* A force and a torque about the frame origin: the force as an arrow with its trail,
-       the torque as a turn about its axis that sweeps most of a turn at the strongest seen. */
+    /* A Wrench or an Accel: the push as an arrow with its trail, the turn about its axis
+       sweeping most of a turn at the strongest seen. */
     void wrench(Canvas& c, const Nodes& nodes, const ValueNode& node)
     {
-        const int fi = kid(nodes, found_, "force"), ti = kid(nodes, found_, "torque");
+        const Pushes w = pushes(visual_);
+        const int fi = kid(nodes, found_, w.push), ti = kid(nodes, found_, w.turn);
         const Double3 f = fi >= 0 ? vec(nodes, fi) : Double3{}, t = ti >= 0 ? vec(nodes, ti) : Double3{};
         const double r = reach_[0].grow({ math::double3_length(f) }, dt_);
-        const double torque = math::double3_length(t), strongest = reach_[1].grow({ torque }, dt_, 1.0);
-        if (torque > 1e-9 && on(Show::Torque)) {
-            const Double3 axis = t * (1 / torque);
+        const double turn = math::double3_length(t), strongest = reach_[1].grow({ turn }, dt_, 1.0);
+        if (turn > 1e-9 && on(w.part)) {
+            const Double3 axis = t * (1 / turn);
             scene_.dashed(axis * -r, axis * r, faded(ink.amber, 0.6f), THIN);
-            curl(scene_, axis, 0.2 * r, 5 * torque / strongest, ink.amber);
+            curl(scene_, axis, 0.2 * r, 5 * turn / strongest, ink.amber);
         }
         if (on(Show::History)) scene_.trail(trail(node));
         scene_.body(f);
         scene_.arrow(Double3{}, f, ink.accent, ARROW);
         show(c, r);
-        foot(c, c.all(), "force " + f3(math::double3_length(f)) + " N  torque " + f3(torque) + " N m");
+        foot(c, c.all(), w.reading(math::double3_length(f), turn));
     }
 
     /* One standard shape in a scene that grows to hold it, with its drop line. */
@@ -2334,7 +2462,9 @@ private:
         show(c, reach_[0].grow({}, dt_));
         const auto text = describe(one);
         const auto* box = std::get_if<types::OrientedBox>(&one);
-        foot(c, c.all(), { { text.first, ink.dim }, { box ? euler(box->pose.orientation) : "", ink.dim } }, text.second);
+        const auto* prism = std::get_if<types::Prism>(&one);
+        const Pose* pose = box ? &box->pose : prism ? &prism->pose : nullptr;
+        foot(c, c.all(), { { text.first, ink.dim }, { pose ? euler(pose->orientation) : "", ink.dim } }, text.second);
     }
 
     /* An array of one kind of shape in one scene, each in its own colour. */
@@ -2510,18 +2640,35 @@ private:
 
     /* ---------------------------------------------------------------- pictures */
 
-    /* A standard Image, decoded once per message into a texture and fitted inside the
-       card, keeping its shape. */
+    /* A standard Image or a File holding one, fitted inside the card over its format or name
+       and size. A one channel frame is drawn again while its levels ease to its span. */
     void picture(Canvas& c, const Nodes& nodes, const ValueNode&)
     {
         const Capture::WatchView* watch = source->view(topic_);
-        if (watch && watch->seq != frame_seq_) {
-            frame_seq_ = watch->seq;
+        const bool fresh = watch && watch->seq != frame_seq_;
+        if (fresh) {
+            frame_seq_   = watch->seq;
+            const ImageFrame frame = frame_of(nodes, found_, watch->message);
+            one_channel_ = image_levels(frame, span_);
+            const bool floats = frame.format == types::ImageFormat::Monof32;
+            span_text_   = one_channel_ ? axis_label(span_.lo, floats) + " to " + axis_label(span_.hi, floats) : std::string();
+            const int format = kid(nodes, found_, "format"), name = kid(nodes, found_, "name");
+            frame_name_  = format >= 0 ? nodes[format].text : name >= 0 ? nodes[name].text : std::string();
+        }
+        if (watch && (fresh || (one_channel_ && (lo_ != span_.lo || hi_ != span_.hi)))) {
+            if (one_channel_) {
+                ease_range(span_.lo, span_.hi);
+                const double near = (span_.hi - span_.lo) * 1e-3;
+                if (std::fabs(lo_ - span_.lo) < near && std::fabs(hi_ - span_.hi) < near) { lo_ = span_.lo; hi_ = span_.hi; }
+            }
+            const Levels levels{ lo_, hi_ };
             problem_.clear();
-            Image image = image_of(nodes, found_, watch->message, &problem_);
+            Image image = image_of(nodes, found_, watch->message, &problem_, one_channel_ ? &levels : nullptr);
             show(image);
         }
         fit(c, c.h() - c.dp(BOT), problem_.empty() ? "waiting for a frame" : problem_);
+        if (texture_)
+            foot(c, c.all(), frame_name_ + "  " + std::to_string(frame_size_.x) + " x " + std::to_string(frame_size_.y), span_text_);
     }
 
     /* A VideoFrame stream: every frame since the last draw goes to the decoder, and its
@@ -2713,7 +2860,8 @@ private:
     float         zoom_ = 1;
     Rml::Vector2f centre_{ 0, 0 }, view_frame_{ 0, 0 };
 
-    /* a plot's or a bar chart's range: the extremes seen and the eased bounds drawn */
+    /* a plot's or a bar chart's range: the extremes seen and the eased bounds drawn, which
+       are a one channel picture's levels too */
     bool   seen_ = false, eased_ = false;
     double lo_seen_ = 0, hi_seen_ = 0, lo_ = 0, hi_ = 0;
 
@@ -2732,6 +2880,10 @@ private:
     Rml::Vector2i        frame_size_;
     uint64_t             frame_seq_ = ~0ull;
     std::string          problem_;
+    /* the frame's format or file name, and a one channel frame's span */
+    std::string          frame_name_, span_text_;
+    bool                 one_channel_ = false;
+    Levels               span_;
 
     /* a video's decoder, for the topic it was made for, and the newest picture taken */
     std::unique_ptr<VideoDecoder> decoder_;
@@ -2787,20 +2939,34 @@ const VizElement::Row& VizElement::row_of(Visual v)
           { TRAIL_SECONDS, "force", { "x", "y", "z" } } },
         { V::Wrench2D, K::Canvas,   { 1.3, 1 },        &E::wrench_2d,  bits({ S::History, S::Torque }) | PLANE_PARTS, 0,
           { TRAIL_SECONDS, "force", { "x", "y" } } },
+        { V::Accel,    K::Scene,    { 1, 1.5 },        &E::wrench,     bits({ S::History, S::Turn }) | SCENE_PARTS, 0,
+          { TRAIL_SECONDS, "linear", { "x", "y", "z" } } },
+        { V::Accel2D,  K::Canvas,   { 1.3, 1 },        &E::wrench_2d,  bits({ S::History, S::Turn }) | PLANE_PARTS, 0,
+          { TRAIL_SECONDS, "linear", { "x", "y" } } },
         { V::Solid,    K::Scene,    { 1, 1.5 },        &E::solid_one,  SCENE_PARTS },
         { V::Figure,   K::Canvas,   { 1.3, 1 },        &E::figure_one, PLANE_PARTS },
         { V::Geo,      K::Canvas,   { 1.5, 1 },        &E::geo,        bits({ S::History, S::Grid, S::Readings }), 0,
           { TRAIL_SECONDS, nullptr, { "lat", "lon" } } },
         { V::Color,    K::Canvas,   { 1.5, 0.5 },      &E::colour,     bits({ S::Readings }) },
         { V::Joints,   K::Canvas,   &E::joints_tile,   &E::joints,     bits({ S::Labels, S::Grid, S::Readings }) },
-        { V::Image,    K::Picture,  &E::picture_tile,  &E::picture },
+        { V::Image,    K::Picture,  &E::picture_tile,  &E::picture,    bits({ S::Readings }) },
         { V::Video,    K::Picture,  &E::picture_tile,  &E::video,      bits({ S::Readings }), 0,
           { 0, nullptr, {}, true } },
         { V::Stream,   K::Html,     { 2.5, 0.5 },      &E::stream },
+        { V::File,     K::Html,     { 2, 0.5 },        &E::file },
         { V::Vec2s,    K::Canvas,   { 1.3, 1 },        &E::vec2s,      bits({ S::Arrows, S::Line, S::Labels, S::Colours }) | PLANE_PARTS, bits({ S::Line }) },
         { V::Vec3s,    K::Scene,    { 1, 1.5 },        &E::vec3s,      bits({ S::Arrows, S::Line, S::Labels, S::Colours }) | SCENE_PARTS, bits({ S::Line }) },
         { V::Poses,    K::Scene,    { 1, 1.5 },        &E::poses,      bits({ S::Orientation, S::Line, S::Labels }) | SCENE_PARTS },
         { V::Poses2D,  K::Canvas,   { 1.3, 1 },        &E::poses_2d,   bits({ S::Orientation, S::Line, S::Labels, S::Colours }) | PLANE_PARTS },
+        /* a route draws its member as the array it is, with every point alike and no drops */
+        { V::Path,     K::Scene,    { 1, 1.5 },        &E::poses,      bits({ S::Orientation, S::Line, S::Labels }) | SCENE_PARTS,
+          bits({ S::Labels, S::Drops }), {}, "poses" },
+        { V::Path2D,   K::Canvas,   { 1.3, 1 },        &E::poses_2d,   bits({ S::Orientation, S::Line, S::Labels, S::Colours }) | PLANE_PARTS,
+          bits({ S::Labels, S::Colours }), {}, "poses" },
+        { V::Polyline, K::Scene,    { 1, 1.5 },        &E::vec3s,      bits({ S::Arrows, S::Line, S::Labels, S::Colours }) | SCENE_PARTS,
+          bits({ S::Arrows, S::Labels, S::Colours, S::Drops }), {}, "points" },
+        { V::Polyline2D, K::Canvas, { 1.3, 1 },        &E::vec2s,      bits({ S::Arrows, S::Line, S::Labels, S::Colours }) | PLANE_PARTS,
+          bits({ S::Arrows, S::Labels, S::Colours }), {}, "points" },
         { V::Solids,   K::Scene,    { 1, 1.5 },        &E::solids,     bits({ S::Labels, S::Colours }) | SCENE_PARTS },
         { V::Figures,  K::Canvas,   { 1.3, 1 },        &E::figures,    bits({ S::Labels, S::Colours }) | PLANE_PARTS },
         { V::Geos,     K::Canvas,   { 1.5, 1 },        &E::geos,       bits({ S::Line, S::Labels, S::Colours, S::Grid, S::Readings }), bits({ S::Line }) },

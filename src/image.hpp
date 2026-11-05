@@ -26,10 +26,30 @@ Image image_decode(const std::string& file);
 /* RmlUi wants premultiplied alpha for generated textures, SDL wants straight. */
 void image_premultiply(Image& image);
 
-/* One frame of the standard Image type to straight alpha RGBA. A stride of 0 means packed
-   rows. Invalid when the format is unknown or the data is too short for the size. */
-Image image_from_frame(uint32_t width, uint32_t height, uint32_t stride, rant::types::ImageFormat format,
-                       const uint8_t* data, size_t size);
+/* One frame of the standard Image type as it lies in a message. A stride of 0 means packed
+   rows. A compressed frame carries its own size. */
+struct ImageFrame {
+    uint32_t                  width = 0, height = 0, stride = 0;
+    rant::types::ImageFormat  format = rant::types::ImageFormat::Mono8;
+    const uint8_t*            data = nullptr;
+    size_t                    size = 0;
+};
+
+/* The values a one channel frame is drawn between, black to white. */
+struct Levels {
+    double lo = 0, hi = 1;
+};
+
+/* The format of a PNG or JPEG file by its first bytes. False for any other file. */
+bool image_file_format(const uint8_t* data, size_t size, rant::types::ImageFormat& format);
+
+/* The span of a Mono16 or Monof32 frame's values. Zero is skipped, since a depth camera
+   writes it where it has no reading. False for any other format. */
+bool image_levels(const ImageFrame& frame, Levels& out);
+
+/* A frame to straight alpha RGBA, a one channel frame drawn between levels, or its own span
+   when there are none. Invalid when the format is unknown or the data is too short. */
+Image image_from_frame(const ImageFrame& frame, const Levels* levels = nullptr);
 
 /* A decoded video picture: a luma plane and two chroma planes, or luma alone for gray.
    Chroma is subsampled by the shifts. Above 8 bits a sample is two bytes, little endian.

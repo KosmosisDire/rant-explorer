@@ -705,6 +705,10 @@ viz .big       { font-size: 28dp; color: var(--text); }
 viz .big.text  { font-size: 18dp; white-space: pre-wrap; }
 viz .hex       { font-size: 13dp; line-height: 1.5; white-space: pre; }
 
+/* A file's name and size over its text or first bytes. */
+viz .file-name { font-size: 13dp; color: var(--faint); margin-bottom: 6dp; }
+viz .file      { font-size: 13dp; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+
 viz .chips { display: flex; flex-wrap: wrap; gap: 4dp; }
 
 /* A stream handed over by URL: the URL under its name, then its hints as chips. */

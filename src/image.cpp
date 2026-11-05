@@ -81,17 +81,51 @@ void yuv_to_rgb(const Yuv& m, int y, int u, int v, uint8_t* out)
 
 } /* namespace */
 
-Image image_from_frame(uint32_t width, uint32_t height, uint32_t stride, rant::types::ImageFormat format,
-                       const uint8_t* data, size_t size)
+bool image_file_format(const uint8_t* data, size_t size, rant::types::ImageFormat& format)
+{
+    static const uint8_t PNG[] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n' }, JPEG[] = { 0xff, 0xd8, 0xff };
+    if (size >= sizeof PNG && std::memcmp(data, PNG, sizeof PNG) == 0) format = rant::types::ImageFormat::Png;
+    else if (size >= sizeof JPEG && std::memcmp(data, JPEG, sizeof JPEG) == 0) format = rant::types::ImageFormat::Jpeg;
+    else return false;
+    return true;
+}
+
+bool image_levels(const ImageFrame& f, Levels& out)
+{
+    using rant::types::ImageFormat;
+    const size_t bytes = f.format == ImageFormat::Mono16 ? 2 : f.format == ImageFormat::Monof32 ? 4 : 0;
+    const size_t row = f.stride ? f.stride : f.width * bytes;
+    if (!bytes || !f.data || row < f.width * bytes) return false;
+    if (f.height && (size_t)(f.height - 1) * row + f.width * bytes > f.size) return false;
+    double lo = INFINITY, hi = -INFINITY;
+    for (uint32_t y = 0; y < f.height; y++)
+        for (uint32_t x = 0; x < f.width; x++) {
+            const uint8_t* at = f.data + y * row + x * bytes;
+            double v;
+            if (bytes == 2) {
+                v = at[0] | at[1] << 8;
+            } else {
+                float g;
+                std::memcpy(&g, at, 4);
+                v = g;
+            }
+            if (v != 0 && std::isfinite(v)) { lo = std::min(lo, v); hi = std::max(hi, v); }
+        }
+    if (!std::isfinite(lo)) lo = 0;
+    if (!(hi > lo)) hi = lo + 1;   /* a flat frame keeps its level */
+    out = Levels{ lo, hi };
+    return true;
+}
+
+Image image_from_frame(const ImageFrame& f, const Levels* levels)
 {
     using rant::types::ImageFormat;
     Image image;
-    if (!data) return image;
+    if (!f.data) return image;
 
-    /* Compressed frames carry their own size. */
-    if (format == ImageFormat::Jpeg || format == ImageFormat::Png) {
+    if (f.format == ImageFormat::Jpeg || f.format == ImageFormat::Png) {
         int channels = 0;
-        stbi_uc* pixels = stbi_load_from_memory(data, (int)size, &image.width, &image.height, &channels, 4);
+        stbi_uc* pixels = stbi_load_from_memory(f.data, (int)f.size, &image.width, &image.height, &channels, 4);
         if (!pixels) {
             image.width = image.height = 0;
             return image;
@@ -101,35 +135,26 @@ Image image_from_frame(uint32_t width, uint32_t height, uint32_t stride, rant::t
         return image;
     }
 
-    if (width > 16384 || height > 16384) return image;
+    if (f.width > 16384 || f.height > 16384) return image;
     rant::math::ImageView view;
-    view.width  = width;
-    view.height = height;
-    view.stride = stride;
-    view.format = format;
-    view.data   = data;
-    view.size   = size;
+    view.width  = f.width;
+    view.height = f.height;
+    view.stride = f.stride;
+    view.format = f.format;
+    view.data   = f.data;
+    view.size   = f.size;
     try {
         rant::math::image_check(view);
         rant::types::Image out;
-        if (format == ImageFormat::Mono16) {
-            out = rant::math::image_colorize(view, 0, 65535, rant::math::Colormap::Gray, ImageFormat::Rgba8);
-        } else if (format == ImageFormat::Monof32) {
-            /* no fixed range, so it spans what this frame holds */
-            const size_t row = stride ? stride : (size_t)width * 4;
-            float lo = INFINITY, hi = -INFINITY;
-            for (uint32_t y = 0; y < height; y++)
-                for (uint32_t x = 0; x < width; x++) {
-                    float f;
-                    std::memcpy(&f, data + y * row + x * 4, 4);
-                    if (std::isfinite(f)) { lo = std::min(lo, f); hi = std::max(hi, f); }
-                }
-            if (!std::isfinite(lo)) lo = 0;
-            if (!(hi > lo)) hi = lo + 1;   /* a flat frame keeps its level */
-            out = rant::math::image_colorize(view, lo, hi, rant::math::Colormap::Gray, ImageFormat::Rgba8);
-        } else {
-            out = rant::math::image_convert(view, ImageFormat::Rgba8);
+        Levels own;
+        if (!levels) {
+            image_levels(f, own);
+            levels = &own;
         }
+        if (f.format == ImageFormat::Mono16 || f.format == ImageFormat::Monof32)
+            out = rant::math::image_colorize(view, levels->lo, levels->hi, rant::math::Colormap::Gray, ImageFormat::Rgba8);
+        else
+            out = rant::math::image_convert(view, ImageFormat::Rgba8);
         image.width  = (int)out.width;
         image.height = (int)out.height;
         image.rgba   = std::move(out.data);

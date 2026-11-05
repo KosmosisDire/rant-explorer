@@ -256,7 +256,11 @@ public:
         if (!want) return true;   /* every frame stands alone */
         std::vector<uint8_t> buf;
         const uint8_t* d = with_tables(data, size, buf);
-        out = image_from_frame(0, 0, 0, rant::types::ImageFormat::Jpeg, d, size);
+        ImageFrame frame;
+        frame.format = rant::types::ImageFormat::Jpeg;
+        frame.data   = d;
+        frame.size   = size;
+        out = image_from_frame(frame);
         if (out.valid()) return true;
         error = "MJPEG frame not readable";
         return false;

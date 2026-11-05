@@ -77,9 +77,9 @@ struct ValueView {
    name, everything else by shape. Kv is the fallback, a plain list of the fields. */
 enum class Visual {
     None, Plot, State, Text, Time, Duration, Uuid, Hex, Chips, Bars, Cells, Table, Matrix, Multi, Calls,
-    Vec2, Vec3, Vec4, Quat, Pose, Pose2D, Twist, Twist2D, Wrench, Wrench2D, Solid, Figure, Geo, Color, Joints,
-    Image, Video, Stream,
-    Vec2s, Vec3s, Poses, Poses2D, Solids, Figures, Geos, Colors, Kv,
+    Vec2, Vec3, Vec4, Quat, Pose, Pose2D, Twist, Twist2D, Wrench, Wrench2D, Accel, Accel2D, Solid, Figure, Geo,
+    Color, Joints, Image, Video, Stream, File,
+    Vec2s, Vec3s, Poses, Poses2D, Path, Path2D, Polyline, Polyline2D, Solids, Figures, Geos, Colors, Kv,
 };
 Visual visual_for(const Capture::ValueNode& node);
 
@@ -150,10 +150,14 @@ std::vector<FieldPath> field_paths(const std::vector<Capture::ValueNode>& nodes)
 /* The path names something in the value, or an array before its first [*] is empty for now. */
 bool path_fits(const std::vector<Capture::ValueNode>& nodes, const Capture::WatchView& view, const std::string& path);
 
-/* The pixels of the standard Image at index, from the message its nodes were decoded
-   from. Invalid when they cannot be read, with the reason in problem. */
+/* The frame of the standard Image at index, or of a File holding a PNG or JPEG, as it lies in
+   the message its nodes were decoded from. Its data is null when there is none. */
+ImageFrame frame_of(const std::vector<Capture::ValueNode>& nodes, int index, const std::vector<uint8_t>& message);
+
+/* That frame's pixels, a one channel frame between levels or its own span. Invalid when
+   they cannot be read, with the reason in problem. */
 Image image_of(const std::vector<Capture::ValueNode>& nodes, int index, const std::vector<uint8_t>& message,
-               std::string* problem = nullptr);
+               std::string* problem = nullptr, const Levels* levels = nullptr);
 
 /* What copying a field gives: a standard type in the form other programs read (ISO 8601
    UTC, seconds, #rrggbb, "lat, lon"), else the raw data. */

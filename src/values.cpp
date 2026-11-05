@@ -26,17 +26,20 @@ Visual struct_visual(const std::string& name)
         { "Float4", Visual::Vec4 }, { "Double4", Visual::Vec4 }, { "Int4", Visual::Vec4 },
         { "Quaternion", Visual::Quat }, { "Pose", Visual::Pose }, { "Transform", Visual::Pose },
         { "Pose2D", Visual::Pose2D }, { "Transform2D", Visual::Pose2D },
-        { "Twist", Visual::Twist }, { "Wrench", Visual::Wrench },
-        { "Twist2D", Visual::Twist2D }, { "Wrench2D", Visual::Wrench2D },
+        { "Twist", Visual::Twist }, { "Wrench", Visual::Wrench }, { "Accel", Visual::Accel },
+        { "Twist2D", Visual::Twist2D }, { "Wrench2D", Visual::Wrench2D }, { "Accel2D", Visual::Accel2D },
         { "AlignedBox", Visual::Solid }, { "OrientedBox", Visual::Solid }, { "Plane", Visual::Solid },
-        { "Segment", Visual::Solid }, { "Sphere", Visual::Solid }, { "Capsule", Visual::Solid },
-        { "Cylinder", Visual::Solid }, { "Cone", Visual::Solid }, { "Polygon", Visual::Solid },
+        { "Segment", Visual::Solid }, { "Ray", Visual::Solid }, { "Sphere", Visual::Solid },
+        { "Capsule", Visual::Solid }, { "Cylinder", Visual::Solid }, { "Cone", Visual::Solid },
+        { "Polygon", Visual::Solid }, { "Prism", Visual::Solid },
         { "AlignedBox2D", Visual::Figure }, { "OrientedBox2D", Visual::Figure },
         { "Circle", Visual::Figure }, { "Polygon2D", Visual::Figure }, { "Plane2D", Visual::Figure },
-        { "Segment2D", Visual::Figure }, { "Capsule2D", Visual::Figure },
+        { "Segment2D", Visual::Figure }, { "Ray2D", Visual::Figure }, { "Capsule2D", Visual::Figure },
+        { "Path", Visual::Path }, { "Path2D", Visual::Path2D },
+        { "Polyline", Visual::Polyline }, { "Polyline2D", Visual::Polyline2D },
         { "GeoPoint", Visual::Geo }, { "Color", Visual::Color },
         { "JointState", Visual::Joints }, { "JointNames", Visual::Chips }, { "Image", Visual::Image },
-        { "VideoFrame", Visual::Video }, { "ExternalVideoStream", Visual::Stream },
+        { "VideoFrame", Visual::Video }, { "ExternalVideoStream", Visual::Stream }, { "File", Visual::File },
     };
     for (const auto& entry : table)
         if (name == entry.name) return entry.visual;
@@ -60,6 +63,23 @@ Visual array_of_struct(const std::string& name)
     if (struct_visual(name) == Visual::Solid) return Visual::Solids;
     if (struct_visual(name) == Visual::Figure) return Visual::Figures;
     return struct_visual(name) == Visual::Kv ? Visual::Table : Visual::Multi;
+}
+
+/* The member of the struct at index with that name, null when it has none. */
+const ValueNode* member(const std::vector<ValueNode>& nodes, int index, const char* name)
+{
+    for (const int k : children_of(nodes, index))
+        if (nodes[k].name == name) return &nodes[k];
+    return nullptr;
+}
+
+/* A File holding a PNG or JPEG shows as a picture, which the head of its data tells. */
+bool holds_picture(const std::vector<ValueNode>& nodes, int index)
+{
+    const ValueNode* data = member(nodes, index, "data");
+    rant::types::ImageFormat format;
+    return data && data->kind == ValueNode::Blob &&
+           image_file_format((const uint8_t*)data->text.data(), data->text.size(), format);
 }
 
 bool is_branch(const ValueNode& node)
@@ -112,8 +132,9 @@ Visual visual_for(const ValueNode& node)
 
 Visual visual_at(const Capture::WatchView& watch, const std::vector<ValueNode>& nodes, int index)
 {
-    if (index == -1) return Capture::is_call(watch.kind) ? Visual::Calls : struct_visual(watch.root_std);
-    return index >= 0 ? visual_for(nodes[index]) : Visual::None;
+    if (index == -1 && Capture::is_call(watch.kind)) return Visual::Calls;
+    const Visual visual = index == -1 ? struct_visual(watch.root_std) : index >= 0 ? visual_for(nodes[index]) : Visual::None;
+    return visual == Visual::File && holds_picture(nodes, index) ? Visual::Image : visual;
 }
 
 /* A plain struct only lists its fields, which is no visual of its own. */
@@ -592,27 +613,33 @@ bool path_fits(const std::vector<ValueNode>& nodes, const Capture::WatchView& vi
     return false;
 }
 
-Image image_of(const std::vector<ValueNode>& nodes, int index, const std::vector<uint8_t>& message,
-               std::string* problem)
+ImageFrame frame_of(const std::vector<ValueNode>& nodes, int index, const std::vector<uint8_t>& message)
 {
-    uint32_t width = 0, height = 0, stride = 0;
-    const ValueNode* format = nullptr;
-    const ValueNode* data = nullptr;
-    for (const int k : children_of(nodes, index)) {
-        const ValueNode& e = nodes[k];
-        if (e.name == "width")  width  = (uint32_t)e.integer;
-        if (e.name == "height") height = (uint32_t)e.integer;
-        if (e.name == "stride") stride = (uint32_t)e.integer;
-        if (e.name == "format") format = &e;
-        if (e.name == "data" && e.kind == ValueNode::Blob) data = &e;
-    }
-    const bool held = format && data && (size_t)data->offset + data->count <= message.size();
-    Image image = held ? image_from_frame(width, height, stride, (rant::types::ImageFormat)format->integer,
-                                          message.data() + data->offset, data->count)
-                       : Image();
-    if (!image.valid() && problem)
-        *problem = !data || !data->count ? "no pixels"
-                 : (format && !format->text.empty() ? format->text : std::string("unknown")) + " frame not readable";
+    ImageFrame frame;
+    const ValueNode *width = member(nodes, index, "width"), *height = member(nodes, index, "height");
+    const ValueNode *stride = member(nodes, index, "stride"), *format = member(nodes, index, "format");
+    const ValueNode* data = member(nodes, index, "data");
+    if (!data || data->kind != ValueNode::Blob || (size_t)data->offset + data->count > message.size()) return frame;
+    const uint8_t* bytes = message.data() + data->offset;
+    if (format) frame.format = (rant::types::ImageFormat)format->integer;
+    else if (!image_file_format(bytes, data->count, frame.format)) return frame;
+    frame.width  = width ? (uint32_t)width->integer : 0;
+    frame.height = height ? (uint32_t)height->integer : 0;
+    frame.stride = stride ? (uint32_t)stride->integer : 0;
+    frame.data   = bytes;
+    frame.size   = data->count;
+    return frame;
+}
+
+Image image_of(const std::vector<ValueNode>& nodes, int index, const std::vector<uint8_t>& message,
+               std::string* problem, const Levels* levels)
+{
+    Image image = image_from_frame(frame_of(nodes, index, message), levels);
+    if (image.valid() || !problem) return image;
+    const ValueNode *format = member(nodes, index, "format"), *data = member(nodes, index, "data");
+    *problem = !data || !data->count ? "no pixels"
+             : !format ? std::string("file not readable as a picture")
+             : (!format->text.empty() ? format->text : std::string("unknown")) + " frame not readable";
     return image;
 }
 

@@ -1054,7 +1054,7 @@ void curl(Scene& w, const Double3& axis, double rho, double sweep, Rml::Colourb 
 }
 
 /* Puts a scene on the canvas: the floor grid, the axes, the drop lines and the trails go to
-   the GPU as guides under the rest, then the items depth tested, and the labels on top as
+   the GPU as guides that hide nothing, then the items depth tested, and the labels on top as
    text. */
 void draw_scene(Canvas& c, const View& s, const Scene& w, Batch& b)
 {

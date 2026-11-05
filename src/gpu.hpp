@@ -29,8 +29,8 @@ struct Batch {
     std::vector<Stroke>   strokes;
     std::vector<Corner>   corners;
     std::vector<uint32_t> triangles;   /* three corners each, counterclockwise seen from outside */
-    /* The strokes before it are guides, such as the floor grid: drawn first, they hide nothing,
-       so a line lying on one or under it still shows whole. */
+    /* The strokes before it are guides, such as the floor grid: they show where nothing is in
+       front and hide nothing, so a line lying on one still shows whole. */
     size_t under = 0;
 
     void clear()

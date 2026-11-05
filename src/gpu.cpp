@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <vector>
 
 namespace {
 
@@ -53,9 +54,11 @@ void main()
 
 /* How much of each pixel the stroke covers, from its distance to the shape in pixels. A dash
    is 3 dp on and 3 off. An arrow's shaft stops inside its head, whose sides leave the tip at
-   0.4 radians. */
+   0.4 radians. Part 1 draws only the pixels a stroke covers whole, part 2 only its soft edge,
+   and part 0 both. */
 const char* const STROKE_FRAGMENT = R"(
 uniform float dp;
+uniform float part;
 in vec4 tint;
 in vec2 at;
 flat in vec4 form;
@@ -76,9 +79,8 @@ void main()
         if (mark > 1.5)
             cover = max(cover, min((len - at.x) * 0.3894 - abs(at.y) * 0.9211, at.x - len + 0.9211 * head) + 0.5);
     }
-    cover = clamp(cover, 0.0, 1.0);
-    if (cover <= 0.0) discard;
-    frag = tint * cover;
+    if (cover <= 0.0 || (part > 0.5 && part < 1.5 && cover < 1.0) || (part > 1.5 && cover >= 1.0)) discard;
+    frag = tint * min(cover, 1.0);
 }
 )";
 
@@ -116,7 +118,7 @@ void main()
 struct Gpu {
     bool   tried = false, ready = false;
     GLuint strokes = 0, faces = 0;
-    GLint  stroke_to_clip = -1, stroke_window = -1, stroke_dp = -1;
+    GLint  stroke_to_clip = -1, stroke_window = -1, stroke_dp = -1, stroke_part = -1;
     GLint  face_to_clip = -1, face_light = -1;
     GLuint stroke_array = 0, stroke_buffer = 0, face_array = 0, face_buffer = 0, face_indices = 0;
 };
@@ -193,6 +195,7 @@ Gpu& gpu()
     g.stroke_to_clip = glGetUniformLocation(g.strokes, "to_clip");
     g.stroke_window  = glGetUniformLocation(g.strokes, "window");
     g.stroke_dp      = glGetUniformLocation(g.strokes, "dp");
+    g.stroke_part    = glGetUniformLocation(g.strokes, "part");
     g.face_to_clip   = glGetUniformLocation(g.faces, "to_clip");
     g.face_light     = glGetUniformLocation(g.faces, "light");
 
@@ -246,6 +249,43 @@ void draw_batch(const Batch& batch, const Rml::Matrix4f& to_clip, Rml::Vector3f 
     glDepthMask(GL_TRUE);
     glClear(GL_DEPTH_BUFFER_BIT);
 
+    /* the opaque triangles first, then the faint ones */
+    std::vector<uint32_t> order;
+    order.reserve(batch.triangles.size());
+    size_t opaque = 0;
+    for (int faint = 0; faint < 2; faint++) {
+        for (size_t t = 0; t + 2 < batch.triangles.size(); t += 3) {
+            const uint32_t* c = &batch.triangles[t];
+            const bool whole = batch.corners[c[0]].colour.alpha == 255 && batch.corners[c[1]].colour.alpha == 255 &&
+                               batch.corners[c[2]].colour.alpha == 255;
+            if (whole != (faint == 1)) order.insert(order.end(), c, c + 3);
+        }
+        if (!faint) opaque = order.size();
+    }
+    auto faces = [&](size_t from, size_t to) {
+        glDrawElements(GL_TRIANGLES, (GLsizei)(to - from), GL_UNSIGNED_INT, (const void*)(from * sizeof(uint32_t)));
+    };
+    if (!order.empty()) {
+        glUseProgram(g.faces);
+        glUniformMatrix4fv(g.face_to_clip, 1, GL_FALSE, to_clip.data());
+        glUniform3f(g.face_light, light.x, light.y, light.z);
+        glBindVertexArray(g.face_array);
+        glBindBuffer(GL_ARRAY_BUFFER, g.face_buffer);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(batch.corners.size() * sizeof(Batch::Corner)), batch.corners.data(), GL_STREAM_DRAW);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(order.size() * sizeof(uint32_t)), order.data(), GL_STREAM_DRAW);
+    }
+    /* Faces are set back a little so a line on one stays in front, guides a little more so a
+       face on the floor hides the grid under it. */
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    if (opaque) {
+        glPolygonOffset(1, 1);
+        faces(0, opaque);
+    }
+
+    /* Each stroke's whole pixels hide what lies behind them. The guides then show only where
+       nothing is in front, hiding nothing. The soft edges go last, each pixel taking the
+       nearest once, so a near edge never cuts a far stroke and two strokes on one line blend
+       once. */
     if (!batch.strokes.empty()) {
         glUseProgram(g.strokes);
         glUniformMatrix4fv(g.stroke_to_clip, 1, GL_FALSE, to_clip.data());
@@ -254,42 +294,45 @@ void draw_batch(const Batch& batch, const Rml::Matrix4f& to_clip, Rml::Vector3f 
         glBindVertexArray(g.stroke_array);
         glBindBuffer(GL_ARRAY_BUFFER, g.stroke_buffer);
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(batch.strokes.size() * sizeof(Batch::Stroke)), batch.strokes.data(), GL_STREAM_DRAW);
-        const size_t under = std::min(batch.under, batch.strokes.size());
+        const size_t under = std::min(batch.under, batch.strokes.size()), rest = batch.strokes.size() - under;
+        if (rest) {
+            point_strokes(under);
+            glUniform1f(g.stroke_part, 1);
+            glPolygonOffset(0, 0);
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, (GLsizei)rest);
+        }
         if (under) {
             point_strokes(0);
+            glUniform1f(g.stroke_part, 0);
+            glPolygonOffset(2, 2);
             glDepthMask(GL_FALSE);
             glDrawArraysInstanced(GL_TRIANGLES, 0, 6, (GLsizei)under);
             glDepthMask(GL_TRUE);
         }
-        if (under < batch.strokes.size()) {
+        if (rest) {
             point_strokes(under);
-            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, (GLsizei)(batch.strokes.size() - under));
+            glUniform1f(g.stroke_part, 2);
+            glPolygonOffset(0, 0);
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, (GLsizei)rest);
         }
     }
 
-    /* Faces go after the strokes, set back a little so a line on a face stays in front. A pass
-       of depth alone first keeps the nearest face of each pixel, so a solid tints what is
-       behind it once and the strokes behind show through it. */
-    if (!batch.triangles.empty()) {
+    /* Faint faces go last. A pass of depth alone first keeps the nearest face of each pixel, so
+       a solid tints what is behind it once and the strokes behind show through it. */
+    if (opaque < order.size()) {
         glUseProgram(g.faces);
-        glUniformMatrix4fv(g.face_to_clip, 1, GL_FALSE, to_clip.data());
-        glUniform3f(g.face_light, light.x, light.y, light.z);
         glBindVertexArray(g.face_array);
-        glBindBuffer(GL_ARRAY_BUFFER, g.face_buffer);
-        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(batch.corners.size() * sizeof(Batch::Corner)), batch.corners.data(), GL_STREAM_DRAW);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(batch.triangles.size() * sizeof(uint32_t)), batch.triangles.data(), GL_STREAM_DRAW);
-        glEnable(GL_POLYGON_OFFSET_FILL);
         glPolygonOffset(1, 1);
         glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-        glDrawElements(GL_TRIANGLES, (GLsizei)batch.triangles.size(), GL_UNSIGNED_INT, nullptr);
+        faces(opaque, order.size());
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         glDepthMask(GL_FALSE);
         glDepthFunc(GL_LEQUAL);
-        glDrawElements(GL_TRIANGLES, (GLsizei)batch.triangles.size(), GL_UNSIGNED_INT, nullptr);
+        faces(opaque, order.size());
         glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
-        glDisable(GL_POLYGON_OFFSET_FILL);
     }
+    glDisable(GL_POLYGON_OFFSET_FILL);
 
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);

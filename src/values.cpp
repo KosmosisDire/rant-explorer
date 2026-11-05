@@ -112,7 +112,7 @@ Visual visual_for(const ValueNode& node)
 
 Visual visual_at(const Capture::WatchView& watch, const std::vector<ValueNode>& nodes, int index)
 {
-    if (index == -1) return struct_visual(watch.root_std);
+    if (index == -1) return Capture::is_call(watch.kind) ? Visual::Calls : struct_visual(watch.root_std);
     return index >= 0 ? visual_for(nodes[index]) : Visual::None;
 }
 

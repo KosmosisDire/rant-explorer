@@ -20,6 +20,7 @@ input {
 table  { display: table; }
 tr     { display: table-row; }
 td, th { display: table-cell; }
+col    { display: table-column; }
 
 body {
 	/* Three grounds, darkest to lightest: the detail pane, a sidebar's rows, and every bar

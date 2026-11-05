@@ -218,6 +218,23 @@ std::string brief(const Nodes& nodes, int index)
     return out;
 }
 
+/* A whole message in one line: a struct's fields each named, a bare root as its value. */
+std::string brief_message(const Nodes& nodes)
+{
+    const std::vector<int> top = children_of(nodes, -1);
+    if (top.empty()) return DASH;
+    if (top.size() == 1 && nodes[top[0]].path.empty()) return brief(nodes, top[0]);
+    std::string out;
+    for (const int k : top) {
+        if (out.size() > BRIEF) break;
+        if (!out.empty()) out += ", ";
+        out += nodes[k].name + ": ";
+        brief_into(nodes, k, out);
+    }
+    if (out.size() > BRIEF) out = out.substr(0, BRIEF) + "...";
+    return out;
+}
+
 int kid(const Nodes& nodes, int index, const char* name)
 {
     for (const int k : children_of(nodes, index))
@@ -1181,7 +1198,7 @@ bool is_html(Visual v)
     switch (v) {
     case Visual::None: case Visual::Text: case Visual::Time: case Visual::Duration: case Visual::Uuid:
     case Visual::Hex: case Visual::Chips: case Visual::Kv: case Visual::Cells:
-    case Visual::Table: case Visual::Matrix: case Visual::Multi: case Visual::Stream:
+    case Visual::Table: case Visual::Matrix: case Visual::Multi: case Visual::Stream: case Visual::Calls:
         return true;
     default:
         return false;
@@ -1567,6 +1584,67 @@ private:
             size_t slot = 0;
             for (const int row : children)
                 for (const int cell : children_of(nodes, row)) put(slot++, brief(nodes, cell), nodes[cell].path);
+            break;
+        }
+        case Visual::Calls: {
+            /* a row per call by any node, newest first */
+            const Capture::WatchView* watch = source->view(topic_);
+            if (!watch) break;
+            if (watch->calls.empty()) {
+                html("calls:" + watch->calls_status,
+                     "<span class=\"faint\">" + Rml::StringUtilities::EncodeRml(watch->calls_status) + "</span>");
+                break;
+            }
+            const bool task = watch->kind == Capture::Kind::Task;
+            /* who called with when under it, a message column per part, and the state with how
+               long it took under it. Only a message column wraps. */
+            struct Column {
+                const char* label;
+                const char* sized;
+                int         slots;
+            };
+            static const Column FUNCTION_COLUMNS[] = { { "Caller", "caller", 2 }, { "Request", "message", 1 },
+                                                       { "State", "state", 2 }, { "Reply", "message", 1 } };
+            static const Column TASK_COLUMNS[] = { { "Caller", "caller", 2 }, { "Goal", "message", 1 },
+                                                   { "State", "state", 2 }, { "Progress", "message", 1 },
+                                                   { "Result", "message", 1 } };
+            const Column* columns = task ? TASK_COLUMNS : FUNCTION_COLUMNS;
+            const size_t column_count = task ? 5 : 4;
+            const std::string key = std::string("calls:") + (task ? "task:" : "function:") + std::to_string(watch->calls.size());
+            if (key != html_key_) {
+                /* RmlUi takes a column's weight from a col element only, never from its heading */
+                std::string rml = "<div class=\"scroll-table calls\"><table>";
+                for (size_t col = 0; col < column_count; col++) rml += std::string("<col class=\"") + columns[col].sized + "\"/>";
+                rml += "<tr>";
+                for (size_t col = 0; col < column_count; col++) rml += std::string("<th>") + columns[col].label + "</th>";
+                rml += "</tr>";
+                for (size_t r = 0; r < watch->calls.size(); r++) {
+                    rml += "<tr>";
+                    for (size_t col = 0; col < column_count; col++)
+                        rml += std::string("<td class=\"mono ") + columns[col].sized + "\"><div class=\"slot\"></div>" +
+                               (columns[col].slots == 2 ? "<div class=\"slot under\"></div>" : "") + "</td>";
+                    rml += "</tr>";
+                }
+                html(key, rml + "</table></div>");
+                calls_seq_ = ~0ull;
+            }
+            if (calls_seq_ == watch->calls_seq) break;
+            calls_seq_ = watch->calls_seq;
+            size_t slot = 0;
+            for (const Capture::CallRow& row : watch->calls) {
+                put(slot++, row.caller.empty() ? DASH : row.caller);
+                put(slot++, row.time);
+                put(slot++, brief_message(row.request));
+                if (slot < slots_.size()) {
+                    slots_[slot]->SetClass("ok", row.tone == 1);
+                    slots_[slot]->SetClass("bad", row.tone == 2);
+                    slots_[slot]->SetClass("busy", row.tone == 3);
+                }
+                put(slot++, row.state);
+                put(slot++, row.took);
+                if (task) put(slot++, brief_message(row.progress));
+                put(slot++, !row.reply.empty() ? brief_message(row.reply) : !row.message.empty() ? row.message : std::string(DASH));
+            }
             break;
         }
         case Visual::Multi: {
@@ -2437,6 +2515,11 @@ public:
             const std::vector<int> rows = nodes ? children_of(*nodes, found_) : std::vector<int>();
             return table_tile(rows.empty() ? 1 : children_of(*nodes, rows[0]).size(), rows.size());
         }
+        case Visual::Calls: {
+            const Capture::WatchView* watch = source ? source->view(topic_) : nullptr;
+            if (!watch || watch->calls.empty()) return Tile{ 3, 0.5 };
+            return table_tile(watch->kind == Capture::Kind::Task ? 7 : 6, watch->calls.size());
+        }
         default:
             return Tile{ 1.5, 1 };
         }
@@ -2486,6 +2569,7 @@ private:
     std::vector<std::string>   paths_;           /* the field each slot shows, for Copy cell */
     std::vector<Rml::Element*> lamps_;
     std::vector<int>           lamp_states_;
+    uint64_t                   calls_seq_ = ~0ull;   /* the calls the slots were filled from */
 
     double        dt_ = 0, last_frame_ = 0;
     /* A scene's gestures since the last draw, in window pixels and wheel steps. */

@@ -227,6 +227,21 @@ public:
         double v = 0;
     };
 
+    /* One call or run of the watched function or task, from whichever node made it, as the
+       provider reported it. */
+    struct CallRow {
+        std::string time;        /* local HH:MM:SS.mmm of the first step seen, the call unless it began before the watch */
+        std::string caller;      /* empty when the provider no longer knows the caller */
+        std::string state;       /* waiting, running, 40%, cancelling, ok, done, or what ended it */
+        uint8_t     tone = 0;    /* as a part's: 0 plain, 1 ok, 2 bad, 3 busy */
+        std::string took;        /* empty until it ends */
+        std::string message;     /* the end's text, or who asked to cancel */
+        /* Each part as the tree decodes it, empty until it came. */
+        std::vector<ValueNode> request, progress, reply;
+    };
+    /* The calls a watch keeps, the newest. */
+    static constexpr size_t CALL_ROWS = 100;
+
     /* One subscribed name and its latest value, decoded with the writer's schema. A function
        or task holds its parts instead: the request or goal to fill in, then what came back. */
     struct WatchView {
@@ -263,6 +278,12 @@ public:
         bool        calling = false;     /* a call or a run is in flight */
         double      progress = -1;       /* a running task's fraction done, negative when unknown */
         std::string error;               /* why the last call or run failed, whole, else empty */
+
+        /* Every call seen since the watch began, by any node, newest first. calls_status says
+           why there are none, and calls_seq bumps when a row moves. */
+        std::vector<CallRow> calls;
+        std::string calls_status;
+        uint64_t    calls_seq = 0;
     };
 
     /* What a composed message starts from: the newest message, else the default of the

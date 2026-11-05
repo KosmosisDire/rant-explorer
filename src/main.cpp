@@ -2849,7 +2849,7 @@ int main(int argc, char** argv)
             sync(model, "value_total", ui.value_total, (int)value_rows.size());
             /* The head holds the root's toggle only when the root has no row of its own. */
             const bool root_row = !value_rows.empty() && value_rows[0].path.empty();
-            sync(model, "value_root_toggle", ui.value_root_toggle, !watch.nodes.empty() && !root_row && !callable);
+            sync(model, "value_root_toggle", ui.value_root_toggle, !watch.nodes.empty() && !root_row);
             sync(model, "value_root_on", ui.value_root_on, view.shown.count("") > 0);
             /* The selected topic's cards in tree order, then every other topic's pinned ones.
                Pinning never moves a card, since it keeps its place among the selected's. */
@@ -2870,7 +2870,7 @@ int main(int argc, char** argv)
                 row.other      = key != watch.key;
                 ui.cards.push_back(row);
             };
-            if (!watch.nodes.empty() && ui.value_root_on && !callable) card(watch.key, "", view);
+            if (!watch.nodes.empty() && ui.value_root_on) card(watch.key, "", view);
             /* A gathered path has no row, so its card follows its array's place, else comes last. */
             std::vector<std::string> gathered;
             for (const std::string& path : view.shown)

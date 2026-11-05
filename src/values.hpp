@@ -75,7 +75,7 @@ struct ValueView {
 /* What a field is drawn as in its card, from the mock's table: the standard types by
    name, everything else by shape. Kv is the fallback, a plain list of the fields. */
 enum class Visual {
-    None, Plot, State, Text, Time, Duration, Uuid, Hex, Chips, Bars, Cells, Table, Matrix, Multi,
+    None, Plot, State, Text, Time, Duration, Uuid, Hex, Chips, Bars, Cells, Table, Matrix, Multi, Calls,
     Vec2, Vec3, Vec4, Quat, Pose, Pose2D, Twist, Twist2D, Wrench, Wrench2D, Solid, Figure, Geo, Color, Joints,
     Image, Video, Stream,
     Vec2s, Vec3s, Poses, Poses2D, Solids, Figures, Geos, Colors, Kv,
@@ -83,7 +83,8 @@ enum class Visual {
 Visual visual_for(const Capture::ValueNode& node);
 
 /* The visual of the node at index, as find_node gives it. A struct root has no node of its
-   own, so its visual comes from the root type. None for no node. */
+   own, so its visual comes from the root type, and a function's or task's is its calls. None
+   for no node. */
 Visual visual_at(const Capture::WatchView& watch, const std::vector<Capture::ValueNode>& nodes, int index);
 
 /* The first time a topic shows: its root's visual is on when the root type has one. */

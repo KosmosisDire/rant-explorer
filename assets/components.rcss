@@ -748,6 +748,19 @@ viz .scroll-table {
 }
 /* A nested array's cell is a long line, so a cell wraps inside its column. */
 viz .scroll-table td { font-size: 13dp; color: var(--text); white-space: normal; word-break: break-word; overflow: hidden; }
+/* A function's or task's calls fill their card. A message column weighs three and wraps,
+   the caller one, and the state fits its longest word. A weight works on a col only. */
+viz .scroll-table.calls { max-height: none; flex: 1 1 0; }
+viz .calls col.message { width: 300%; }
+viz .calls col.caller  { min-width: 144dp; }
+viz .calls col.state   { width: 124dp; }
+viz .calls td.caller, viz .calls td.state { white-space: nowrap; }
+/* when under the caller, how long under the state */
+viz .calls .under { color: var(--faint); }
+/* A call's state, coloured as a part's in the value tree. */
+viz .calls .ok   { color: var(--green); }
+viz .calls .bad  { color: var(--red); }
+viz .calls .busy { color: var(--amber); }
 
 /* A grid of small copies, each the element's own visual with its own bounds. */
 viz .multi {

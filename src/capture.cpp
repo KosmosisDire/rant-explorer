@@ -751,10 +751,29 @@ struct Capture::Impl {
         uint64_t             stamp_us = 0;      /* as WatchView's */
         bool                 forced = false;    /* a variable's value that is a force */
     };
+    /* One step of a call a provider reported to the call observer. */
+    struct Report {
+        std::vector<uint8_t> data;
+        uint64_t             schema_hash = 0;
+        uint64_t             written_us = 0;   /* on the provider's wall clock, 0 when it opted out */
+        rant::CallEventKind  kind = rant::CallEventKind::Call;
+        rant::CallStatus     status = rant::CallStatus::Ok;
+        uint32_t             provider = 0, caller = 0, call_id = 0;
+        std::string          caller_name, message;
+    };
     struct Inbox {
         std::mutex                                  mutex;
         Bounded<Sample>                             queue;
+        Bounded<Report>                             reports;
         std::map<uint64_t, std::vector<uint8_t>>    wires;   /* each schema's wire, by hash */
+
+        void learn(const rant::detail::RantSchema* raw, uint64_t hash)
+        {
+            if (hash && !wires.count(hash)) {
+                const rant::detail::RantBytes wire = rant::detail::rant_schema_wire(raw);
+                wires[hash].assign(wire.data, wire.data + wire.len);
+            }
+        }
 
         /* One value off the service thread, with the schema it was written in. */
         void push(rant::Bytes data, const rant::detail::RantSchema* raw, uint64_t recv_us, uint64_t stamp_us,
@@ -767,11 +786,26 @@ struct Capture::Impl {
             sample.stamp_us    = stamp_us;
             sample.forced      = forced;
             std::lock_guard<std::mutex> lock(mutex);
-            if (sample.schema_hash && !wires.count(sample.schema_hash)) {
-                const rant::detail::RantBytes wire = rant::detail::rant_schema_wire(raw);
-                wires[sample.schema_hash].assign(wire.data, wire.data + wire.len);
-            }
+            learn(raw, sample.schema_hash);
             queue.push(std::move(sample), WATCH_QUEUE_COUNT, WATCH_QUEUE_BYTES);
+        }
+
+        void report(const rant::CallEventView& e)
+        {
+            Report r;
+            r.data.assign(e.data().begin(), e.data().end());
+            r.schema_hash = e.raw_schema() ? rant::detail::rant_schema_hash(e.raw_schema()) : 0;
+            r.written_us  = e.written_us();
+            r.kind        = e.kind();
+            r.status      = e.status();
+            r.provider    = e.provider();
+            r.caller      = e.caller_lo();
+            r.call_id     = e.call_id();
+            r.caller_name.assign(e.caller_name());
+            r.message.assign(e.message());
+            std::lock_guard<std::mutex> lock(mutex);
+            learn(e.raw_schema(), r.schema_hash);
+            reports.push(std::move(r), WATCH_QUEUE_COUNT, WATCH_QUEUE_BYTES);
         }
     };
 
@@ -790,6 +824,7 @@ struct Capture::Impl {
         rant::RemoteVariable<rant::Bytes>                       variable;
         rant::RemoteFunction<rant::Bytes, rant::Bytes>          function;
         rant::RemoteTask<rant::Bytes, rant::Bytes, rant::Bytes> task;
+        rant::CallObserver                                      observer;   /* beside a function or task */
         std::string                       name;
         bool                              reliable = false;   /* a topic's QoS */
         bool                              writable = false;   /* a variable opened to set */
@@ -817,6 +852,7 @@ struct Capture::Impl {
             one(variable);
             one(function);
             one(task);
+            one(observer);
             return st;
         }
     };
@@ -871,6 +907,14 @@ struct Capture::Impl {
         bool                   matched = false;      /* a provider is there to call */
         uint64_t               generation = ~0ull;   /* the entity's, so a new schema rebuilds */
         bool                   form_dirty = true;
+
+        /* Which call each row of view.calls is, parallel to it, and when its provider took it,
+           0 for a call that began before the watch. */
+        struct CallSeen {
+            uint32_t provider = 0, caller = 0, call_id = 0;
+            uint64_t began_us = 0;
+        };
+        std::vector<CallSeen>  seen;
 
         bool listening() const { return live.valid() && (live.topic.valid() || live.variable.valid()); }
     };
@@ -966,13 +1010,17 @@ struct Capture::Impl {
         return buf;
     }
 
+    void drain(Inbox& box, std::deque<Sample>& out) { drain(box, box.queue, out); }
+    void drain(Inbox& box, std::deque<Report>& out) { drain(box, box.reports, out); }
+
     /* Takes what a handler queued, and parses each schema it has not seen by its wire. */
-    void drain(Inbox& box, std::deque<Sample>& out)
+    template <class T>
+    void drain(Inbox& box, Bounded<T>& queue, std::deque<T>& out)
     {
         std::map<uint64_t, std::vector<uint8_t>> wires;
         {
             std::lock_guard<std::mutex> lock(box.mutex);
-            out = box.queue.take();
+            out = queue.take();
             for (const auto& entry : box.wires)
                 if (!schemas.count(entry.first)) wires.insert(entry);
         }
@@ -1114,9 +1162,12 @@ struct Capture::Impl {
         s.inbox = box;
     }
 
-    /* A remote function or task typed from the mesh, so a request encodes as its owner reads. */
+    /* A remote function or task typed from the mesh, so a request encodes as its owner reads,
+       and an observer of every node's calls of it. */
     void create_call(const std::string& name, Sub& s, bool task, uint32_t epoch)
     {
+        auto box = std::make_shared<Inbox>();
+        const std::weak_ptr<Inbox> weak = box;
         Handle h;
         h.name = name;
         s.live_error.clear();
@@ -1134,7 +1185,21 @@ struct Capture::Impl {
             s.live_error = e.what();
         }
         failed(s, h, epoch);
-        if (!s.failed) s.live = std::move(h);
+        if (s.failed) return;
+        std::string why;
+        try {
+            rant::CallObserverOptions o;
+            o.reflect_from_mesh = true;
+            h.observer = node.call_observer(name, [weak](const rant::CallEventView& e) {
+                if (auto in = weak.lock()) in->report(e);
+            }, o);
+        } catch (const rant::Error& e) {
+            why = e.what();
+        }
+        if (!h.observer.valid() && why.empty()) why = node.last_error();
+        s.view.calls_status = h.observer.valid() ? "no calls seen yet" : "cannot watch calls: " + why;
+        s.live  = std::move(h);
+        s.inbox = box;
     }
 
     /* A stamp on the node's clock mapped onto ours, now when there is none. */
@@ -1396,6 +1461,80 @@ struct Capture::Impl {
         }
         if (s.form_dirty) build_form(s, *e, task);
         s.view.calling = s.call_state == CallState::Waiting;
+        if (s.inbox) take_reports(s, task);
+    }
+
+    /* Each step a provider reported into its call's row. A step of a call that began before
+       the watch opens a row too, with what came before it missing. */
+    void take_reports(Sub& s, bool task)
+    {
+        std::deque<Report> reports;
+        drain(*s.inbox, reports);
+        if (reports.empty()) return;
+        std::vector<CallRow>& rows = s.view.calls;
+        for (const Report& r : reports) {
+            size_t i = 0;
+            while (i < s.seen.size() && !(s.seen[i].provider == r.provider && s.seen[i].caller == r.caller &&
+                                          s.seen[i].call_id == r.call_id))
+                i++;
+            if (i == s.seen.size()) {
+                CallRow row;
+                char ms[8];
+                std::snprintf(ms, sizeof ms, ".%03u", (unsigned)(r.written_us / 1000 % 1000));
+                row.time  = format_clock(r.written_us) + (r.written_us ? ms : "");
+                row.state = task ? "starting" : "waiting";
+                row.tone  = 3;
+                rows.insert(rows.begin(), std::move(row));
+                const uint64_t began = r.kind == rant::CallEventKind::Call ? r.written_us : 0;
+                s.seen.insert(s.seen.begin(), Sub::CallSeen{ r.provider, r.caller, r.call_id, began });
+                if (rows.size() > CALL_ROWS) {
+                    rows.pop_back();
+                    s.seen.pop_back();
+                }
+                i = 0;
+            }
+            CallRow& row = rows[i];
+            if (row.caller.empty()) row.caller = r.caller_name;
+            const bool open = row.tone == 3 && row.state != "cancelling";
+            WatchView scratch;
+            switch (r.kind) {
+            case rant::CallEventKind::Call:
+                decode(r.data, r.schema_hash, scratch);
+                row.request = std::move(scratch.nodes);
+                break;
+            case rant::CallEventKind::Running:
+                if (open) row.state = "running";
+                break;
+            case rant::CallEventKind::Progress: {
+                decode(r.data, r.schema_hash, scratch);
+                const double done = progress_of(scratch.nodes);
+                char percent[16];
+                std::snprintf(percent, sizeof percent, "%.0f%%", done * 100);
+                if (open) row.state = done >= 0 ? percent : "running";
+                row.progress = std::move(scratch.nodes);
+                break;
+            }
+            case rant::CallEventKind::Cancel:
+                if (row.tone == 3) row.state = "cancelling";
+                if (!r.message.empty()) row.message = "cancel asked by " + r.message;
+                break;
+            case rant::CallEventKind::End: {
+                const bool ok = r.status == rant::CallStatus::Ok;
+                row.state = ok ? (task ? "done" : "ok") : call_word(r.status);
+                row.tone  = ok ? 1 : r.status == rant::CallStatus::Cancelled ? 0 : 2;
+                if (ok) {
+                    decode(r.data, r.schema_hash, scratch);
+                    row.reply = std::move(scratch.nodes);
+                }
+                if (!r.message.empty() && r.message != row.state) row.message = r.message;
+                const uint64_t began = s.seen[i].began_us;
+                if (began && r.written_us >= began) row.took = format_age((double)(r.written_us - began) / 1e6);
+                break;
+            }
+            }
+        }
+        s.view.calls_status.clear();
+        s.view.calls_seq++;
     }
 
     /* One part of a function or task: its heading, then its value under the part's prefix.

@@ -79,7 +79,7 @@ enum class Visual {
     None, Plot, State, Text, Time, Duration, Uuid, Hex, Chips, Bars, Cells, Table, Matrix, Multi, Calls,
     Vec2, Vec3, Vec4, Quat, Pose, Pose2D, Twist, Twist2D, Wrench, Wrench2D, Accel, Accel2D, PoseCovariance,
     TwistCovariance, Odometry, Imu, Inertia, Gnss, Range, Scan, Detection, Detection2D, Solid, Figure, Geo,
-    Color, Joints, Trajectory, Image, Grid, Video, Stream, File,
+    Color, Joints, Trajectory, Image, Grid, Voxels, Cloud, Mesh, Video, Stream, File,
     Vec2s, Vec3s, Poses, Poses2D, Path, Path2D, Polyline, Polyline2D, Solids, Figures, Geos, Colors, Kv,
 };
 Visual visual_for(const Capture::ValueNode& node);

@@ -75,6 +75,9 @@ constexpr float LABEL = 12, ALONE = 48;
 /* Line widths in dp: an axis or an outline, a data line or a shape, an arrow. Grids are 1. */
 constexpr float THIN = 1.5f, STROKE = 2.5f, ARROW = 3.5f;
 
+/* The radius of a point cloud's dots in dp. */
+constexpr float CLOUD_DOT = 1.5f;
+
 /* How much history a plot shows and a trail keeps, and how far ahead a twist's path looks. */
 constexpr double PLOT_SECONDS = 10, TRAIL_SECONDS = 30, TWIST_AHEAD = 2;
 
@@ -652,10 +655,21 @@ struct Ellipsoid {
     Double3    radii;
 };
 
+/* A surface math meshed once, such as a Mesh or a 3D grid's cells, kept from frame to frame:
+   its corners already placed, the sides drawn as lines, and its bounds. */
+struct Shaded {
+    math::Mesh            mesh;
+    std::vector<uint64_t> sides;
+    types::AlignedBox     bounds;
+};
+struct Surface {
+    std::shared_ptr<const Shaded> shaded;
+};
+
 /* A standard 3D shape read from its node, nothing for a kind with no drawing. */
 using Solid = std::variant<std::monostate, types::AlignedBox, types::OrientedBox, types::Plane, types::Segment,
                            types::Ray, types::Sphere, types::Capsule, types::Cylinder, types::Cone, types::Polygon,
-                           types::Prism, Ellipsoid>;
+                           types::Prism, Ellipsoid, Surface>;
 
 Solid solid(const Nodes& nodes, int index, const std::string& kind)
 {
@@ -710,6 +724,7 @@ Double3 middle_of(const types::Cone& o) { return math::double3_lerp(o.base, o.ti
 Double3 middle_of(const types::Polygon& p) { return math::polygon_centroid(p.points); }
 Double3 middle_of(const types::Prism& p) { return math::prism_centroid(p); }
 Double3 middle_of(const Ellipsoid& o) { return o.center; }
+Double3 middle_of(const Surface& o) { return o.shaded ? math::aligned_box_centroid(o.shaded->bounds) : Double3{}; }
 
 Double3 middle(const Solid& o)
 {
@@ -737,6 +752,7 @@ void hold_one(Reach& r, const types::Cone& o) { take(r, o.base, o.radius); take(
 void hold_one(Reach& r, const types::Polygon& p) { for (const Double3& v : p.points) take(r, v, 0); }
 void hold_one(Reach& r, const types::Prism& p) { for (const Double3& v : math::prism_corners(p)) take(r, v, 0); }
 void hold_one(Reach& r, const Ellipsoid& o) { take(r, o.center, std::max({ o.radii.x, o.radii.y, o.radii.z })); }
+void hold_one(Reach& r, const Surface& o) { if (o.shaded) hold_one(r, o.shaded->bounds); }
 
 void hold(Reach& reach, const Solid& o)
 {
@@ -758,10 +774,22 @@ void stroke(Batch& b, Batch::Mark mark, const Double3& from, const Double3& to, 
     b.stroke(mark, floats(from), floats(to), colour, px);
 }
 
-/* A mesh as faint lit faces, with lines along its creases and open ends, the sides no other
-   face shares since math splits corners at a crease. Place moves each corner and normal. */
+/* The sides of a mesh's triangles no other triangle shares, each from << 32 | to: its creases
+   and open ends, since math splits corners at a crease. */
+std::vector<uint64_t> open_sides(const math::Mesh& m)
+{
+    std::vector<uint64_t> sides, out;
+    for (size_t t = 0; t + 2 < m.triangles.size(); t += 3)
+        for (size_t k = 0; k < 3; k++) sides.push_back((uint64_t)m.triangles[t + k] << 32 | m.triangles[t + (k + 1) % 3]);
+    std::sort(sides.begin(), sides.end());
+    for (const uint64_t side : sides)
+        if (!std::binary_search(sides.begin(), sides.end(), side << 32 | side >> 32)) out.push_back(side);
+    return out;
+}
+
+/* A mesh as faint lit faces, with lines along the sides given. Place moves each corner and normal. */
 template <class Place>
-void put_mesh(Batch& b, const math::Mesh& m, Rml::Colourb colour, float px, Place place)
+void put_mesh(Batch& b, const math::Mesh& m, const std::vector<uint64_t>& sides, Rml::Colourb colour, float px, Place place)
 {
     /* shape_mesh lays each corner out as x, y, z and its normal, six floats */
     const uint32_t first = (uint32_t)b.corners.size();
@@ -774,19 +802,9 @@ void put_mesh(Batch& b, const math::Mesh& m, Rml::Colourb colour, float px, Plac
         place(point, normal);
         b.corners.push_back({ floats(point), floats(normal), fill });
     }
-    std::vector<uint64_t> sides;
-    for (size_t t = 0; t + 2 < m.triangles.size(); t += 3)
-        for (size_t k = 0; k < 3; k++) {
-            const uint32_t from = m.triangles[t + k], to = m.triangles[t + (k + 1) % 3];
-            b.triangles.push_back(first + from);
-            sides.push_back((uint64_t)from << 32 | to);
-        }
-    std::sort(sides.begin(), sides.end());
-    for (const uint64_t side : sides) {
-        const uint32_t from = (uint32_t)(side >> 32), to = (uint32_t)side;
-        if (!std::binary_search(sides.begin(), sides.end(), (uint64_t)to << 32 | from))
-            b.stroke(Batch::Mark::Line, b.corners[first + from].at, b.corners[first + to].at, colour, px);
-    }
+    for (const uint32_t corner : m.triangles) b.triangles.push_back(first + corner);
+    for (const uint64_t side : sides)
+        b.stroke(Batch::Mark::Line, b.corners[first + (uint32_t)(side >> 32)].at, b.corners[first + (uint32_t)side].at, colour, px);
 }
 
 /* A shape as math meshes it. False when it is too thin to have faces. */
@@ -798,7 +816,7 @@ bool put_shape(Batch& b, const math::Shape& shape, Rml::Colourb colour, float px
     } catch (const math::MathError&) {
         return false;
     }
-    put_mesh(b, m, colour, px, [](Double3&, Double3&) {});
+    put_mesh(b, m, open_sides(m), colour, px, [](Double3&, Double3&) {});
     return true;
 }
 
@@ -855,11 +873,17 @@ void put_one(Batch& b, const View& s, float px, const types::Ray& o, Rml::Colour
 void put_one(Batch& b, const View&, float px, const Ellipsoid& o, Rml::Colourb colour)
 {
     static const math::Mesh unit = math::shape_mesh(math::shape_from_sphere(types::Sphere{ {}, 1 }), 0, CREASE);
+    static const std::vector<uint64_t> sides = open_sides(unit);
     const Double3& r = o.radii;
-    put_mesh(b, unit, colour, THIN * px, [&](Double3& point, Double3& normal) {
+    put_mesh(b, unit, sides, colour, THIN * px, [&](Double3& point, Double3& normal) {
         point  = o.center + o.turn * Double3{ point.x * r.x, point.y * r.y, point.z * r.z };
         normal = o.turn * math::double3_normalize(Double3{ normal.x * r.y * r.z, normal.y * r.x * r.z, normal.z * r.x * r.y });
     });
+}
+
+void put_one(Batch& b, const View&, float px, const Surface& o, Rml::Colourb colour)
+{
+    if (o.shaded) put_mesh(b, o.shaded->mesh, o.shaded->sides, colour, THIN * px, [](Double3&, Double3&) {});
 }
 
 /* px is pixels per dp. */
@@ -873,7 +897,7 @@ void put_solid(Batch& b, const View& s, float px, const Solid& o, Rml::Colourb c
 /* What a 3D card shows, in world coordinates, for one renderer to draw. Each item belongs
    to the body begun before it. */
 struct Scene {
-    enum class Shape : uint8_t { Line, Dashed, Path, Arrow, Dot, Solid, Label };
+    enum class Shape : uint8_t { Line, Dashed, Path, Arrow, Dot, Dots, Solid, Label };
 
     /* Its points from first, or its solid or label at first. Size is a width or a radius
        in dp, or a text size. */
@@ -907,6 +931,7 @@ struct Scene {
     std::vector<Solid>   solids;
     std::vector<Label>   labels;
     std::vector<Trail>   trails;
+    std::vector<Rml::Colourb> tints;   /* the colour of each point of a dots item, at the point's own index */
 
     void clear()
     {
@@ -916,6 +941,7 @@ struct Scene {
         solids.clear();
         labels.clear();
         trails.clear();
+        tints.clear();
     }
 
     void body(const Double3& anchor) { bodies.push_back({ anchor, (uint32_t)items.size() }); }
@@ -924,6 +950,15 @@ struct Scene {
     void dashed(const Double3& a, const Double3& b, Rml::Colourb colour, float width) { add(Shape::Dashed, { a, b }, colour, width); }
     void arrow(const Double3& a, const Double3& b, Rml::Colourb colour, float width) { add(Shape::Arrow, { a, b }, colour, width); }
     void dot(const Double3& p, Rml::Colourb colour, float radius) { add(Shape::Dot, { p }, colour, radius); }
+
+    /* Dots of one radius, each in its own colour. */
+    void dots(const std::vector<Double3>& at, const std::vector<Rml::Colourb>& colours, float radius)
+    {
+        items.push_back({ Shape::Dots, (uint32_t)points.size(), (uint32_t)at.size(), {}, radius });
+        tints.resize(points.size());
+        points.insert(points.end(), at.begin(), at.end());
+        tints.insert(tints.end(), colours.begin(), colours.end());
+    }
 
     /* Lines through points with round joins. */
     void path(const std::vector<Double3>& through, Rml::Colourb colour, float width)
@@ -1038,6 +1073,9 @@ void draw_scene(Canvas& c, const View& s, const Scene& w, Batch& b)
         case Scene::Shape::Dashed: stroke(b, Mark::Dashed, p[0], p[1], item.colour, size); break;
         case Scene::Shape::Arrow:  stroke(b, Mark::Arrow, p[0], p[1], item.colour, size); break;
         case Scene::Shape::Dot:    stroke(b, Mark::Dot, p[0], p[0], item.colour, size); break;
+        case Scene::Shape::Dots:
+            for (uint32_t i = 0; i < item.count; i++) stroke(b, Mark::Dot, p[i], p[i], w.tints[item.first + i], size);
+            break;
         case Scene::Shape::Path:
             for (uint32_t i = 1; i < item.count; i++) stroke(b, Mark::Line, p[i - 1], p[i], item.colour, size);
             break;
@@ -1110,6 +1148,7 @@ Described describe_one(const types::Prism& p)
 }
 
 Described describe_one(const Ellipsoid& o) { return { "radii " + point(o.radii), "at " + point(o.center) }; }
+Described describe_one(const Surface& o) { return o.shaded ? describe_one(o.shaded->bounds) : Described(); }
 
 Described describe(const Solid& o)
 {
@@ -1474,20 +1513,27 @@ struct Cells {
     }
 };
 
-/* A Grid's first field, one GridField of a grid, or a Tensor, read through math as a grid
-   of that one field. A tensor lies as such a field does, its last dimension as x. */
-Cells cells_of(const Nodes& nodes, int index, const std::string& std_name, const std::vector<uint8_t>& message)
+/* A blob's bytes from the message, none when they are not there. */
+std::vector<uint8_t> blob_of(const Nodes& nodes, int index, const std::vector<uint8_t>& message)
 {
-    Cells out;
+    if (index < 0 || nodes[index].kind != ValueNode::Blob || (size_t)nodes[index].offset + nodes[index].count > message.size())
+        return {};
+    return std::vector<uint8_t>(message.begin() + nodes[index].offset, message.begin() + nodes[index].offset + nodes[index].count);
+}
+
+/* A Grid's first field or one GridField with its grid as a grid of that one field, or a 2D
+   Tensor as one, its last dimension as x. No field when there is none, problem saying why. */
+types::Grid one_field(const Nodes& nodes, int index, const std::string& std_name, const std::vector<uint8_t>& message,
+                      std::string& problem)
+{
     types::Grid grid;
     types::GridField field;
     int at = index;   /* the node holding the kind and the data */
-    const bool tensor = std_name == "Tensor";
-    if (tensor) {
+    if (std_name == "Tensor") {
         std::vector<uint32_t> big;
         for (const double d : numbers_of(nodes, kid(nodes, index, "shape"), message))
             if (d > 1) big.push_back((uint32_t)d);
-        if (big.size() != 2) return out;
+        if (big.size() != 2) return grid;
         grid.cells_y    = big[0];
         grid.cells_x    = big[1];
         grid.cells_z    = 1;
@@ -1497,24 +1543,36 @@ Cells cells_of(const Nodes& nodes, int index, const std::string& std_name, const
         if (std_name != "GridField") {
             const std::vector<int> fields = children_of(nodes, kid(nodes, index, "fields"));
             if (fields.empty()) {
-                out.problem = "no fields";
-                return out;
+                problem = "no fields";
+                return grid;
             }
             at = fields[0];
         }
-        grid.cells_x    = (uint32_t)number(nodes, owner, "cells_x");
-        grid.cells_y    = (uint32_t)number(nodes, owner, "cells_y");
-        grid.cells_z    = (uint32_t)number(nodes, owner, "cells_z");
-        grid.resolution = number(nodes, owner, "resolution");
-        const int name  = kid(nodes, at, "name");
-        field.name      = name >= 0 ? nodes[name].text : std::string();
+        grid.origin.pose = placed(nodes, kid(nodes, kid(nodes, owner, "origin"), "pose"));
+        grid.cells_x     = (uint32_t)number(nodes, owner, "cells_x");
+        grid.cells_y     = (uint32_t)number(nodes, owner, "cells_y");
+        grid.cells_z     = (uint32_t)number(nodes, owner, "cells_z");
+        grid.resolution  = number(nodes, owner, "resolution");
+        const int name   = kid(nodes, at, "name");
+        field.name       = name >= 0 ? nodes[name].text : std::string();
     }
-    const int kind = kid(nodes, at, "kind"), data = kid(nodes, at, "data");
+    const int kind = kid(nodes, at, "kind");
     if (kind >= 0) field.kind = (types::ScalarKind)nodes[kind].integer;
-    if (data >= 0 && nodes[data].kind == ValueNode::Blob && (size_t)nodes[data].offset + nodes[data].count <= message.size())
-        field.data.assign(message.begin() + nodes[data].offset, message.begin() + nodes[data].offset + nodes[data].count);
+    field.data = blob_of(nodes, kid(nodes, at, "data"), message);
     grid.fields.push_back(field);
-    const std::string kind_text = kind >= 0 ? value_text(nodes[kind]) : std::string();
+    return grid;
+}
+
+/* A Grid's first field, one GridField of a grid, or a 2D Tensor, read through math. */
+Cells cells_of(const Nodes& nodes, int index, const std::string& std_name, const std::vector<uint8_t>& message)
+{
+    Cells out;
+    const types::Grid grid = one_field(nodes, index, std_name, message, out.problem);
+    if (grid.fields.empty()) return out;
+    const types::GridField& field = grid.fields[0];
+    const bool tensor = std_name == "Tensor";
+    const int kind = kid(nodes, index, "kind");
+    const std::string kind_text = tensor && kind >= 0 ? value_text(nodes[kind]) : std::string();
     const uint32_t w = grid.cells_x, h = grid.cells_y;
     out.floats = field.kind == types::ScalarKind::F32 || field.kind == types::ScalarKind::F64;
     out.text   = tensor ? kind_text + "  " + std::to_string(h) + " x " + std::to_string(w)
@@ -1532,6 +1590,178 @@ Cells cells_of(const Nodes& nodes, int index, const std::string& std_name, const
         for (uint32_t x = 0; x < w; x++) out.values[(size_t)(tensor ? y : h - 1 - y) * w + x] = (float)v[(size_t)y * w + x];
     out.width  = w;
     out.height = h;
+    return out;
+}
+
+/* A PointCloud copied from its node and the message. */
+types::PointCloud point_cloud(const Nodes& nodes, int index, const std::vector<uint8_t>& message)
+{
+    types::PointCloud out;
+    out.origin.pose = placed(nodes, kid(nodes, kid(nodes, index, "origin"), "pose"));
+    out.point_step  = (uint32_t)number(nodes, index, "point_step");
+    for (const int k : children_of(nodes, kid(nodes, index, "fields"))) {
+        types::PointField f;
+        const int name = kid(nodes, k, "name"), kind = kid(nodes, k, "kind");
+        f.name   = name >= 0 ? nodes[name].text : std::string();
+        f.offset = (uint32_t)number(nodes, k, "offset");
+        f.count  = (uint32_t)number(nodes, k, "count");
+        if (kind >= 0) f.kind = (types::ScalarKind)nodes[kind].integer;
+        out.fields.push_back(f);
+    }
+    out.data = blob_of(nodes, kid(nodes, index, "data"), message);
+    return out;
+}
+
+/* A cloud's valid points in the frame its origin is in, with each one's colour when it has
+   rgb, else its strength when it has intensity. */
+struct Cloud {
+    std::vector<Double3>      points;
+    std::vector<Rml::Colourb> colours;
+    std::vector<double>       strength;
+    std::string               fields, problem;   /* the field names, or why there are no points */
+};
+
+Cloud cloud_of(const Nodes& nodes, int index, const std::vector<uint8_t>& message)
+{
+    Cloud out;
+    types::PointCloud cloud = point_cloud(nodes, index, message);
+    for (const types::PointField& f : cloud.fields) out.fields += (out.fields.empty() ? "" : " ") + f.name;
+    std::vector<Double3> points;
+    try {
+        math::point_cloud_transform(cloud, cloud.origin.pose);
+        points = math::point_cloud_read_points(cloud);
+    } catch (const math::MathError&) {
+        out.problem = "points not readable";
+        return out;
+    }
+    std::vector<types::Color> colours;
+    std::vector<double> strength;
+    try {
+        colours = math::point_cloud_read_colors(cloud);
+    } catch (const math::MathError&) {
+        try {
+            strength = math::point_cloud_read_values(cloud, "intensity");
+        } catch (const math::MathError&) {
+        }
+    }
+    for (size_t i = 0; i < points.size(); i++) {
+        const Double3& p = points[i];
+        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
+        out.points.push_back(p);
+        if (colours.size() == points.size()) out.colours.push_back(Rml::Colourb(colours[i].r, colours[i].g, colours[i].b, colours[i].a));
+        if (strength.size() == points.size()) out.strength.push_back(strength[i]);
+    }
+    return out;
+}
+
+/* A surface as math shades it, split where faces meet past CREASE. None when it has no faces. */
+Surface shaded(const types::Mesh& m)
+{
+    auto out = std::make_shared<Shaded>();
+    try {
+        out->mesh   = math::shape_mesh(math::shape_from_mesh(m), 0, CREASE);
+        out->bounds = math::mesh_bounds(out->mesh);
+    } catch (const math::MathError&) {
+        return {};
+    }
+    if (out->mesh.triangles.empty()) return {};
+    out->sides = open_sides(out->mesh);
+    return { out };
+}
+
+/* A Mesh's or a 3D grid's surface with the readings under it, made when a message arrives. */
+struct Surfaced {
+    Surface     solid;
+    std::string left[2], right;
+};
+
+/* A Mesh with its corners in the frame their cloud's origin is in. */
+Surfaced mesh_of(const Nodes& nodes, int index, const std::vector<uint8_t>& message)
+{
+    Surfaced out;
+    types::Mesh m;
+    m.vertices = point_cloud(nodes, kid(nodes, index, "vertices"), message);
+    for (const double t : numbers_of(nodes, kid(nodes, index, "triangles"), message)) m.triangles.push_back((uint32_t)t);
+    out.left[0] = counted(m.triangles.size() / 3, "triangle");
+    try {
+        math::point_cloud_transform(m.vertices, m.vertices.origin.pose);
+    } catch (const math::MathError&) {
+        out.left[1] = "corners not readable";
+        return out;
+    }
+    out.solid = shaded(m);
+    const Described d = describe_one(out.solid);
+    out.left[1] = out.solid.shaded ? d.first : "no faces";
+    out.right   = d.second;
+    return out;
+}
+
+/* The faces of a cell, each a step to the cell beyond it, then its corners counterclockwise
+   seen from outside, from the cell's lowest corner. */
+const int CELL_FACES[6][5][3] = {
+    { { 1, 0, 0 }, { 1, 0, 0 }, { 1, 1, 0 }, { 1, 1, 1 }, { 1, 0, 1 } },
+    { { -1, 0, 0 }, { 0, 0, 0 }, { 0, 0, 1 }, { 0, 1, 1 }, { 0, 1, 0 } },
+    { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 1, 1 }, { 1, 1, 1 }, { 1, 1, 0 } },
+    { { 0, -1, 0 }, { 0, 0, 0 }, { 1, 0, 0 }, { 1, 0, 1 }, { 0, 0, 1 } },
+    { { 0, 0, 1 }, { 0, 0, 1 }, { 1, 0, 1 }, { 1, 1, 1 }, { 0, 1, 1 } },
+    { { 0, 0, -1 }, { 0, 0, 0 }, { 0, 1, 0 }, { 1, 1, 0 }, { 1, 0, 0 } },
+};
+
+/* The cells of a 3D grid's field past the middle of its span, or past 0 when every cell holds
+   one value, as one surface of their outer faces in the frame the grid's origin is in. */
+Surfaced voxels_of(const Nodes& nodes, int index, const std::string& std_name, const std::vector<uint8_t>& message)
+{
+    Surfaced out;
+    const types::Grid grid = one_field(nodes, index, std_name, message, out.left[0]);
+    if (grid.fields.empty()) return out;
+    const types::GridField& field = grid.fields[0];
+    const int64_t nx = grid.cells_x, ny = grid.cells_y, nz = grid.cells_z;
+    out.left[0] = field.name + "  " + std::to_string(nx) + " x " + std::to_string(ny) + " x " + std::to_string(nz) + "  cell " +
+                  f3(grid.resolution) + " m";
+    std::vector<double> v;
+    try {
+        v = math::grid_read_values(grid, field.name.c_str());
+    } catch (const math::MathError&) {
+        out.left[1] = field.name + " not readable";
+        return out;
+    }
+    double lo = INFINITY, hi = -INFINITY;
+    for (const double x : v)
+        if (std::isfinite(x)) {
+            lo = std::min(lo, x);
+            hi = std::max(hi, x);
+        }
+    const double cut = lo < hi ? (lo + hi) / 2 : 0;
+    auto full = [&](int64_t x, int64_t y, int64_t z) {
+        return x >= 0 && y >= 0 && z >= 0 && x < nx && y < ny && z < nz && v[(size_t)((z * ny + y) * nx + x)] > cut;
+    };
+    types::Mesh m;
+    std::vector<Double3> corners;
+    size_t cells = 0;
+    for (int64_t z = 0; z < nz; z++)
+        for (int64_t y = 0; y < ny; y++)
+            for (int64_t x = 0; x < nx; x++) {
+                if (!full(x, y, z)) continue;
+                cells++;
+                for (const auto& face : CELL_FACES) {
+                    if (full(x + face[0][0], y + face[0][1], z + face[0][2])) continue;
+                    const uint32_t first = (uint32_t)corners.size();
+                    for (int k = 1; k < 5; k++)
+                        corners.push_back(Double3{ (double)(x + face[k][0]), (double)(y + face[k][1]), (double)(z + face[k][2]) } *
+                                          grid.resolution);
+                    m.triangles.insert(m.triangles.end(), { first, first + 1, first + 2, first, first + 2, first + 3 });
+                }
+            }
+    out.left[1] = counted(cells, "cell") + " above " + short_number(cut);
+    m.vertices = math::point_cloud_layout(math::PointCloudLayout::Xyz);
+    m.vertices.data.resize(corners.size() * m.vertices.point_step);
+    try {
+        math::point_cloud_write_points(m.vertices, corners);
+        math::point_cloud_transform(m.vertices, grid.origin.pose);
+    } catch (const math::MathError&) {
+        return out;
+    }
+    out.solid = shaded(m);
     return out;
 }
 
@@ -1857,11 +2087,13 @@ private:
         reach_[0] = reach_[1] = Reach();
         cam_ = Camera();
         frame_ = FrameBounds();
-        scale_[0] = scale_[1] = scale_[2] = Reach();
+        for (Reach& scale : scale_) scale = Reach();
         texture_ = Rml::CallbackTexture();
         pixels_.reset();
         frame_seq_ = ~0ull;
         decoder_.reset();
+        cloud_    = Cloud();
+        surfaced_ = Surfaced();
         last_frame_ = 0;
 
         const Kind kind = row_of(visual).kind;
@@ -2203,13 +2435,8 @@ private:
     {
         const double now = Capture::now_s();
         for (const std::string& path : paths)
-            for (const Capture::TracePoint& p : trace(path)) {
-                if (!std::isfinite(p.v)) continue;
-                if (!seen_) { lo_seen_ = hi_seen_ = p.v; seen_ = true; }
-                lo_seen_ = std::min(lo_seen_, p.v);
-                hi_seen_ = std::max(hi_seen_, p.v);
-            }
-        if (!seen_) { lo_seen_ = hi_seen_ = first; seen_ = true; }
+            for (const Capture::TracePoint& p : trace(path)) see(p.v);
+        if (!seen_) see(first);
         double lo = lo_seen_, hi = hi_seen_;
         if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
         else { const double m = (hi - lo) * 0.1; lo -= m; hi += m; }
@@ -2342,6 +2569,28 @@ private:
         hi_ = ease(hi_, hi, dt_);
     }
 
+    /* Grows the extremes seen to hold v, unless it is not finite. */
+    void see(double v)
+    {
+        if (!std::isfinite(v)) return;
+        if (!seen_) { lo_seen_ = hi_seen_ = v; seen_ = true; }
+        lo_seen_ = std::min(lo_seen_, v);
+        hi_seen_ = std::max(hi_seen_, v);
+    }
+
+    /* Each strength's colour, from dim at the eased least to accent at the most in 256 steps,
+       accent when it is unknown. A ramp, since math mixes in Lab and a cloud has many. */
+    std::vector<Rml::Colourb> strength_tints(const std::vector<double>& strength) const
+    {
+        Rml::Colourb ramp[256];
+        for (int k = 0; k < 256; k++) ramp[k] = mixed(ink.dim, ink.accent, k / 255.0);
+        std::vector<Rml::Colourb> out(strength.size(), ramp[255]);
+        if (hi_ > lo_)
+            for (size_t i = 0; i < strength.size(); i++)
+                if (std::isfinite(strength[i])) out[i] = ramp[std::lround(std::clamp((strength[i] - lo_) / (hi_ - lo_), 0.0, 1.0) * 255)];
+        return out;
+    }
+
     /* A bool or an enum over ten seconds: a band per run of equal values on whole pixels.
        A pixel shows the first run to reach it, so a fast toggle costs the width. Without
        history it is the value alone, in its band's colour. */
@@ -2386,11 +2635,8 @@ private:
     {
         const std::vector<double> values = numbers_of(nodes, found_, message());
         const size_t n = values.size();
-        if (!seen_) { lo_seen_ = hi_seen_ = 0; seen_ = true; }
-        for (const double v : values) {
-            lo_seen_ = std::min(lo_seen_, v);
-            hi_seen_ = std::max(hi_seen_, v);
-        }
+        see(0);
+        for (const double v : values) see(v);
         ease_range(lo_seen_, hi_seen_);
         const double lo = lo_, hi = hi_ - lo_ > 1e-12 ? hi_ : lo_ + 1;
         const float top = c.dp(TOP), bottom = c.h() - c.dp(BOT), x0 = c.dp(GUTTER), x1 = c.w() - c.dp(10);
@@ -2552,18 +2798,13 @@ private:
             hits++;
             nearest = std::min(nearest, math::double2_length(q));
             reach_[0].seen = std::max({ reach_[0].seen, std::fabs(q.x), std::fabs(q.y) });
-            if (!shaded || !std::isfinite(strength[i])) continue;
-            if (!seen_) { lo_seen_ = hi_seen_ = strength[i]; seen_ = true; }
-            lo_seen_ = std::min(lo_seen_, strength[i]);
-            hi_seen_ = std::max(hi_seen_, strength[i]);
+            if (shaded) see(strength[i]);
         }
         if (seen_) ease_range(lo_seen_, hi_seen_);
         const Plane p = plane(c, c.all(), reach_[0].grow({}, dt_), backdrop());
-        for (size_t i = 0; i < points.size(); i++) {
-            if (!std::isfinite(points[i].x)) continue;
-            const bool known = shaded && std::isfinite(strength[i]) && hi_ > lo_;
-            c.dot(p(points[i]), mixed(ink.dim, ink.accent, known ? (strength[i] - lo_) / (hi_ - lo_) : 1), 2);
-        }
+        const std::vector<Rml::Colourb> tints = shaded ? strength_tints(strength) : std::vector<Rml::Colourb>();
+        for (size_t i = 0; i < points.size(); i++)
+            if (std::isfinite(points[i].x)) c.dot(p(points[i]), shaded ? tints[i] : ink.accent, 2);
         c.dot(p(0, 0), ink.dim, 3);
         const size_t beams = s.ranges.size() / std::max<size_t>(1, s.echoes);
         foot(c, c.all(), { { counted(beams, "beam"), ink.dim }, { hits ? "nearest " + f3(nearest) + " m" : "nothing in range", ink.dim } },
@@ -2951,6 +3192,48 @@ private:
         foot(c, c.all(), counted(items.size(), node.elem_std));
     }
 
+    /* A PointCloud's points as dots in their own colours, by their intensity as a scan's are,
+       or all alike, read again only when a message arrives. */
+    void cloud(Canvas& c, const Nodes& nodes, const ValueNode&)
+    {
+        const Capture::WatchView* watch = source->view(topic_);
+        if (watch && watch->seq != frame_seq_) {
+            frame_seq_ = watch->seq;
+            cloud_     = cloud_of(nodes, found_, watch->message);
+            for (const Double3& p : cloud_.points) reach_[0].seen = std::max(reach_[0].seen, math::double3_length(p));
+            for (const double v : cloud_.strength) see(v);
+        }
+        if (seen_) ease_range(lo_seen_, hi_seen_);
+        const bool own = on(Show::Colours) && !cloud_.colours.empty(), shaded = on(Show::Colours) && !cloud_.strength.empty();
+        const std::vector<Rml::Colourb> tints = own      ? std::vector<Rml::Colourb>()
+                                              : shaded ? strength_tints(cloud_.strength)
+                                                       : std::vector<Rml::Colourb>(cloud_.points.size(), ink.accent);
+        scene_.dots(cloud_.points, own ? cloud_.colours : tints, CLOUD_DOT);
+        show(c, reach_[0].grow({}, dt_));
+        foot(c, c.all(), { { counted(cloud_.points.size(), "point"), ink.dim }, { cloud_.problem.empty() ? cloud_.fields : cloud_.problem, ink.dim } },
+             shaded && seen_ ? "intensity " + short_number(lo_seen_) + " to " + short_number(hi_seen_) : std::string());
+    }
+
+    /* A Mesh, or the cells of a 3D grid's field past the middle of its span, as one shaded
+       surface in a scene that grows to hold it, made again only when a message arrives. */
+    void surface(Canvas& c, const Nodes& nodes, const ValueNode& node)
+    {
+        const Capture::WatchView* watch = source->view(topic_);
+        if (watch && watch->seq != frame_seq_) {
+            frame_seq_ = watch->seq;
+            surfaced_  = visual_ == Visual::Mesh ? mesh_of(nodes, found_, watch->message)
+                                                 : voxels_of(nodes, found_, node.std_name, watch->message);
+        }
+        const Solid one = surfaced_.solid;
+        if (surfaced_.solid.shaded) {
+            hold(reach_[0], one);
+            scene_.body(middle(one));
+            scene_.solid(one, ink.accent);
+        }
+        show(c, reach_[0].grow({}, dt_));
+        foot(c, c.all(), { { surfaced_.left[0], ink.dim }, { surfaced_.left[1], ink.dim } }, surfaced_.right);
+    }
+
     /* ---------------------------------------------------------------- maps */
 
     /* A metric north up plane over every point seen, eased, with a grid and a north mark.
@@ -3161,11 +3444,7 @@ private:
             times.push_back(number(nodes, k, "time") / 1e6);
             positions.push_back(numbers_of(nodes, kid(nodes, k, "position"), message()));
             joints = std::max(joints, positions.back().size());
-            for (const double v : positions.back()) {
-                if (!seen_) { lo_seen_ = hi_seen_ = v; seen_ = true; }
-                lo_seen_ = std::min(lo_seen_, v);
-                hi_seen_ = std::max(hi_seen_, v);
-            }
+            for (const double v : positions.back()) see(v);
         }
         double lo = seen_ ? lo_seen_ : 0, hi = seen_ ? hi_seen_ : 0;
         if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
@@ -3455,6 +3734,8 @@ private:
     bool                 one_channel_ = false;
     Levels               span_;
     Cells                cells_;   /* a grid's or a tensor's numbers, for redrawing as the levels ease */
+    Cloud                cloud_;      /* a point cloud's points, read when its message arrives */
+    Surfaced             surfaced_;   /* a mesh's or a 3D grid's surface, made when its message arrives */
 
     /* a video's decoder, for the topic it was made for, and the newest picture taken */
     std::unique_ptr<VideoDecoder> decoder_;
@@ -3538,6 +3819,9 @@ const VizElement::Row& VizElement::row_of(Visual v)
         { V::Trajectory, K::Canvas, { 3, 1 },          &E::trajectory, bits({ S::Labels, S::Colours, S::Grid, S::Readings }) },
         { V::Image,    K::Picture,  &E::picture_tile,  &E::picture,    bits({ S::Readings }) },
         { V::Grid,     K::Picture,  &E::picture_tile,  &E::picture,    bits({ S::Readings }) },
+        { V::Voxels,   K::Scene,    { 1, 1.5 },        &E::surface,    SCENE_PARTS },
+        { V::Cloud,    K::Scene,    { 1, 1.5 },        &E::cloud,      bits({ S::Colours }) | PLANE_PARTS },
+        { V::Mesh,     K::Scene,    { 1, 1.5 },        &E::surface,    SCENE_PARTS },
         { V::Video,    K::Picture,  &E::picture_tile,  &E::video,      bits({ S::Readings }), 0,
           { 0, nullptr, {}, true } },
         { V::Stream,   K::Html,     { 2.5, 0.5 },      &E::stream },

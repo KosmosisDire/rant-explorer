@@ -45,6 +45,7 @@ Visual struct_visual(const std::string& name)
         { "JointState", Visual::Joints }, { "JointNames", Visual::Chips }, { "Image", Visual::Image },
         { "JointTrajectoryPoint", Visual::Joints }, { "JointTrajectory", Visual::Trajectory },
         { "Grid", Visual::Grid }, { "GridField", Visual::Grid }, { "Tensor", Visual::Grid },
+        { "PointCloud", Visual::Cloud }, { "Mesh", Visual::Mesh },
         { "VideoFrame", Visual::Video }, { "ExternalVideoStream", Visual::Stream }, { "File", Visual::File },
     };
     for (const auto& entry : table)
@@ -91,7 +92,7 @@ bool holds_picture(const std::vector<ValueNode>& nodes, int index)
 }
 
 /* A Grid one cell high or a field of one, or a Tensor with two dimensions above 1, which
-   draw as a picture. */
+   draw as a picture. A deeper grid draws its cells in a scene. */
 bool is_flat(const std::vector<ValueNode>& nodes, int index, const std::string& std_name,
              const std::vector<uint8_t>& message)
 {
@@ -160,8 +161,10 @@ Visual visual_at(const Capture::WatchView& watch, const std::vector<ValueNode>& 
     if (index == -1 && Capture::is_call(watch.kind)) return Visual::Calls;
     const Visual visual = index == -1 ? struct_visual(watch.root_std) : index >= 0 ? visual_for(nodes[index]) : Visual::None;
     if (visual == Visual::File && holds_picture(nodes, index)) return Visual::Image;
-    if (visual == Visual::Grid && !is_flat(nodes, index, index == -1 ? watch.root_std : nodes[index].std_name, watch.message))
-        return Visual::Kv;
+    if (visual == Visual::Grid) {
+        const std::string& kind = index == -1 ? watch.root_std : nodes[index].std_name;
+        if (!is_flat(nodes, index, kind, watch.message)) return kind == "Tensor" ? Visual::Kv : Visual::Voxels;
+    }
     return visual;
 }
 

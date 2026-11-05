@@ -45,7 +45,7 @@ icon.kind.task     { color: var(--green); }
 
 /* The raised grey box a short value sits in: a tag, a value in its tree, an editor, a chip,
    a bool's lamp or a matrix cell. */
-.tag, .value-row .val, .pill-edit, viz .chip, viz .cells .cell, viz .matrix-row span {
+.tag, .value-row .val, .pill-edit, viz .chip, viz .cells .cell, viz .matrix-row > span {
 	background-color: var(--panel3);
 	border-radius: 3dp;
 }
@@ -728,29 +728,31 @@ viz .cells .lamp    { width: 12dp; height: 12dp; border-radius: 6dp; background-
 viz .cells .lamp.on { background-color: var(--green); }
 viz .cells .idx  { font-size: 12dp; color: var(--faint); }
 
-/* A matrix: rows of equal cells, since RCSS has no grid. */
-viz .matrix { display: flex; flex-direction: column; gap: 3dp; }
-viz .matrix-row { display: flex; gap: 3dp; }
-viz .matrix-row span {
+/* A matrix: rows of equal cells, since RCSS has no grid, filling the card. A cell centres
+   its number, which sits in a span of its own since flex drops loose text. */
+viz .matrix { flex: 1 0 auto; display: flex; flex-direction: column; gap: 3dp; }
+viz .matrix-row { flex: 1 0 auto; display: flex; gap: 3dp; }
+viz .matrix-row > span {
 	flex: 1;
+	display: flex;
+	align-items: center;
+	justify-content: center;
 	padding: 6dp 4dp;
-	text-align: center;
 	font-size: 14dp;
 	color: var(--text);
 }
 
-/* A struct array: a table that scrolls inside its card. */
+/* A struct array: a table that fills its card and scrolls inside it. */
 viz .scroll-table {
-	max-height: 300dp;
+	flex: 1 1 0;
 	overflow-y: auto;
 	border: 1dp var(--border);
 	border-radius: 3dp;
 }
 /* A nested array's cell is a long line, so a cell wraps inside its column. */
 viz .scroll-table td { font-size: 13dp; color: var(--text); white-space: normal; word-break: break-word; overflow: hidden; }
-/* A function's or task's calls fill their card. A message column weighs three and wraps,
-   the caller one, and the state fits its longest word. A weight works on a col only. */
-viz .scroll-table.calls { max-height: none; flex: 1 1 0; }
+/* A function's or task's calls. A message column weighs three and wraps, the caller one,
+   and the state fits its longest word. A weight works on a col only. */
 viz .calls col.message { width: 300%; }
 viz .calls col.caller  { min-width: 144dp; }
 viz .calls col.state   { width: 124dp; }
@@ -785,10 +787,13 @@ viz .multi-cell > .idx {
 	color: var(--dim);
 }
 
-/* A plain struct's fields, one row each. Not the kv panel component, whose cells grow. */
-viz .pairs { display: flex; flex-direction: column; }
+/* A plain struct's fields, one row each, spread over the card. Not the kv panel component,
+   whose cells grow. */
+viz .pairs { flex: 1 0 auto; display: flex; flex-direction: column; }
 viz .pair {
+	flex: 1 0 auto;
 	display: flex;
+	align-items: center;
 	gap: var(--gap);
 	padding: 5dp 0dp;
 	font-size: 13dp;

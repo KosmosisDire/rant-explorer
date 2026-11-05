@@ -1557,7 +1557,7 @@ private:
             std::string rml = "<div class=\"matrix mono\">";
             for (const int row : children) {
                 rml += "<div class=\"matrix-row\">";
-                for (size_t col = 0; col < children_of(nodes, row).size(); col++) rml += "<span class=\"slot\"></span>";
+                for (size_t col = 0; col < children_of(nodes, row).size(); col++) rml += "<span><span class=\"slot\"></span></span>";
                 rml += "</div>";
             }
             html("matrix:" + count, rml + "</div>");

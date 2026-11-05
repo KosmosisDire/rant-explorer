@@ -151,10 +151,10 @@ Image image_from_frame(const ImageFrame& f, const Levels* levels)
             image_levels(f, own);
             levels = &own;
         }
+        static const std::vector<rant::types::Color> viridis = rant::math::colormap_ramp(rant::math::Colormap::Viridis, 256),
+                                                     gray    = rant::math::colormap_ramp(rant::math::Colormap::Gray, 256);
         if (f.format == ImageFormat::Mono16 || f.format == ImageFormat::Monof32)
-            out = rant::math::image_colorize(view, levels->lo, levels->hi,
-                                             levels->colormap ? rant::math::Colormap::Viridis : rant::math::Colormap::Gray,
-                                             ImageFormat::Rgba8);
+            out = rant::math::image_colorize(view, levels->lo, levels->hi, levels->colormap ? viridis : gray, ImageFormat::Rgba8);
         else
             out = rant::math::image_convert(view, ImageFormat::Rgba8);
         image.width  = (int)out.width;

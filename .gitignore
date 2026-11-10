@@ -13,3 +13,5 @@ Thumbs.db
 /assets/lucide.ttf
 /assets/lucide-codepoints.json
 /assets/IBMPlex*.ttf
+
+__pycache__/

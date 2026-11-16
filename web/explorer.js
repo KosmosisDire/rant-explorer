@@ -24,7 +24,6 @@ try { saved = JSON.parse(localStorage.getItem("rant-explorer") ?? "{}"); } catch
 const home = location.protocol === "https:" ? "localhost" : location.hostname || "127.0.0.1";
 field("bridge").value = params.get("bridge") ?? saved.bridge ?? `ws://${home}:6731`;
 field("domain").value = params.get("domain") ?? saved.domain ?? "0";
-field("passphrase").value = saved.passphrase ?? "";
 
 function show(text, bad = false) {
     state.textContent = text;
@@ -66,10 +65,9 @@ function unreached(url, e) {
     return why;
 }
 
-async function connect(url, passphrase) {
+async function connect(url) {
     show("connecting to " + url);
     const net = await TunnelNet.connect(url, {
-        passphrase,
         name,
         address: iface === "127.0.0.1" ? iface : "0.0.0.0",
     });
@@ -83,7 +81,7 @@ async function start(settings) {
     let net = null, first = null;
     for (const url of candidates(settings.bridge)) {
         try {
-            net = await connect(url, settings.passphrase);
+            net = await connect(url);
             settings = { ...settings, bridge: url };
             break;
         } catch (e) {
@@ -152,9 +150,9 @@ found.addEventListener("change", () => { if (found.value) field("bridge").value 
 
 form.addEventListener("submit", (e) => {
     e.preventDefault();
-    start({ bridge: field("bridge").value.trim(), domain: field("domain").value.trim(),
-            passphrase: field("passphrase").value });
+    start({ bridge: field("bridge").value.trim(), domain: field("domain").value.trim() });
 });
 
-if (saved.passphrase && !params.has("ask")) start({ bridge: field("bridge").value.trim(), domain: field("domain").value, passphrase: saved.passphrase });
+// A bridge that took the page before is connected again at once.
+if (saved.bridge && !params.has("ask")) start({ bridge: field("bridge").value.trim(), domain: field("domain").value });
 else form.hidden = false;

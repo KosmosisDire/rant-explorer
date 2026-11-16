@@ -6,6 +6,7 @@
 
 #include "capture.hpp"
 
+#include <functional>
 #include <set>
 #include <string>
 #include <vector>
@@ -31,6 +32,18 @@ struct TreeRow {
 
 /* hay holds needle, case blind. An empty needle is in everything. */
 bool contains_ci(const std::string& hay, const std::string& needle);
+
+/* A filter's text split on spaces into words. A word that starts with '-' is one a match
+   must not hold, so "camera -hmi" keeps what holds camera and leaves out what holds hmi. */
+struct Search {
+    std::vector<std::string> want, drop;
+
+    explicit Search(const std::string& text);
+    /* Every wanted word passes hit. */
+    bool wants(const std::function<bool(const std::string&)>& hit) const;
+    /* s holds a dropped word, case blind. */
+    bool drops(const std::string& s) const;
+};
 
 /* A name under a namespace the libraries keep for themselves, such as @rant. */
 bool is_system(const std::string& name);
@@ -59,8 +72,8 @@ constexpr unsigned CAT_DEFAULT = CAT_NO_SYSTEM;
 constexpr unsigned CAT_SEARCH = ~CAT_NO_SYSTEM;
 constexpr unsigned CAT_QOS   = CAT_RELIABLE | CAT_BEST_EFFORT;
 
-/* A topic passes the text when its name, its type or one of its nodes' names contains
-   it, case blind, and passes cats as the enum says. */
+/* A topic passes the text when each wanted word is in its name, its type or one of its
+   nodes' names, and no dropped word is in its name or type. It passes cats as the enum says. */
 bool topic_passes(const Capture& capture, const Capture::TopicRow& topic, const std::string& text,
                   unsigned cats);
 

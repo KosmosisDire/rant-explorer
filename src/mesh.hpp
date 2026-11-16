@@ -31,7 +31,7 @@ constexpr unsigned MESH_KINDS = MESH_TOPIC | MESH_FUNCTION | MESH_VARIABLE | MES
 constexpr unsigned MESH_DEFAULT = MESH_NO_SYSTEM;
 
 struct MeshFilter {
-    std::string text;            /* a node's name, or a name one of its links carries */
+    std::string text;            /* a Search of node names and the names links carry */
     unsigned    cats = MESH_DEFAULT;
     int         hops = 1;        /* how far around the selected node stays lit, 0 for all */
     bool        focus = false;   /* past the hops is hidden rather than dimmed */

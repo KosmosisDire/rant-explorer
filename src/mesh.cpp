@@ -144,23 +144,33 @@ void rebuild()
     for (std::string* key : { &st.pick.node, &st.pick.from, &st.pick.to })
         if (!key->empty() && index_of(*key) < 0) st.pick = MeshPick();
 
-    auto hit = [&f](const std::string& s) { return contains_ci(s, f.text); };
+    /* A dropped word hides a node it names with all its links, and a link it names. */
+    const Search      search(f.text);
+    std::vector<char> dropped(n, 0);
+    for (size_t i = 0; i < n; i++) dropped[i] = search.drops(mesh.nodes[i].name);
     std::vector<char>          kept(mesh.links.size(), 0);
     std::vector<std::set<int>> around(n);
     for (size_t i = 0; i < mesh.links.size(); i++) {
         const Capture::MeshLink& l = mesh.links[i];
         if (!kind_kept(f.cats, l.kind) || ((f.cats & MESH_ACTIVE) && !l.active)) continue;
         if ((f.cats & MESH_NO_SYSTEM) && is_system(l.name)) continue;
-        if (!f.text.empty() && !hit(l.name) && !hit(mesh.nodes[l.from].name) && !hit(mesh.nodes[l.to].name)) continue;
+        if (dropped[l.from] || dropped[l.to] || search.drops(l.name)) continue;
+        const std::string& from = mesh.nodes[l.from].name;
+        const std::string& to   = mesh.nodes[l.to].name;
+        if (!search.wants([&](const std::string& w) { return contains_ci(l.name, w) || contains_ci(from, w) || contains_ci(to, w); }))
+            continue;
         kept[i] = 1;
         around[l.from].insert(l.to);
         around[l.to].insert(l.from);
     }
     std::vector<char> on(n, 0);
-    for (size_t i = 0; i < n; i++)
-        on[i] = (f.text.empty() || hit(mesh.nodes[i].name) || !around[i].empty()) &&
+    for (size_t i = 0; i < n; i++) {
+        const std::string& name = mesh.nodes[i].name;
+        on[i] = !dropped[i] &&
+                (search.wants([&name](const std::string& w) { return contains_ci(name, w); }) || !around[i].empty()) &&
                 !((f.cats & MESH_CONNECTED) && around[i].empty()) &&
                 !((f.cats & MESH_NO_LEAVES) && around[i].size() == 1);
+    }
 
     /* The selection lights what is within the hops of a node, or the two ends of a pair. */
     st.lit.assign(n, 1);

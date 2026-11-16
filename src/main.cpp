@@ -2761,9 +2761,9 @@ int main(int argc, char** argv)
             tree_dirty  = false;
             int matched = 0;
             /* A search opens the branches holding its matches once, then leaves them to the
-               user. Ending it puts back what was open before. */
+               user. Ending it puts back what was open before. Dropped words alone only hide. */
             const unsigned search_cats = (unsigned)ui.topic_cats & CAT_SEARCH;
-            const std::string search = ui.topic_filter.empty() && !search_cats
+            const std::string search = Search(ui.topic_filter).want.empty() && !search_cats
                                      ? std::string() : ui.topic_filter + "|" + std::to_string(search_cats);
             if (search != tree_search) {
                 if (tree_search.empty()) expanded_before = ui.expanded;

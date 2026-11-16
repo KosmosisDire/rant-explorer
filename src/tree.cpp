@@ -19,6 +19,35 @@ bool contains_ci(const std::string& hay, const std::string& needle)
     return it != hay.end();
 }
 
+Search::Search(const std::string& text)
+{
+    std::string word;
+    auto end = [this, &word] {
+        if (word.size() > 1 && word[0] == '-') drop.push_back(word.substr(1));
+        else if (!word.empty() && word != "-") want.push_back(word);
+        word.clear();
+    };
+    for (const char c : text) {
+        if (c == ' ') end();
+        else word += c;
+    }
+    end();
+}
+
+bool Search::wants(const std::function<bool(const std::string&)>& hit) const
+{
+    for (const std::string& word : want)
+        if (!hit(word)) return false;
+    return true;
+}
+
+bool Search::drops(const std::string& s) const
+{
+    for (const std::string& word : drop)
+        if (contains_ci(s, word)) return true;
+    return false;
+}
+
 bool is_system(const std::string& name)
 {
     return !name.empty() && name[0] == '@';
@@ -101,10 +130,14 @@ bool topic_passes(const Capture& capture, const Capture::TopicRow& topic, const 
         const Capture::WatchView* view = capture.view(topic.key);
         if (!(view && view->rate_hz > 0) && !(capture.traffic_hz(topic.key) > 0)) return false;
     }
-    if (text.empty() || contains_ci(topic.name, text) || contains_ci(topic.type, text)) return true;
-    for (const std::string& node : topic.nodes)
-        if (contains_ci(node, text)) return true;
-    return false;
+    const Search search(text);
+    if (search.drops(topic.name) || search.drops(topic.type)) return false;
+    return search.wants([&topic](const std::string& word) {
+        if (contains_ci(topic.name, word) || contains_ci(topic.type, word)) return true;
+        for (const std::string& node : topic.nodes)
+            if (contains_ci(node, word)) return true;
+        return false;
+    });
 }
 
 std::string tree_path(const std::string& name)

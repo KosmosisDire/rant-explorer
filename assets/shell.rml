@@ -51,7 +51,7 @@
 					<div class="pane-head">
 						<div class="filter">
 							<icon name="search" />
-							<input type="text" class="mono" placeholder="Filter topics..." data-value="topic_filter" />
+							<input type="text" class="mono" placeholder="Filter topics, -word hides..." data-value="topic_filter" />
 							<icon name="x" class="clear" data-if="topic_filter != ''" data-event-click="clear_filter" />
 						</div>
 						<span class="icon-button" data-class-on="topic_funnel" data-event-click="open_filter_menu('filter')">
@@ -583,7 +583,7 @@
 					<div class="pane-head">
 						<div class="filter">
 							<icon name="search" />
-							<input type="text" class="mono" placeholder="Filter nodes and names..." data-value="mesh_filter" />
+							<input type="text" class="mono" placeholder="Filter nodes and names, -word hides..." data-value="mesh_filter" />
 							<icon name="x" class="clear" data-if="mesh_filter != ''" data-event-click="clear_mesh_filter" />
 						</div>
 						<span class="icon-button" data-class-on="mesh_funnel" data-event-click="open_filter_menu('mesh')">

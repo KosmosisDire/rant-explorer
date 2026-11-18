@@ -364,6 +364,13 @@ public:
     };
     void trace(const std::string& key, const std::vector<TraceSpec>& specs);
     const std::deque<TracePoint>* trace_of(const std::string& key, const std::string& path) const;
+    /* A node's smoothed round trip and jitter from here in ms, a point each time a probe
+       moved them, over LINK_SECONDS with one point older. Null for a node not seen. */
+    static constexpr double LINK_SECONDS = 60;
+    struct LinkTrace {
+        std::deque<TracePoint> rtt, jitter;
+    };
+    const LinkTrace* link_trace(const std::string& id) const;
     /* The clock trace points are on, in seconds. */
     static double now_s();
     /* How old a view's stamp_us is on this host's wall clock, negative without one. */

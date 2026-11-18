@@ -455,17 +455,47 @@ bool inside(Rml::Vector2f p, float left, float top, float right, float bottom)
     return p.x >= left && p.x <= right && p.y >= top && p.y <= bottom;
 }
 
-/* The time axis of a strip: a line every two seconds unless the grid is hidden, each named
+/* The time axis of a strip: a line every step seconds unless the grid is hidden, each named
    along the bottom, now at the right. */
 template <class X>
-void time_grid(Canvas& c, X x_of, double now, float y0, float y1, bool grid)
+void time_grid(Canvas& c, X x_of, double now, float y0, float y1, bool grid, int span = (int)PLOT_SECONDS, int step = 2)
 {
-    for (int sec = 2; sec <= 10; sec += 2) {
+    for (int sec = step; sec <= span; sec += step) {
         const float x = x_of(now - sec);
         if (grid) c.line(x, y0, x, y1, ink.grid);
-        c.text("-" + std::to_string(sec) + " s", x, c.h() - c.dp(6), sec == 10 ? Canvas::Left : Canvas::Center, ink.faint, LABEL);
+        c.text("-" + std::to_string(sec) + " s", x, c.h() - c.dp(6), sec == span ? Canvas::Left : Canvas::Center, ink.faint, LABEL);
     }
     c.text("now", x_of(now), c.h() - c.dp(6), Canvas::Right, ink.faint, LABEL);
+}
+
+/* A trace as a line cut to the plot, so its tail slides off the left and a new extreme stays
+   inside. The newest value holds until now, and one that is not finite leaves a gap. */
+template <class X, class Y>
+void trace_line(Canvas& c, const std::deque<Capture::TracePoint>& points, X x_of, Y y_of, double now,
+                float left, float top, float right, float bottom, Rml::Colourb colour)
+{
+    Columns columns;
+    for (const Capture::TracePoint& p : points) {
+        if (std::isfinite(p.v)) columns.add({ x_of(p.t), y_of(p.v) });
+        else                    columns.gap();
+    }
+    if (!points.empty() && points.back().t < now && std::isfinite(points.back().v)) columns.add({ x_of(now), y_of(points.back().v) });
+    const std::vector<Rml::Vector2f>& line = columns.points();
+    std::vector<Rml::Vector2f> run;
+    for (size_t i = 1; i < line.size(); i++) {
+        float ax = line[i - 1].x, ay = line[i - 1].y, bx = line[i].x, by = line[i].y;
+        if (!std::isfinite(ay) || !std::isfinite(by) || !clip(ax, ay, bx, by, left, top, right, bottom)) continue;
+        if (run.empty() || run.back().x != ax || run.back().y != ay) {
+            c.polyline(run, colour, STROKE);
+            run.assign(1, { ax, ay });
+        }
+        run.push_back({ bx, by });
+    }
+    c.polyline(run, colour, STROKE);
+    if (!points.empty()) {
+        const float y = y_of(points.back().v);
+        if (y >= top && y <= bottom) c.dot(x_of(std::max(now, points.back().t)), y, colour, 4);
+    }
 }
 
 /* Horizontal lines at round steps across a value range unless the grid is hidden, labelled
@@ -2560,33 +2590,7 @@ private:
 
         time_grid(c, X, now, top, bottom, on(Show::Grid));
         value_grid(c, x0, x1, lo_, hi_, Y, is_float, on(Show::Grid));
-        /* Each line is cut to the plot, so its tail slides off the left and a new extreme stays
-           inside. The newest value holds until now, and one that is not finite leaves a gap. */
-        for (size_t k = 0; k < paths.size(); k++) {
-            const auto& points = trace(paths[k]);
-            Columns columns;
-            for (const Capture::TracePoint& p : points) {
-                if (std::isfinite(p.v)) columns.add({ X(p.t), Y(p.v) });
-                else                    columns.gap();
-            }
-            if (!points.empty() && points.back().t < now && std::isfinite(points.back().v)) columns.add({ X(now), Y(points.back().v) });
-            const std::vector<Rml::Vector2f>& line = columns.points();
-            std::vector<Rml::Vector2f> run;
-            for (size_t i = 1; i < line.size(); i++) {
-                float ax = line[i - 1].x, ay = line[i - 1].y, bx = line[i].x, by = line[i].y;
-                if (!std::isfinite(ay) || !std::isfinite(by) || !clip(ax, ay, bx, by, x0, top, x1, bottom)) continue;
-                if (run.empty() || run.back().x != ax || run.back().y != ay) {
-                    c.polyline(run, colours[k], STROKE);
-                    run.assign(1, { ax, ay });
-                }
-                run.push_back({ bx, by });
-            }
-            c.polyline(run, colours[k], STROKE);
-            if (!points.empty()) {
-                const float y = Y(points.back().v);
-                if (y >= top && y <= bottom) c.dot(X(std::max(now, points.back().t)), y, colours[k], 4);
-            }
-        }
+        for (size_t k = 0; k < paths.size(); k++) trace_line(c, trace(paths[k]), X, Y, now, x0, top, x1, bottom, colours[k]);
     }
 
     /* The value over time, or without history the value alone. */
@@ -3962,7 +3966,62 @@ const VizElement::Row& VizElement::row_of(Visual v)
     return rows[0];
 }
 
+/* The <link-plot> element: the selected node's round trip and jitter from here over the last
+   minute, from zero to past the highest point, eased. */
+class LinkPlot : public Rml::Element {
+public:
+    explicit LinkPlot(const Rml::String& tag) : Rml::Element(tag) {}
+
+protected:
+    void OnRender() override
+    {
+        Rml::Element::OnRender();
+        if (!source) return;
+        Canvas c(*this, shapes_);
+        if (c.w() < 1 || c.h() < 1) return;
+        read_ink(*this);
+        const double now = Capture::now_s();
+        const double dt  = last_frame_ > 0 ? std::min(now - last_frame_, 0.5) : 1.0;
+        last_frame_ = now;
+
+        const Capture::LinkTrace* link = source->link_trace(source->selected());
+        if (source->selected() != node_) {
+            node_ = source->selected();
+            hi_   = 0;
+        }
+        if (!link || link->rtt.empty()) {
+            c.text("no round trip measured yet", c.w() / 2, c.h() / 2, Canvas::Center, ink.faint, LABEL);
+            c.render();
+            return;
+        }
+        double highest = 0;
+        for (const Capture::TracePoint& p : link->rtt) highest = std::max(highest, p.v);
+        for (const Capture::TracePoint& p : link->jitter) highest = std::max(highest, p.v);
+        const double target = std::max(0.1, highest * 1.15);
+        hi_ = hi_ > 0 ? ease(hi_, target, dt) : target;
+
+        const float top = c.dp(10), bottom = c.h() - c.dp(BOT + LINE);
+        const float x0 = c.dp(GUTTER), x1 = c.w() - c.dp(10);
+        auto X = [&](double t) { return (float)(x0 + (x1 - x0) * (1 - (now - t) / Capture::LINK_SECONDS)); };
+        auto Y = [&](double v) { return (float)(top + (bottom - top) * (1 - v / hi_)); };
+        time_grid(c, X, now, top, bottom, true, (int)Capture::LINK_SECONDS, 10);
+        value_grid(c, x0, x1, 0, hi_, Y, true, true);
+        trace_line(c, link->jitter, X, Y, now, x0, top, x1, bottom, ink.blue);
+        trace_line(c, link->rtt, X, Y, now, x0, top, x1, bottom, ink.accent);
+        draw_foot(c, Area{ x0 - c.dp(8), 0, c.w() - x0 + c.dp(8), c.h() - c.dp(LINE) },
+                  { { "round trip " + format_ms(link->rtt.back().v), ink.accent }, { "jitter " + format_ms(link->jitter.back().v), ink.blue } },
+                  "from here");
+        c.render();
+    }
+
+private:
+    Rml::Mesh   shapes_;
+    std::string node_;
+    double      hi_ = 0, last_frame_ = 0;
+};
+
 Rml::ElementInstancerGeneric<VizElement> instancer;
+Rml::ElementInstancerGeneric<LinkPlot>   link_instancer;
 
 } /* namespace */
 
@@ -3970,6 +4029,7 @@ void viz_init(Capture& capture)
 {
     source = &capture;
     Rml::Factory::RegisterElementInstancer("viz", &instancer);
+    Rml::Factory::RegisterElementInstancer("link-plot", &link_instancer);
 }
 
 VizFeeds viz_feeds(const Capture::WatchView& watch, const std::set<std::string>& shown,

@@ -664,8 +664,9 @@ body.touch .viz-close         { opacity: 1; }   /* a finger never hovers */
 .head-bar div { height: 100%; background-color: var(--green); }
 
 /* The visual itself: a drawing in its content box, or elements for the text visuals, which
-   keep clear of the name at the top. The mesh graph draws with the same colours. */
-viz, mesh-graph {
+   keep clear of the name at the top. The mesh graph and a node's round trip plot draw with
+   the same colours. */
+viz, mesh-graph, link-plot {
 	display: block;
 	font-family: ui-mono;
 	font-size: 12dp;
@@ -982,6 +983,22 @@ scrollbarvertical sliderarrowinc {
 	gap: 10dp;
 	margin-bottom: 14dp;
 }
+
+.head-address {
+	font-size: 12dp;
+	color: var(--dim);
+	white-space: nowrap;
+}
+
+/* A section heading that shows or hides what follows it. */
+.section.fold {
+	display: flex;
+	align-items: center;
+	gap: 6dp;
+	cursor: pointer;
+}
+.section.fold:hover { color: var(--dim); }
+.section.fold icon  { font-size: 12dp; }
 
 /* Under the heading, one line per fault that stops the nodes connecting. */
 .issues {

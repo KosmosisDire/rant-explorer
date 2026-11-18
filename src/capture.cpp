@@ -683,6 +683,8 @@ struct Capture::Impl {
             bool        provides = false, consumes = false, reliable = false;
         };
         std::vector<End> ends;   /* that walk, for the mesh graph */
+        Capture::LinkTrace link;
+        uint32_t           link_samples = 0;   /* the probe count the newest link point came from */
     };
     std::map<std::string, Track> tracks;   /* by uuid hex */
 
@@ -2285,6 +2287,16 @@ void Capture::poll()
             row.rtt_ms     = p.rtt_us / 1e3;
             row.jitter_ms  = p.rtt_jitter_us / 1e3;
             row.rtt_min_ms = p.rtt_min_us / 1e3;
+        }
+        if (p.rtt_samples && p.rtt_samples != track.link_samples) {
+            track.link_samples = p.rtt_samples;
+            const double t = (double)now_steady / 1e6;
+            auto add = [t](std::deque<TracePoint>& line, double v) {
+                line.push_back({ t, v });
+                while (line.size() > 1 && line[1].t < t - LINK_SECONDS) line.pop_front();
+            };
+            add(track.link.rtt, row.rtt_ms);
+            add(track.link.jitter, row.jitter_ms);
         }
         if (node_now && p.last_heard_us)
             row.last_heard_s = (double)(node_now - p.last_heard_us) / 1e6;

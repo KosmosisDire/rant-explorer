@@ -356,6 +356,7 @@
 								<span class="hero" copy="">{{sel.name}}</span>
 								<span class="badge ok" data-if="sel.alive">ALIVE</span>
 								<span class="badge warn" data-if="!sel.alive">JOINING</span>
+								<span class="head-address mono" copy="">{{sel.address}}</span>
 							</div>
 
 							<div class="section">Status {{conditions.size}}</div>
@@ -370,156 +371,8 @@
 								</div>
 							</div>
 
-							<div class="section">Discovery</div>
-							<div class="panel" copy-table="">
-								<div class="kv-row">
-									<div class="kv"><span class="k">Unicast locator</span><span
-											class="v mono">{{sel.address}}</span></div>
-									<div class="kv"><span class="k">Fragment size</span><span
-											class="v mono">{{sel.fragment_size | bytes}}</span></div>
-								</div>
-								<div class="kv-row">
-									<div class="kv"><span class="k">Last announce</span><span
-											class="v mono">{{sel.last_heard_s | age}}</span></div>
-									<div class="kv"><span class="k">Observed for</span><span
-											class="v mono">{{sel.observed_s | dur}}</span></div>
-								</div>
-								<div class="kv-row">
-									<div class="kv"><span class="k">Announce updates</span><span
-											class="v mono">{{sel.updates}}</span></div>
-								</div>
-							</div>
-
-							<div class="section">Link (measured from here)</div>
-							<div class="panel" copy-table="">
-								<div class="kv-row">
-									<div class="kv"><span class="k">Round trip</span><span class="v mono">{{sel.rtt_ms |
-											ms}}</span></div>
-									<div class="kv"><span class="k">Jitter</span><span class="v mono">{{sel.jitter_ms |
-											ms}}</span></div>
-								</div>
-								<div class="kv-row">
-									<div class="kv"><span class="k">Fastest</span><span class="v mono">{{sel.rtt_min_ms
-											| ms}}</span></div>
-									<div class="kv"><span class="k">Samples</span><span
-											class="v mono">{{sel.rtt_samples}}</span></div>
-								</div>
-							</div>
-
-							<div class="section">Runtime</div>
-							<div class="panel" copy-table="" data-if="!meta.fresh">
-								<div class="kv-row">
-									<div class="kv"><span class="k">Status</span><span
-											class="v mono">{{meta.status}}</span></div>
-								</div>
-							</div>
-							<div class="panel" copy-table="" data-if="meta.fresh">
-								<div class="kv-row">
-									<div class="kv"><span class="k">Uptime</span><span class="v mono">{{meta.uptime_s |
-											dur}}</span></div>
-									<div class="kv"><span class="k">Snapshot age</span><span class="v mono">{{meta.age_s
-											| age}}</span></div>
-								</div>
-								<div class="kv-row">
-									<div class="kv"><span class="k">Matched peers</span><span class="v mono">{{meta.matched_peers}} /
-											{{meta.max_peers}}</span></div>
-									<div class="kv"><span class="k">Topics</span><span class="v mono">{{meta.topics}} /
-											{{meta.max_topics}}</span></div>
-								</div>
-								<div class="kv-row">
-									<div class="kv"><span class="k">Mem in use</span><span
-											class="v mono">{{meta.mem_in_use | bytes}}</span></div>
-									<div class="kv"><span class="k">Mem peak</span><span class="v mono">{{meta.mem_peak
-											| bytes}}</span></div>
-								</div>
-								<div class="kv-row">
-									<div class="kv"><span class="k">Alloc calls</span><span
-											class="v mono">{{meta.alloc_calls | num}}</span></div>
-									<div class="kv"><span class="k">Evicted unsent</span><span
-											class="v mono">{{meta.evicted_unsent | num}}</span></div>
-								</div>
-								<div class="kv-row">
-									<div class="kv"><span class="k">BP waits</span><span class="v mono">{{meta.bp_waits
-											| num}}</span></div>
-									<div class="kv"><span class="k">BP waited</span><span
-											class="v mono">{{meta.bp_waited_s | dur}}</span></div>
-								</div>
-								<div class="kv-row">
-									<div class="kv"><span class="k">SHM sent</span><span class="v mono">{{meta.shm_tx |
-											num}}</span></div>
-									<div class="kv"><span class="k">SHM received</span><span
-											class="v mono">{{meta.shm_rx | num}}</span></div>
-								</div>
-								<div class="kv-row">
-									<div class="kv">
-										<span class="k">Last error</span>
-										<span class="v mono" data-if="meta.last_error != ''">{{meta.last_error}}</span>
-										<span class="v faint" data-if="meta.last_error == ''">none</span>
-									</div>
-								</div>
-							</div>
-
-							<div data-if="meta.fresh">
-								<div class="section">Peers</div>
-								<div class="panel" copy-table="">
-									<div class="kv-row" data-if="meta.peer_rows.size == 0">
-										<div class="kv"><span class="k">Peers</span><span class="v faint">none</span>
-										</div>
-									</div>
-									<table data-if="meta.peer_rows.size > 0">
-										<tr>
-											<th class="wide">Peer</th>
-											<th class="num">Round trip</th>
-											<th class="num">Jitter</th>
-											<th class="num more">Fastest</th>
-											<th class="num more">Samples</th>
-											<th class="num more">Lanes out</th>
-											<th class="num more">Lanes in</th>
-										</tr>
-										<tr data-for="p : meta.peer_rows">
-											<td>{{p.name}}<span class="warn" data-if="!p.active"> (dropped)</span></td>
-											<td class="num mono">{{p.rtt_ms | ms}}</td>
-											<td class="num mono">{{p.jitter_ms | ms}}</td>
-											<td class="num mono more">{{p.rtt_min_ms | ms}}</td>
-											<td class="num mono more">{{p.samples}}</td>
-											<td class="num mono more">{{p.publish_to}}</td>
-											<td class="num mono more">{{p.receive_from}}</td>
-										</tr>
-									</table>
-								</div>
-
-								<div class="section">Process</div>
-								<div class="panel" copy-table="">
-									<div class="kv-row" data-if="!meta.have_proc">
-										<div class="kv"><span class="k">Process stats</span><span class="v faint">not
-												measured on that platform</span></div>
-									</div>
-									<div class="kv-row" data-if="meta.have_proc">
-										<div class="kv"><span class="k">CPU</span><span class="v mono">{{meta.cpu_pct |
-												pct}}</span></div>
-										<div class="kv"><span class="k">PID</span><span
-												class="v mono">{{meta.pid}}</span></div>
-									</div>
-									<div class="kv-row" data-if="meta.have_proc">
-										<div class="kv"><span class="k">Memory (RSS)</span><span
-												class="v mono">{{meta.rss | bytes}}</span></div>
-										<div class="kv"><span class="k">Peak RSS</span><span
-												class="v mono">{{meta.peak_rss | bytes}}</span></div>
-									</div>
-									<div class="kv-row" data-if="meta.heap_total > 0">
-										<div class="kv"><span class="k">Default heap</span><span
-												class="v mono">{{meta.heap_total | bytes}}</span></div>
-										<div class="kv"><span class="k">Free now</span><span
-												class="v mono">{{meta.heap_free | bytes}}</span></div>
-									</div>
-									<div class="kv-row" data-if="meta.heap_total > 0">
-										<div class="kv"><span class="k">Minimum free</span><span
-												class="v mono">{{meta.heap_min_free | bytes}}</span></div>
-										<div class="kv"><span class="k">Largest block</span><span
-												class="v mono">{{meta.heap_largest | bytes}}</span></div>
-									</div>
-								</div>
-							</div>
+							<div class="section">Round trip</div>
+							<link-plot></link-plot>
 
 							<div class="section">Publishes {{publishes.size}}</div>
 							<div class="cards" copy-table="">
@@ -541,6 +394,163 @@
 										data-class-variable="e.kind == 'variable'" data-class-task="e.kind == 'task'" />
 									<span class="name mono" cell="">{{e.name}}</span>
 								</div>
+							</div>
+
+							<div class="section fold" data-event-click="toggle_advanced">
+								<icon data-attr-name="advanced ? 'chevron-down' : 'chevron-right'" /><span>Advanced</span>
+							</div>
+							<div data-if="advanced">
+
+								<div class="section">Network</div>
+								<div class="panel" copy-table="">
+									<div class="kv-row">
+										<div class="kv"><span class="k">Address</span><span
+												class="v mono">{{sel.address}}</span></div>
+										<div class="kv"><span class="k">Fragment size</span><span
+												class="v mono">{{sel.fragment_size | bytes}}</span></div>
+									</div>
+									<div class="kv-row">
+										<div class="kv"><span class="k">Round trip</span><span class="v mono">{{sel.rtt_ms |
+												ms}}</span></div>
+										<div class="kv"><span class="k">Jitter</span><span class="v mono">{{sel.jitter_ms |
+												ms}}</span></div>
+									</div>
+									<div class="kv-row">
+										<div class="kv"><span class="k">Fastest</span><span class="v mono">{{sel.rtt_min_ms
+												| ms}}</span></div>
+										<div class="kv"><span class="k">Samples</span><span
+												class="v mono">{{sel.rtt_samples}}</span></div>
+									</div>
+									<div class="kv-row" data-if="meta.fresh">
+										<div class="kv"><span class="k">SHM sent</span><span class="v mono">{{meta.shm_tx |
+												num}}</span></div>
+										<div class="kv"><span class="k">SHM received</span><span
+												class="v mono">{{meta.shm_rx | num}}</span></div>
+									</div>
+								</div>
+
+								<div data-if="meta.fresh">
+									<div class="section">Peers {{meta.matched_peers}} of {{meta.max_peers}}</div>
+									<div class="panel" copy-table="">
+										<div class="placeholder" data-if="meta.peer_rows.size == 0">none</div>
+										<table data-if="meta.peer_rows.size > 0">
+											<tr>
+												<th class="wide">Peer</th>
+												<th class="num">Round trip</th>
+												<th class="num">Jitter</th>
+												<th class="num more">Fastest</th>
+												<th class="num more">Samples</th>
+												<th class="num more">Lanes out</th>
+												<th class="num more">Lanes in</th>
+											</tr>
+											<tr data-for="p : meta.peer_rows">
+												<td>{{p.name}}<span class="warn" data-if="!p.active"> (dropped)</span></td>
+												<td class="num mono">{{p.rtt_ms | ms}}</td>
+												<td class="num mono">{{p.jitter_ms | ms}}</td>
+												<td class="num mono more">{{p.rtt_min_ms | ms}}</td>
+												<td class="num mono more">{{p.samples}}</td>
+												<td class="num mono more">{{p.publish_to}}</td>
+												<td class="num mono more">{{p.receive_from}}</td>
+											</tr>
+										</table>
+									</div>
+								</div>
+
+								<div class="section">Rant</div>
+								<div class="panel" copy-table="" data-if="!meta.fresh">
+									<div class="kv-row">
+										<div class="kv"><span class="k">Status</span><span
+												class="v mono">{{meta.status}}</span></div>
+									</div>
+								</div>
+								<div class="panel" copy-table="" data-if="meta.fresh">
+									<div class="kv-row">
+										<div class="kv"><span class="k">Uptime</span><span class="v mono">{{meta.uptime_s |
+												dur}}</span></div>
+										<div class="kv"><span class="k">Topics</span><span class="v mono">{{meta.topics}} /
+												{{meta.max_topics}}</span></div>
+									</div>
+									<div class="kv-row">
+										<div class="kv"><span class="k">Mem in use</span><span
+												class="v mono">{{meta.mem_in_use | bytes}}</span></div>
+										<div class="kv"><span class="k">Mem peak</span><span class="v mono">{{meta.mem_peak
+												| bytes}}</span></div>
+									</div>
+									<div class="kv-row">
+										<div class="kv"><span class="k">Alloc calls</span><span
+												class="v mono">{{meta.alloc_calls | num}}</span></div>
+										<div class="kv"><span class="k">Evicted unsent</span><span
+												class="v mono">{{meta.evicted_unsent | num}}</span></div>
+									</div>
+									<div class="kv-row">
+										<div class="kv"><span class="k">BP waits</span><span class="v mono">{{meta.bp_waits
+												| num}}</span></div>
+										<div class="kv"><span class="k">BP waited</span><span
+												class="v mono">{{meta.bp_waited_s | dur}}</span></div>
+									</div>
+									<div class="kv-row">
+										<div class="kv">
+											<span class="k">Last error</span>
+											<span class="v mono" data-if="meta.last_error != ''">{{meta.last_error}}</span>
+											<span class="v faint" data-if="meta.last_error == ''">none</span>
+										</div>
+									</div>
+								</div>
+
+								<div data-if="meta.fresh">
+									<div class="section">Process</div>
+									<div class="panel" copy-table="">
+										<div class="kv-row" data-if="!meta.have_proc">
+											<div class="kv"><span class="k">Process stats</span><span class="v faint">not
+													measured on that platform</span></div>
+										</div>
+										<div class="kv-row" data-if="meta.have_proc">
+											<div class="kv"><span class="k">CPU</span><span class="v mono">{{meta.cpu_pct |
+													pct}}</span></div>
+											<div class="kv"><span class="k">PID</span><span
+													class="v mono">{{meta.pid}}</span></div>
+										</div>
+										<div class="kv-row" data-if="meta.have_proc">
+											<div class="kv"><span class="k">Memory (RSS)</span><span
+													class="v mono">{{meta.rss | bytes}}</span></div>
+											<div class="kv"><span class="k">Peak RSS</span><span
+													class="v mono">{{meta.peak_rss | bytes}}</span></div>
+										</div>
+										<div class="kv-row" data-if="meta.heap_total > 0">
+											<div class="kv"><span class="k">Default heap</span><span
+													class="v mono">{{meta.heap_total | bytes}}</span></div>
+											<div class="kv"><span class="k">Free now</span><span
+													class="v mono">{{meta.heap_free | bytes}}</span></div>
+										</div>
+										<div class="kv-row" data-if="meta.heap_total > 0">
+											<div class="kv"><span class="k">Minimum free</span><span
+													class="v mono">{{meta.heap_min_free | bytes}}</span></div>
+											<div class="kv"><span class="k">Largest block</span><span
+													class="v mono">{{meta.heap_largest | bytes}}</span></div>
+										</div>
+									</div>
+								</div>
+
+								<div class="section">Discovery</div>
+								<div class="panel" copy-table="">
+									<div class="kv-row">
+										<div class="kv"><span class="k">ID</span><span class="v mono">{{sel.id}}</span></div>
+									</div>
+									<div class="kv-row">
+										<div class="kv"><span class="k">Last announce</span><span
+												class="v mono">{{sel.last_heard_s | age}}</span></div>
+										<div class="kv"><span class="k">Announce updates</span><span
+												class="v mono">{{sel.updates}}</span></div>
+									</div>
+									<div class="kv-row">
+										<div class="kv"><span class="k">Observed for</span><span
+												class="v mono">{{sel.observed_s | dur}}</span></div>
+										<div class="kv"><span class="k">Snapshot age</span><span class="v mono"
+												data-if="meta.fresh">{{meta.age_s | age}}</span><span class="v faint"
+												data-if="!meta.fresh">none</span></div>
+									</div>
+								</div>
+
 							</div>
 
 						</div>

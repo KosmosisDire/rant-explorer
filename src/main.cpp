@@ -362,6 +362,7 @@ struct Ui {
     Rml::Vector<Capture::LogRow>      log;
     Rml::Vector<Capture::StatusRow>   conditions;
     bool log_error = true, log_warn = true, log_info = true, log_debug = true;
+    bool advanced  = false;   /* the detail's Advanced part is open */
 
     /* mesh tab: the head's filters, and the sidebar for the selection */
     Rml::String mesh_filter;
@@ -1493,6 +1494,7 @@ int main(int argc, char** argv)
         ctor.Bind("card_page",       &ui.card_page);
         ctor.Bind("shown_card",      &ui.shown_card);
         ctor.Bind("light",           &ui.light);
+        ctor.Bind("advanced",        &ui.advanced);
         ctor.Bind("mesh_filter",     &ui.mesh_filter);
         ctor.Bind("mesh_cats",       &ui.mesh_cats);
         ctor.Bind("mesh_hops",       &ui.mesh_hops);
@@ -2288,6 +2290,11 @@ int main(int argc, char** argv)
             [&ui](Rml::DataModelHandle handle, Rml::Event&, const Rml::VariantList&) {
                 ui.topic_filter.clear();
                 handle.DirtyVariable("topic_filter");
+            });
+        ctor.BindEventCallback("toggle_advanced",
+            [&ui](Rml::DataModelHandle handle, Rml::Event&, const Rml::VariantList&) {
+                ui.advanced = !ui.advanced;
+                handle.DirtyVariable("advanced");
             });
         ctor.BindEventCallback("toggle_log",
             [&ui, &capture](Rml::DataModelHandle handle, Rml::Event&, const Rml::VariantList& args) {

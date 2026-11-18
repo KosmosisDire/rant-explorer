@@ -16,7 +16,8 @@
 
 namespace Rml { class Element; }
 
-/* Registers the element. The capture outlives every document. */
+/* Registers it and <link-plot>, a node's round trip over time. The capture outlives every
+   document. */
 void viz_init(Capture& capture);
 
 /* What the shown visuals of one topic need from the capture: the scalar fields they draw

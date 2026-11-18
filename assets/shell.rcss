@@ -332,6 +332,8 @@ body.hide-value .c-value { display: none; }
 
 .mesh-info { padding: var(--pad); }
 
+.detail link-plot { height: 150dp; }
+
 /* --------------------------------------------------------------------- compact */
 
 /* A phone shows the detail whole. The top bar folds away: its left toggle floats as the

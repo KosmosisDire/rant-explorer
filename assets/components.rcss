@@ -822,22 +822,17 @@ viz .pair-value    { margin-left: auto; min-width: 0; color: var(--text); text-a
 
 /* ------------------------------------------------------------------- key / value */
 
-/* A surface holding kv-rows. */
+/* Kv-rows or a table flat on the pane, with no fill or frame. Its cells pad as wide as it
+   reaches out, so their text lines up with the heading above. */
 .panel {
-	background-color: var(--panel2);
-	border: 1dp var(--border);
-	border-radius: 6dp;
-	box-shadow: var(--shadow-color) 0dp 0dp 5dp;
+	margin: 0dp -8dp;
 }
+.panel > .placeholder { padding: 7dp 8dp; }
 
-/* One line of a panel: one or two cells, divided by the border between them. */
+/* One line of a panel: one or two cells. */
 .kv-row {
 	display: flex;
 	border-bottom: 1dp var(--border);
-}
-
-.kv-row:last-child {
-	border-bottom-width: 0dp;
 }
 
 .kv {
@@ -845,11 +840,11 @@ viz .pair-value    { margin-left: auto; min-width: 0; color: var(--text); text-a
 	display: flex;
 	align-items: center;
 	gap: var(--gap);
-	padding: 8dp var(--pad);
+	padding: 7dp 8dp;
 }
 
 .kv + .kv {
-	border-left: 1dp var(--border);
+	margin-left: var(--pad);
 }
 
 .k {
@@ -891,7 +886,7 @@ td {
 	border-bottom: 1dp var(--border);
 }
 
-tr:last-child td {
+viz tr:last-child td {
 	border-bottom-width: 0dp;
 }
 

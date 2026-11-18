@@ -448,7 +448,7 @@ body.compact .c-type { display: none; }
    table's extra columns, the mesh head's hops, focus and shuffle. */
 body.compact .kv-row { flex-direction: column; }
 body.compact .kv { flex: 0 0 auto; }
-body.compact .kv + .kv { border-left-width: 0dp; border-top: 1dp var(--border); }
+body.compact .kv + .kv { margin-left: 0dp; border-top: 1dp var(--border); }
 body.compact .more { display: none; }
 
 /* An iconic button drops its label and frame, a plain glyph like an icon button. */

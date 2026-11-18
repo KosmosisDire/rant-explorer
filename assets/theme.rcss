@@ -69,6 +69,10 @@ body {
 	--blue:       rgba(74, 143, 214, 255);
 	--purple:     rgba(154, 111, 214, 255);
 
+	/* A node's box in the mesh graph, which sits on the ground. */
+	--node-box:  rgba(40, 40, 40, 255);
+	--node-edge: rgba(56, 56, 56, 255);
+
 	/* The one rhythm every component measures against. */
 	--gap:    8dp;
 	--pad:    12dp;
@@ -153,6 +157,9 @@ body.light {
 	--viz-ground: rgba(186, 186, 186, 255);
 	--blue:       rgba(37, 110, 190, 255);
 	--purple:     rgba(120, 78, 190, 255);
+
+	--node-box:  rgba(255, 255, 255, 255);
+	--node-edge: rgba(208, 204, 204, 255);
 }
 
 /* The type scale, in the mockup's CSS px. main.cpp registers IBM Plex under these two

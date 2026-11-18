@@ -347,6 +347,19 @@ private:
 };
 
 /* Everything the documents bind to. Copied from Capture once per frame. */
+/* One of the node log's level toggles: its icon and how many lines of that level are held. */
+struct LevelToggle {
+    int         level = 0;   /* a rant::Level */
+    Rml::String icon;
+    int         count = 0;
+    bool        on = true;
+
+    bool operator==(const LevelToggle& o) const
+    {
+        return level == o.level && icon == o.icon && count == o.count && on == o.on;
+    }
+};
+
 struct Ui {
     /* shell */
     /* The status bar line: the newest log line off the mesh, or why our node failed. */
@@ -361,8 +374,9 @@ struct Ui {
     Rml::Vector<Capture::EndpointRow> publishes, subscribes;
     Rml::Vector<Capture::LogRow>      log;
     Rml::Vector<Capture::StatusRow>   conditions;
-    bool log_error = true, log_warn = true, log_info = true, log_debug = true;
-    bool advanced  = false;   /* the detail's Advanced part is open */
+    int                      log_levels = Capture::LOG_ALL;   /* the levels shown, bit n for rant::Level n */
+    Rml::Vector<LevelToggle> level_toggles;
+    bool        advanced = false;   /* the detail's Advanced part is open */
 
     /* mesh tab: the head's filters, and the sidebar for the selection */
     Rml::String mesh_filter;
@@ -674,6 +688,20 @@ Rml::Vector<MenuItem> mesh_menu(unsigned cats)
     box("Hide system names", MESH_NO_SYSTEM);
     menu_reset(items, cats, MESH_DEFAULT);
     return items;
+}
+
+/* The node log's level toggles as the levels shown and the lines held stand, most serious first. */
+Rml::Vector<LevelToggle> level_toggles(const Capture& capture, unsigned levels)
+{
+    const struct {
+        Capture::Level level;
+        const char*    icon;
+    } kinds[] = { { Capture::Level::Error, "octagon-x" }, { Capture::Level::Warn, "triangle-alert" },
+                  { Capture::Level::Info, "info" },       { Capture::Level::Debug, "bug" } };
+    Rml::Vector<LevelToggle> out;
+    for (const auto& k : kinds)
+        out.push_back(LevelToggle{ (int)k.level, k.icon, capture.log_count(k.level), (levels >> (int)k.level & 1u) != 0 });
+    return out;
 }
 
 bool subscribable(const Capture::TopicRow& topic)
@@ -1389,6 +1417,14 @@ int main(int argc, char** argv)
         }
         ctor.RegisterArray<Rml::Vector<Capture::LogRow>>();
 
+        if (auto toggle = ctor.RegisterStruct<LevelToggle>()) {
+            toggle.RegisterMember("level", &LevelToggle::level);
+            toggle.RegisterMember("icon",  &LevelToggle::icon);
+            toggle.RegisterMember("count", &LevelToggle::count);
+            toggle.RegisterMember("on",    &LevelToggle::on);
+        }
+        ctor.RegisterArray<Rml::Vector<LevelToggle>>();
+
         if (auto status_row = ctor.RegisterStruct<Capture::StatusRow>()) {
             status_row.RegisterMember("level", &Capture::StatusRow::level);
             status_row.RegisterMember("rant",  &Capture::StatusRow::rant);
@@ -1440,10 +1476,7 @@ int main(int argc, char** argv)
         ctor.Bind("subscribes",      &ui.subscribes);
         ctor.Bind("log",             &ui.log);
         ctor.Bind("conditions",      &ui.conditions);
-        ctor.Bind("log_error",       &ui.log_error);
-        ctor.Bind("log_warn",        &ui.log_warn);
-        ctor.Bind("log_info",        &ui.log_info);
-        ctor.Bind("log_debug",       &ui.log_debug);
+        ctor.Bind("level_toggles",   &ui.level_toggles);
         ctor.Bind("note",            &ui.note);
         ctor.Bind("recording",       &ui.recording);
         ctor.Bind("topic_filter",    &ui.topic_filter);
@@ -2296,20 +2329,15 @@ int main(int argc, char** argv)
                 ui.advanced = !ui.advanced;
                 handle.DirtyVariable("advanced");
             });
-        ctor.BindEventCallback("toggle_log",
-            [&ui, &capture](Rml::DataModelHandle handle, Rml::Event&, const Rml::VariantList& args) {
+        ctor.BindEventCallback("toggle_level",
+            [&ui, &capture](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
                 if (args.empty()) return;
-                switch (args[0].Get<int>()) {
-                case 0: ui.log_error = !ui.log_error; handle.DirtyVariable("log_error"); break;
-                case 1: ui.log_warn  = !ui.log_warn;  handle.DirtyVariable("log_warn");  break;
-                case 2: ui.log_info  = !ui.log_info;  handle.DirtyVariable("log_info");  break;
-                default: ui.log_debug = !ui.log_debug; handle.DirtyVariable("log_debug"); break;
-                }
-                /* bit n passes rant::Level n */
-                capture.set_log_levels((ui.log_error ? 1u << (int)Capture::Level::Error : 0u) |
-                                       (ui.log_warn  ? 1u << (int)Capture::Level::Warn  : 0u) |
-                                       (ui.log_info  ? 1u << (int)Capture::Level::Info  : 0u) |
-                                       (ui.log_debug ? 1u << (int)Capture::Level::Debug : 0u));
+                ui.log_levels ^= 1 << args[0].Get<int>();
+                capture.set_log_levels((unsigned)ui.log_levels);
+            });
+        ctor.BindEventCallback("clear_log",
+            [&ui, &capture](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+                if (ui.has_selection) capture.clear_log(ui.selected.name);
             });
 
         model = ctor.GetModelHandle();
@@ -2736,6 +2764,7 @@ int main(int argc, char** argv)
         sync(model, "publishes", ui.publishes, capture.publishes());
         sync(model, "subscribes", ui.subscribes, capture.subscribes());
         sync(model, "log", ui.log, capture.log());
+        sync(model, "level_toggles", ui.level_toggles, level_toggles(capture, (unsigned)ui.log_levels));
         sync(model, "conditions", ui.conditions, capture.status());
         ui.meta = capture.meta();
         if (capture.ok() && !capture.latest_log().text.empty()) {

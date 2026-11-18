@@ -425,7 +425,10 @@ public:
     std::string cancel();
 
     /* Which log levels reach log(): bit n passes rant::Level n. */
+    static constexpr unsigned LOG_ALL = 0x1E;   /* debug to error */
     void     set_log_levels(unsigned mask) { log_mask_ = mask; }
+    /* Drops a node's lines held so far, by its name as log lines carry it. */
+    void     clear_log(const std::string& node);
 
     const std::vector<MachineRow>&  machines()   const { return machines_; }
     int                             node_count() const { return node_count_; }
@@ -433,6 +436,8 @@ public:
     const std::vector<EndpointRow>& subscribes() const { return subscribes_; }
     const MetaView&                 meta()       const { return meta_; }
     const std::vector<LogRow>&      log()        const { return log_; }
+    /* The selected node's lines held at a level, shown or not. */
+    int                             log_count(Level level) const { return log_counts_[(int)level]; }
     const std::vector<StatusRow>&   status()     const { return status_; }
     const std::vector<TopicRow>&    topics()     const { return topics_; }
     /* Bumps when topics() was rebuilt, so a tree over it is rebuilt only then. */
@@ -464,6 +469,7 @@ private:
     std::vector<EndpointRow> publishes_, subscribes_;
     MetaView                 meta_;
     std::vector<LogRow>      log_;
+    int                      log_counts_[5] = {};   /* by rant::Level */
     LogRow                   latest_log_;
     std::vector<StatusRow>   status_;
     std::vector<TopicRow>    topics_;
@@ -476,7 +482,7 @@ private:
 
     std::string selected_id_;
     std::string error_;
-    unsigned    log_mask_ = 0x1E;   /* every level, debug to error */
+    unsigned    log_mask_ = LOG_ALL;
 };
 
 #endif /* CAPTURE_HPP */

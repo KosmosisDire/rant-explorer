@@ -566,10 +566,13 @@
 					<div class="sheet-grip" data-event-click="step_sheet" data-event-dragstart="drag_sheet" data-event-drag="drag_sheet" data-event-dragend="drag_sheet"><div></div></div>
 					<div class="pane-head" data-event-dragstart="drag_sheet" data-event-drag="drag_sheet" data-event-dragend="drag_sheet">
 						<span class="section">Node log</span>
-						<span class="pill bad" data-class-on="log_error" data-event-click="toggle_log(0)">ERR</span>
-						<span class="pill warn" data-class-on="log_warn" data-event-click="toggle_log(1)">WARN</span>
-						<span class="pill" data-class-on="log_info" data-event-click="toggle_log(2)">INFO</span>
-						<span class="pill" data-class-on="log_debug" data-event-click="toggle_log(3)">DEBUG</span>
+						<div class="level-toggles">
+							<span class="level-toggle" data-for="t : level_toggles" data-class-on="t.on"
+								data-class-bad="t.level == 4" data-class-warn="t.level == 3"
+								data-event-click="toggle_level(t.level)"><icon data-attr-name="t.icon" /><span
+									class="mono">{{t.count}}</span></span>
+						</div>
+						<span class="icon-button" data-class-off="!has_selection" data-event-click="clear_log"><icon name="trash-2" /></span>
 					</div>
 					<div class="pane-body" copy-table="">
 						<div class="placeholder" data-if="!has_selection">select a node</div>

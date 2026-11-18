@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstring>
 #include <deque>
+#include <iterator>
 #include <map>
 #include <tuple>
 #include <atomic>
@@ -2175,6 +2176,22 @@ const std::deque<Capture::TracePoint>* Capture::trace_of(const std::string& key,
     return it == s->traces.end() ? nullptr : &it->second;
 }
 
+void Capture::clear_log(const std::string& node)
+{
+    if (!impl_) return;
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    std::deque<Impl::RawLog>& ring = impl_->log_ring;
+    ring.erase(std::remove_if(ring.begin(), ring.end(), [&node](const Impl::RawLog& line) { return line.node == node; }),
+               ring.end());
+}
+
+const Capture::LinkTrace* Capture::link_trace(const std::string& id) const
+{
+    if (!impl_) return nullptr;
+    const auto it = impl_->tracks.find(id);
+    return it == impl_->tracks.end() ? nullptr : &it->second.link;
+}
+
 double Capture::now_s()
 {
     return (double)steady_us() / 1e6;
@@ -2570,11 +2587,13 @@ void Capture::poll()
         if (it != status.end()) status_ = it->second;
     }
 
-    /* The log sidebar: this node's lines, newest first, filtered by the level pills. */
+    /* The log sidebar: this node's lines, newest first, filtered by the level toggles. */
     log_.clear();
+    std::fill(std::begin(log_counts_), std::end(log_counts_), 0);
     if (!selected_name.empty()) {
         for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
             if (it->node != selected_name) continue;
+            if (it->level >= 0 && it->level < (int)std::size(log_counts_)) log_counts_[it->level]++;
             if (!(log_mask_ & (1u << it->level))) continue;
             log_.push_back(Impl::row(*it));
         }

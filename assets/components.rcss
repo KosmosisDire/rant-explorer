@@ -652,6 +652,31 @@ body.touch .viz-close         { opacity: 1; }   /* a finger never hovers */
 .rec-dot { background-color: var(--red); }
 .rec-stop, .icon-button.rec-stop { color: var(--red); cursor: pointer; }
 
+/* The node log's level toggles fill the head's height side by side, each its icon and count.
+   They toggle on their own, so a shown level is a fill and its colour, never an underline. */
+.level-toggles {
+	align-self: stretch;
+	display: flex;
+	border-right: 1dp var(--border);
+}
+
+.level-toggle {
+	display: flex;
+	align-items: center;
+	gap: 5dp;
+	padding: 0dp 9dp;
+	font-size: 11dp;
+	border-left: 1dp var(--border);
+	transition: background-color 0.12s, color 0.12s;
+}
+
+.level-toggle icon                          { font-size: 13dp; }
+.level-toggle, .level-toggle.bad, .level-toggle.warn { color: var(--faint); }
+.level-toggle:hover                         { color: var(--text); }
+.level-toggle.on                            { color: var(--dim); background-color: var(--panel2); }
+.level-toggle.on.bad                        { color: var(--red); }
+.level-toggle.on.warn                       { color: var(--amber); }
+
 /* A task's progress rides the head's bottom border, so it takes no room. */
 .sidebar.right > .pane-head { position: relative; }
 .head-bar {

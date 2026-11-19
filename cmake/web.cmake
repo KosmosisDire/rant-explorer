@@ -48,7 +48,7 @@ function(web_target target)
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${_out}/rant"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_web}/index.html" "${_web}/explorer.js"
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/Logo.png" "${_out}/"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${WEB_NET}/tunnel.js" "${WEB_NET}/net.js" "${WEB_NET}/proof.js"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${WEB_NET}/tunnel.js" "${WEB_NET}/net.js"
             "${_out}/rant/"
     VERBATIM)
 endfunction()

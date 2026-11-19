@@ -337,6 +337,13 @@ bool Editor::take_draft(bool ok, Capture::Draft& draft, const std::string& error
     return true;
 }
 
+void Editor::forget()
+{
+    views_.clear();
+    error_.clear();
+    rows_dirty_ = cells_dirty_ = true;
+}
+
 void Editor::end_draft()
 {
     ValueView& v = view();

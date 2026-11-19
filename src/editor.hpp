@@ -15,6 +15,9 @@ class Editor {
 public:
     explicit Editor(Capture& capture) : capture_(capture) {}
 
+    /* Drops every topic's view, for a capture moved to another domain. */
+    void forget();
+
     /* The watched topic's view, and any topic's by its Capture::key. */
     ValueView& view() { return views_[capture_.watched().key]; }
     ValueView& view(const std::string& key) { return views_[key]; }

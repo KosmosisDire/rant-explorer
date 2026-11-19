@@ -303,6 +303,12 @@ public:
         bool                   root_struct = false;
     };
 
+    /* A domain with nodes on this network, from Rant's census. */
+    struct DomainRow {
+        int domain = 0;
+        int nodes  = 0;
+    };
+
     explicit Capture(const Options& opts);
     ~Capture();
 
@@ -311,6 +317,12 @@ public:
 
     bool               ok()    const;
     const std::string& error() const { return error_; }
+
+    /* Closes the node and opens one on another domain, with nothing of the old mesh kept. */
+    void     switch_domain(uint16_t domain);
+    uint16_t domain() const { return opts_.domain; }
+    /* Every domain with nodes, ascending, this explorer's own among them. */
+    const std::vector<DomainRow>& domains() const { return domains_; }
 
 
     /* Refresh everything below. Once per frame. */
@@ -457,6 +469,10 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    struct Census;
+    std::unique_ptr<Census> census_;     /* lives across domain switches */
+
+    void open();
 
     void build_mesh(uint64_t now_us);
     /* Rewrites the draft's variable array at field: change gets its element bytes and the
@@ -483,6 +499,9 @@ private:
     std::string selected_id_;
     std::string error_;
     unsigned    log_mask_ = LOG_ALL;
+    Options     opts_;
+    std::vector<DomainRow> domains_;
+    uint64_t    domains_at_us_ = 0;
 };
 
 #endif /* CAPTURE_HPP */

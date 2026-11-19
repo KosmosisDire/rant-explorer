@@ -451,6 +451,9 @@ struct Ui {
     std::vector<PathChoice> path_choices;
     int                     path_pick = 0;
     bool                    path_chose = false, path_focus = false;
+    /* The domain the capture is on, and another typed into the domain list's field. */
+    int                     domain = 0;
+    Rml::String             domain_text;
 
     /* The status bar's note: a reload, a copy or what RmlUi complained about, for a while. */
     Rml::String note;
@@ -1101,6 +1104,7 @@ int main(int argc, char** argv)
     Ui ui;
     ui.status          = capture.ok() ? "" : ("node failed: " + Rml::String(capture.error()));
     ui.status_level    = capture.ok() ? (int)Capture::Level::Info : (int)Capture::Level::Error;
+    ui.domain          = capture.domain();
 
     /* The whole topic tree, rebuilt when the mesh, the filter or the expanded set moves.
        The document holds a window of it, see window_tree. */
@@ -1490,6 +1494,8 @@ int main(int argc, char** argv)
         ctor.Bind("menu_items",      &ui.menu_items);
         ctor.Bind("menu_kind",       &ui.menu_kind);
         ctor.Bind("path_text",       &ui.path_text);
+        ctor.Bind("domain",          &ui.domain);
+        ctor.Bind("domain_text",     &ui.domain_text);
         ctor.Bind("sel_key",         &ui.sel_key);
         ctor.Bind("tree_rows",       &ui.tree_rows);
         ctor.Bind("tree_cells",      &ui.tree_cells);
@@ -1558,8 +1564,7 @@ int main(int argc, char** argv)
                 capture.select(args[0].Get<Rml::String>());
                 picked(handle, event);
             });
-        /* A page starts over at its form to pick another bridge or domain, since its node
-           lives as long as the page. */
+        /* A page starts over at its form to pick another bridge. */
         ctor.BindEventCallback("switch_bridge", [](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
 #ifdef __EMSCRIPTEN__
             EM_ASM({ globalThis.rantSwitch(); });
@@ -2063,10 +2068,82 @@ int main(int argc, char** argv)
                 if (Rml::Element* under = context->GetElementAtPoint(at, layer))
                     under->DispatchEvent(Rml::EventId::Mousedown, event.GetParameters());
             });
+        /* Another domain: the capture starts over on it, and so does all that showed the old mesh. */
+        auto switch_domain = [&ui, &capture, &editor, &tree_dirty, &value_dirty, &traced, &tiling, &scroll_to](
+                                 Rml::DataModelHandle handle, int domain) {
+            if (domain < 0 || domain > 65535 || domain == (int)capture.domain()) return;
+            editor.end_draft();
+            capture.switch_domain((uint16_t)domain);
+            editor.forget();
+            mesh_select(MeshPick());
+            ui.sel_key.clear();
+            ui.expanded.clear();
+            ui.card_page = 0;
+            traced.clear();
+            tiling.clear();
+            scroll_to.clear();
+            tree_dirty = value_dirty = true;
+            ui.domain       = domain;
+            ui.status       = capture.ok() ? "" : ("node failed: " + Rml::String(capture.error()));
+            ui.status_level = capture.ok() ? (int)Capture::Level::Info : (int)Capture::Level::Error;
+            handle.DirtyVariable("domain");
+            handle.DirtyVariable("sel_key");
+            handle.DirtyVariable("status");
+            handle.DirtyVariable("status_level");
+#ifdef __EMSCRIPTEN__
+            EM_ASM({ if (globalThis.rantDomain) globalThis.rantDomain($0); }, domain);
+#endif
+        };
+        /* The domain button lists every domain with nodes, this one checked, under itself. */
+        ctor.BindEventCallback("open_domains",
+            [&ui, &capture, context, open_menu](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList&) {
+                std::vector<Capture::DomainRow> rows = capture.domains();
+                const int here = capture.domain();
+                if (std::none_of(rows.begin(), rows.end(), [here](const Capture::DomainRow& d) { return d.domain == here; }))
+                    rows.push_back({ here, 0 });
+                std::sort(rows.begin(), rows.end(),
+                          [](const Capture::DomainRow& a, const Capture::DomainRow& b) { return a.domain < b.domain; });
+                ui.menu_items.clear();
+                menu_header(ui.menu_items, "Domains");
+                for (const Capture::DomainRow& d : rows) {
+                    MenuItem m;
+                    m.label  = Rml::CreateString("Domain %d", d.domain);
+                    m.hint   = d.nodes ? Rml::CreateString("%d %s", d.nodes, d.nodes == 1 ? "node" : "nodes") : "";
+                    m.action = Rml::CreateString("domain:%d", d.domain);
+                    m.check  = d.domain == here ? 2 : 1;
+                    ui.menu_items.push_back(m);
+                }
+                ui.domain_text.clear();
+                handle.DirtyVariable("domain_text");
+                const float         ratio  = context->GetDensityIndependentPixelRatio();
+                Rml::Element*       button = event.GetCurrentElement();
+                const Rml::Vector2f at     = button->GetAbsoluteOffset(Rml::BoxArea::Border);
+                const float         height = button->GetBox().GetSize(Rml::BoxArea::Border).y;
+                open_menu("domain", at.x / ratio, (at.y + height) / ratio + 4.f);
+            });
+        /* Enter in the domain list's field moves to the domain typed, Escape closes. */
+        ctor.BindEventCallback("domain_key",
+            [&ui, switch_domain, close_menu](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList&) {
+                const int key = event.GetParameter<int>("key_identifier", 0);
+                if (key == Rml::Input::KI_ESCAPE) {
+                    close_menu();
+                } else if (key == Rml::Input::KI_RETURN || key == Rml::Input::KI_NUMPADENTER) {
+                    char*      end    = nullptr;
+                    const long domain = std::strtol(ui.domain_text.c_str(), &end, 10);
+                    if (ui.domain_text.empty() || *end || domain < 0 || domain > 65535) {
+                        ui.note        = "a domain is a number from 0 to 65535";
+                        ui.note_frames = 150;
+                        return;
+                    }
+                    close_menu();
+                    switch_domain(handle, (int)domain);
+                }
+            });
         /* A checkbox flips and leaves the checklist open, every other line acts and closes. */
         ctor.BindEventCallback("menu_pick",
             [&ui, &capture, &editor, &tree_dirty, &value_dirty, set_sub, show_card, toggle_card, close_menu, copy, copy_image,
-             copy_table, value_of, start_shot, end_shot](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList& args) {
+             copy_table, value_of, start_shot, end_shot, switch_domain](Rml::DataModelHandle handle, Rml::Event& event,
+                                                                         const Rml::VariantList& args) {
                 if (args.empty()) return;
                 const int at = args[0].Get<int>();
                 if (at < 0 || at >= (int)ui.menu_items.size()) return;
@@ -2083,6 +2160,11 @@ int main(int argc, char** argv)
                 }
                 const std::string action = picked.action;
                 if (action.empty()) return;
+                if (action.compare(0, 7, "domain:") == 0) {
+                    close_menu();
+                    switch_domain(handle, std::atoi(action.c_str() + 7));
+                    return;
+                }
                 if (action == "shot_png" || action == "shot_mp4" || action == "shot_gif") {
                     start_shot(ui.menu_topic, picked.path, action == "shot_png" ? FileKind::Png
                                                          : action == "shot_mp4" ? FileKind::Mp4 : FileKind::Gif);

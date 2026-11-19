@@ -26,6 +26,9 @@
 					<icon name="waypoints" /><span>Mesh</span>
 				</div>
 			</div>
+			<div class="bar-button domain-button" data-event-click="open_domains">
+				<icon name="layers" /><span>Domain</span><span class="mono">{{domain}}</span>
+			</div>
 			<div class="bar-button" data-event-click="toggle_theme">
 				<icon data-attr-name="light ? 'moon' : 'sun'" />
 			</div>
@@ -118,6 +121,7 @@
 					<div class="pane-foot">
 						<span class="section" data-if="!filtering">{{topic_count}} topics</span>
 						<span class="section" data-if="filtering">{{topic_matched}} / {{topic_count}} topics</span>
+						<span class="icon-button foot-domain" data-event-click="open_domains"><icon name="layers" /></span>
 						<span class="icon-button foot-theme" data-event-click="toggle_theme"><icon data-attr-name="light ? 'moon' : 'sun'" /></span>
 						<span class="icon-button foot-bridge" data-if="web" data-event-click="switch_bridge"><icon name="plug" /></span>
 					</div>
@@ -337,6 +341,7 @@
 					</div>
 					<div class="pane-foot phone-only">
 						<span class="section">{{peer_count}} nodes</span>
+						<span class="icon-button foot-domain" data-event-click="open_domains"><icon name="layers" /></span>
 						<span class="icon-button foot-theme" data-event-click="toggle_theme"><icon data-attr-name="light ? 'moon' : 'sun'" /></span>
 						<span class="icon-button foot-bridge" data-if="web" data-event-click="switch_bridge"><icon name="plug" /></span>
 					</div>
@@ -701,6 +706,11 @@
 		<div id="menu-layer" data-if="menu_open" data-event-mousedown="close_menu">
 			<div class="menu" data-class-paths="menu_kind == 'path'" data-style-left="menu_left"
 				data-style-top="menu_top">
+				<div class="filter menu-field" data-if="menu_kind == 'domain'">
+					<icon name="hash" />
+					<input type="text" id="domain-field" class="mono" placeholder="another domain"
+						data-value="domain_text" data-event-keydown="domain_key" />
+				</div>
 				<div class="filter menu-field" data-if="menu_kind == 'path'">
 					<icon name="search" />
 					<input type="text" id="path-field" class="mono" placeholder="field, Topic.field, [*] for every element"

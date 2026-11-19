@@ -12,12 +12,13 @@ and live values. It runs native, or as a web page through the bridge.
 |---|---|
 | install | `rant install explorer` |
 | open it | `rant explore`, `--domain N` for another domain |
+| change domain | the Domain button in the top bar lists every domain with nodes, or type one |
 
 ## In a browser
 
 The explorer package's group `WebExplorer` serves the explorer as a web page, so any browser
 on the network opens it. The page reaches the mesh through the bridge on the same host, so run
-both.
+both. Its connect form lists the bridges found, each with the domains its network has.
 
 | goal | command |
 |---|---|

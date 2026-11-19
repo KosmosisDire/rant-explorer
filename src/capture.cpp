@@ -1708,8 +1708,58 @@ struct Capture::Impl {
     }
 };
 
-Capture::Capture(const Options& opts)
+struct Capture::Census {
+    rant::Domains watch;
+    explicit Census(const rant::DomainsOptions& o) : watch(o) {}
+};
+
+Capture::Capture(const Options& opts) : opts_(opts)
 {
+    rant::DomainsOptions census;
+    census.discovery_port      = opts.discovery_port;
+    census.multicast_interface = opts.multicast_interface;
+    try {
+        census_ = std::make_unique<Census>(census);
+    } catch (const rant::Error& e) {
+        std::fprintf(stderr, "no census, so no domain list: %s\n", e.what());
+    }
+#ifdef __EMSCRIPTEN__
+    /* One drive for the page's life, which polls whichever node a switch left open. */
+    rant_web_drive([](void* self) {
+        Capture* capture = static_cast<Capture*>(self);
+        if (capture->impl_) capture->impl_->node.poll(std::chrono::milliseconds(60000));
+    }, this);
+#endif
+    open();
+}
+
+void Capture::switch_domain(uint16_t domain)
+{
+    if (impl_ && domain == opts_.domain) return;
+    impl_.reset();
+    machines_.clear();
+    node_count_ = 0;
+    publishes_.clear();
+    subscribes_.clear();
+    meta_ = MetaView();
+    log_.clear();
+    std::fill(std::begin(log_counts_), std::end(log_counts_), 0);
+    latest_log_ = LogRow();
+    status_.clear();
+    topics_.clear();
+    topics_epoch_++;
+    mesh_ = MeshView();
+    mesh_epoch_++;
+    traffic_hz_.clear();
+    selected_id_.clear();
+    error_.clear();
+    opts_.domain = domain;
+    open();
+}
+
+void Capture::open()
+{
+    const Options& opts = opts_;
     rant::NodeOptions node_opts;
     node_opts.domain              = opts.domain;
     node_opts.discovery_port      = opts.discovery_port;
@@ -1736,12 +1786,6 @@ Capture::Capture(const Options& opts)
         impl_.reset();
         return;
     }
-
-#ifdef __EMSCRIPTEN__
-    /* A page's capture lives as long as the page, so its drive never outlives it. */
-    rant_web_drive([](void* impl) { static_cast<Impl*>(impl)->node.poll(std::chrono::milliseconds(60000)); },
-                   impl_.get());
-#endif
 
     impl_->node.on_log([this](const rant::LogLine& line) {
         Impl::RawLog row;
@@ -2230,9 +2274,15 @@ void Capture::select(const std::string& id)
 
 void Capture::poll()
 {
+    const uint64_t now_steady = steady_us();
+    /* The census watch reads what arrived, so it is walked well inside an announce interval. */
+    if (census_ && now_steady - domains_at_us_ >= 1000000u) {
+        domains_at_us_ = now_steady;
+        domains_.clear();
+        for (const rant::DomainInfo& d : census_->watch.list()) domains_.push_back({ d.domain, d.nodes });
+    }
     if (!impl_) return;
 
-    const uint64_t now_steady = steady_us();
     rant::Reflection mesh = impl_->node.reflection();
     const std::vector<rant::Peer> peers = mesh.peers();
     const uint32_t mesh_epoch = mesh.epoch();

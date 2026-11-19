@@ -87,6 +87,15 @@ body {
 }
 
 .bar-button:hover { color: var(--text); background-color: var(--panel3); }
+
+/* The domain this explorer is on, which opens the list of every domain with nodes. */
+.bar-button.domain-button {
+	width: auto;
+	gap: 6dp;
+	padding: 0dp 8dp;
+	font-size: 13dp;
+}
+.bar-button.domain-button icon { font-size: 15dp; }
 .bar-button.on    { color: var(--text); }
 .bar-button.off   { opacity: 0.35; pointer-events: none; }
 
@@ -355,11 +364,12 @@ body.compact #topbar {
 body.compact #logo, body.compact #app-title, body.compact #topbar .bar-button, body.compact #window-buttons,
 body.compact #statusbar, body.compact .splitter { display: none; }
 
-/* With the top bar folded away, the theme toggle and a page's bridge switch move to the
+/* With the top bar folded away, the domain list, the theme toggle and a page's bridge switch move to the
    foot of a phone's sidebar, which is as tall as a head so the buttons fit. The Nodes
    sidebar has that foot only here. */
-.foot-theme, .foot-bridge, .pane-foot.phone-only { display: none; }
-body.compact .foot-theme { display: flex; margin-left: auto; }
+.foot-domain, .foot-theme, .foot-bridge, .pane-foot.phone-only { display: none; }
+body.compact .foot-domain { display: flex; margin-left: auto; }
+body.compact .foot-theme { display: flex; }
 body.compact .foot-bridge { display: flex; }
 body.compact .pane-foot.phone-only { display: flex; }
 body.compact .pane-foot { height: var(--bar); padding: 0dp 6dp 0dp var(--pad); }

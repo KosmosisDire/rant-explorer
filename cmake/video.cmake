@@ -66,8 +66,8 @@ CPMAddPackage(NAME minimp4
 # Meson would write for a build with no assembler: every ARCH_ flag off.
 CPMAddPackage(NAME dav1d
   GITHUB_REPOSITORY videolan/dav1d
-  GIT_TAG 1.5.4
-  VERSION 1.5.4
+  GIT_TAG 1.5.5
+  VERSION 1.5.5
   DOWNLOAD_ONLY YES)
 set(DAV1D_GEN "${CMAKE_BINARY_DIR}/dav1d-config")
 set(DAV1D_CONFIG "")
@@ -76,7 +76,7 @@ foreach(_flag ARCH_AARCH64 ARCH_ARM ARCH_LOONGARCH ARCH_LOONGARCH32 ARCH_LOONGAR
         HAVE_ASM TRIM_DSP_FUNCTIONS CONFIG_LOG ENDIANNESS_BIG HAVE_GETAUXVAL
         HAVE_ELF_AUX_INFO HAVE_PTHREAD_NP_H HAVE_PTHREAD_GETAFFINITY_NP
         HAVE_PTHREAD_SETAFFINITY_NP HAVE_PTHREAD_SET_NAME_NP HAVE_DLSYM
-        HAVE_MEMALIGN HAVE_ALIGNED_ALLOC)
+        HAVE_MEMALIGN HAVE_ALIGNED_ALLOC CONFIG_ASM_DEBUG)
   string(APPEND DAV1D_CONFIG "#define ${_flag} 0\n")
 endforeach()
 string(APPEND DAV1D_CONFIG "#define CONFIG_8BPC 1\n#define CONFIG_16BPC 1\n")
@@ -92,7 +92,7 @@ else()
          "#define HAVE_PTHREAD_SETNAME_NP 1\n")
 endif()
 file(CONFIGURE OUTPUT "${DAV1D_GEN}/config.h" CONTENT "${DAV1D_CONFIG}")
-file(CONFIGURE OUTPUT "${DAV1D_GEN}/vcs_version.h" CONTENT "#define DAV1D_VERSION \"1.5.4\"\n")
+file(CONFIGURE OUTPUT "${DAV1D_GEN}/vcs_version.h" CONTENT "#define DAV1D_VERSION \"1.5.5\"\n")
 
 set(_d "${dav1d_SOURCE_DIR}/src")
 set(DAV1D_SOURCES cdf.c cpu.c ctx.c data.c decode.c dequant_tables.c getbits.c intra_edge.c

@@ -7,10 +7,12 @@
 <link rel="icon" href="Logo.png">
 <style>
   :root {
-    --bg: #141414; --panel: #1b1b1b; --border: #383838; --text: #ededed; --dim: #9a9a9a;
-    --accent: #dc3853; --red: #d2574b;
+    --ground: #0a0a0a; --surface: #141414; --panel: #1b1b1b; --panel2: #212121; --panel3: #282828;
+    --border: #2a2a2a; --border2: #383838; --text: #ededed; --dim: #9a9a9a; --faint: #646464;
+    --accent: #dc3853; --accent-bg: rgba(220, 56, 83, 0.15); --on-fill: #fff; --red: #d2574b;
+    --radius: 5px; --mono: ui-monospace, "IBM Plex Mono", Consolas, monospace;
   }
-  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--surface); color: var(--text);
                font: 14px system-ui, sans-serif; }
   /* The page sizes the canvas, and SDL follows its CSS size at every resize. */
   canvas { display: block; outline: none; width: 100%; height: 100%; }
@@ -18,36 +20,73 @@
   html, body, canvas { -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none;
                        -webkit-user-select: none; user-select: none; }
   form input { -webkit-user-select: text; user-select: text; }
-  form { position: fixed; inset: 0; margin: auto; width: min(360px, calc(100% - 32px)); height: fit-content;
+  form { position: fixed; inset: 0; margin: auto; width: min(420px, calc(100% - 32px)); height: fit-content;
+         max-height: calc(100% - 32px); overflow: auto; box-sizing: border-box;
          display: grid; gap: 12px; padding: 24px; background: var(--panel); border: 1px solid var(--border);
          border-radius: 8px; z-index: 2; }
-  form[hidden] { display: none; }
+  [hidden] { display: none !important; }
+  .head { display: flex; align-items: flex-start; gap: 12px; }
+  .head > div { flex: 1; }
   h1 { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
+  .note { margin: 0; color: var(--dim); font-size: 13px; }
+  svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;
+        stroke-linejoin: round; flex: none; }
+  button { font: inherit; cursor: pointer; }
+  button:disabled { cursor: default; }
+  .plain { display: flex; align-items: center; gap: 6px; padding: 5px 10px; background: var(--panel3); color: var(--text);
+           border: 1px solid var(--border2); border-radius: var(--radius); font-size: 13px; }
+  .plain:hover { background: var(--panel2); }
+  /* section words */
+  .cols { display: flex; justify-content: space-between; padding: 0 12px; margin-bottom: -4px; color: var(--faint);
+          font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  #bridges { display: grid; gap: 8px; }
+  .bridge { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: var(--panel2);
+            border: 1px solid var(--border); border-radius: var(--radius); }
+  .bridge .who { flex: 1; min-width: 0; }
+  .bridge .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bridge .addr { color: var(--dim); font: 12px var(--mono); margin-top: 2px; }
+  .domains { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  /* a domain pill, lit while chosen */
+  .pill { min-width: 30px; height: 30px; padding: 0 10px; box-sizing: border-box; display: inline-flex;
+          align-items: center; justify-content: center; background: var(--panel3); color: var(--text);
+          border: 1px solid var(--border2); border-radius: 15px; font: 13px var(--mono); }
+  .pill:hover { border-color: var(--dim); }
+  .pill.on { background: var(--accent-bg); border-color: var(--accent); }
+  .pill.add { color: var(--dim); padding: 0; width: 30px; }
+  .pill input { width: 6ch; padding: 0; background: none; border: 0; color: var(--text); font: inherit; text-align: center; }
+  .pill input:focus { outline: none; }
+  .none { color: var(--faint); font-size: 12px; }
+  .link { justify-self: start; padding: 0; background: none; border: 0; color: var(--accent); font-size: 13px; }
+  .manual { display: grid; gap: 12px; }
   label { display: grid; gap: 4px; color: var(--dim); font-size: 12px; }
-  input, select { padding: 7px 9px; background: var(--bg); color: var(--text); border: 1px solid var(--border);
-                  border-radius: 4px; font: inherit; }
-  input:focus, select:focus { outline: none; border-color: var(--accent); }
-  /* one fixed line, so nothing below moves when the found bridges replace the button */
-  .find { height: 32px; display: flex; align-items: center; margin-top: -6px; }
-  .find select { width: 100%; }
-  .find [hidden] { display: none; }
-  button.link { padding: 0; background: none; color: var(--dim); font-weight: 400; text-decoration: underline; }
-  button { padding: 8px; background: var(--accent); color: #fff; border: 0; border-radius: 4px; font: inherit;
-           font-weight: 600; cursor: pointer; }
+  input { padding: 7px 9px; background: var(--surface); color: var(--text); border: 1px solid var(--border2);
+          border-radius: 4px; font: inherit; }
+  input:focus { outline: none; border-color: var(--accent); }
+  .primary { padding: 10px; background: var(--accent); color: var(--on-fill); border: 0; border-radius: var(--radius);
+             font-weight: 600; }
+  .primary:disabled { background: var(--panel3); color: var(--faint); }
   #state { position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%); padding: 6px 12px;
            background: var(--panel); border: 1px solid var(--border); border-radius: 4px; z-index: 3; }
   #state.bad { border-color: var(--red); }
-  #state[hidden] { display: none; }
 </style>
 </head>
 <body>
 <canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
 <form id="connect" hidden>
-  <h1>Connect to a Rant bridge</h1>
-  <label>Bridge <input name="bridge" spellcheck="false" autocomplete="off" placeholder="192.168.1.20 or wss://bridge.example.com"></label>
-  <div class="find"><button type="button" id="find" class="link">Find bridges on this network</button><select id="found" hidden></select></div>
-  <label>Domain <input name="domain" inputmode="numeric"></label>
-  <button>Connect</button>
+  <div class="head">
+    <div><h1>Connect to a Rant bridge</h1><p class="note" id="found-note">Looking for bridges...</p></div>
+    <button type="button" class="plain" id="rescan">
+      <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>Rescan
+    </button>
+  </div>
+  <div class="cols" id="cols" hidden><span>Bridge</span><span>Domain</span></div>
+  <div id="bridges"></div>
+  <button type="button" class="link" id="manual-toggle">Enter an address manually</button>
+  <div class="manual" id="manual" hidden>
+    <label>Bridge <input name="bridge" spellcheck="false" autocomplete="off" placeholder="192.168.1.20 or wss://bridge.example.com"></label>
+    <label>Domain <input name="domain" inputmode="numeric" autocomplete="off"></label>
+  </div>
+  <button class="primary" id="go" disabled>Choose a bridge and domain</button>
 </form>
 <div id="state" hidden></div>
 <script type="module" src="explorer.js"></script>

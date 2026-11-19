@@ -22,8 +22,8 @@ try { saved = JSON.parse(localStorage.getItem("rant-explorer") ?? "{}"); } catch
 // A page the bridge's machine serves points at that machine. A hosted one has no bridge of its
 // own, so it starts at this computer's.
 const home = location.protocol === "https:" ? "localhost" : location.hostname || "127.0.0.1";
-field("bridge").value = params.get("bridge") ?? saved.bridge ?? `ws://${home}:6731`;
-field("domain").value = params.get("domain") ?? saved.domain ?? "0";
+field("bridge").value = params.get("bridge") ?? saved.bridge ?? "";
+field("domain").value = params.get("domain") ?? saved.domain ?? "";
 
 function show(text, bad = false) {
     state.textContent = text;
@@ -92,6 +92,7 @@ async function start(settings) {
     if (!net) {
         show((first.e?.message ?? String(first.e)) + unreached(first.url, first.e), true);
         form.hidden = false;
+        if (!scanning) scan();     /* a kept bridge that failed: offer the ones found instead */
         return;
     }
     try { localStorage.setItem("rant-explorer", JSON.stringify(settings)); } catch { /* not kept */ }
@@ -126,33 +127,153 @@ globalThis.rantSwitch = () => {
     location.assign(address);
 };
 
-// Every bridge answers rant-bridges.local and lists the others on its network, so that name finds
-// them all. Where the name does not resolve, the address typed asks the bridge there.
-const findButton = document.getElementById("find");
-const found = document.getElementById("found");
-findButton.addEventListener("click", async () => {
-    findButton.textContent = "Looking for bridges...";
-    let list = [];
-    for (const url of ["ws://rant-bridges.local:6731", ...candidates(field("bridge").value)]) {
-        try { list = await findBridges(url); } catch { continue; }
-        if (list.length) break;
-    }
-    if (!list.length) {
-        findButton.textContent = "No bridge answered, type its address";
-        return;
-    }
-    found.replaceChildren(new Option(`${list.length} found, pick one`, ""),
-                          ...list.map((b) => new Option(`${b.name}  ${b.url.replace(/^ws:\/\//, "")}`, b.url)));
-    findButton.hidden = true;
-    found.hidden = false;
+// The explorer moved to another domain itself, so a reload comes back to it.
+globalThis.rantDomain = (domain) => {
+    try {
+        const kept = JSON.parse(localStorage.getItem("rant-explorer") ?? "{}");
+        localStorage.setItem("rant-explorer", JSON.stringify({ ...kept, domain: String(domain) }));
+    } catch { /* not kept */ }
+    const address = new URL(location.href);
+    if (address.searchParams.has("domain")) address.searchParams.set("domain", String(domain));
+    history.replaceState(null, "", address);
+};
+
+/* ---- the connect form: the bridges found, each with the domains its network has ---- */
+
+const note = document.getElementById("found-note");
+const rows = document.getElementById("bridges");
+const cols = document.getElementById("cols");
+const manual = document.getElementById("manual");
+const go = document.getElementById("go");
+let found = [];
+let scanning = 0;
+
+const plus = () => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.innerHTML = '<path d="M5 12h14"/><path d="M12 5v14"/>';
+    return svg;
+};
+const validDomain = (text) => /^\d+$/.test(text) && Number(text) <= 65535;
+
+// The fields hold the choice, which a pill writes and a typed address replaces.
+function choose(url, domain) {
+    field("bridge").value = url;
+    field("domain").value = String(domain);
+    render();
+}
+
+function chosen() {
+    const url = field("bridge").value.trim(), domain = field("domain").value.trim();
+    if (!url || !validDomain(domain)) return null;
+    return { url, domain, bridge: found.find((b) => b.url === url) };
+}
+
+function update() {
+    const pick = chosen();
+    go.disabled = !pick;
+    go.textContent = !pick ? "Choose a bridge and domain"
+        : `Connect to ${pick.bridge?.name ?? pick.url.replace(/^wss?:\/\//, "")}, domain ${pick.domain}`;
+    for (const pill of rows.querySelectorAll(".pill[data-domain]"))
+        pill.classList.toggle("on", !!pick && pill.dataset.url === pick.url && pill.dataset.domain === pick.domain);
+}
+
+function render() {
+    rows.replaceChildren(...found.map((b) => {
+        const row = document.createElement("div");
+        row.className = "bridge";
+        const who = document.createElement("div");
+        who.className = "who";
+        const name = document.createElement("div");
+        name.className = "name";
+        name.textContent = b.name;
+        const addr = document.createElement("div");
+        addr.className = "addr";
+        addr.textContent = b.url.replace(/^wss?:\/\//, "");
+        who.append(name, addr);
+        const domains = document.createElement("div");
+        domains.className = "domains";
+        if (b.domains && !b.domains.length) {
+            const none = document.createElement("span");
+            none.className = "none";
+            none.textContent = "no nodes";
+            domains.append(none);
+        }
+        for (const d of b.domains ?? []) {
+            const pill = document.createElement("button");
+            pill.type = "button";
+            pill.className = "pill";
+            pill.textContent = String(d.domain);
+            pill.title = `${d.nodes} ${d.nodes === 1 ? "node" : "nodes"}`;
+            pill.dataset.url = b.url;
+            pill.dataset.domain = String(d.domain);
+            pill.addEventListener("click", () => choose(b.url, d.domain));
+            domains.append(pill);
+        }
+        // Another domain, typed in place of the plus.
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "pill add";
+        add.title = "Another domain";
+        add.append(plus());
+        add.addEventListener("click", () => {
+            const input = document.createElement("input");
+            input.inputMode = "numeric";
+            input.placeholder = "0";
+            const typed = document.createElement("span");
+            typed.className = "pill on";
+            typed.append(input);
+            add.replaceWith(typed);
+            input.focus();
+            input.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+                if (e.key === "Escape") { input.value = ""; input.blur(); }
+            });
+            input.addEventListener("blur", () => {
+                if (validDomain(input.value.trim())) choose(b.url, Number(input.value.trim()));
+                else render();
+            });
+        });
+        domains.append(add);
+        row.append(who, domains);
+        return row;
+    }));
+    cols.hidden = !found.length;
+    update();
+}
+
+// rant-bridges.local reaches whichever bridge answers first, which lists the network's. The
+// bridge typed or kept and this computer's are asked too, since either may be elsewhere.
+async function scan() {
+    const mine = ++scanning;
+    note.textContent = "Looking for bridges...";
+    const typed = field("bridge").value.trim();
+    const urls = ["ws://rant-bridges.local:6731", ...(typed ? candidates(typed) : []), `ws://${home}:6731`];
+    const lists = await Promise.all([...new Set(urls)].map((url) => findBridges(url).catch(() => [])));
+    if (mine !== scanning) return;
+    const byUrl = new Map();
+    for (const b of lists.flat())
+        if (b.url && (!byUrl.has(b.url) || (b.domains && !byUrl.get(b.url).domains))) byUrl.set(b.url, b);
+    found = [...byUrl.values()];
+    note.textContent = !found.length ? "No bridge answered. Enter its address below."
+        : `Found ${found.length} ${found.length === 1 ? "bridge" : "bridges"}. Pick a domain to join.`;
+    if (!found.length) manual.hidden = false;
+    render();
+}
+
+document.getElementById("rescan").addEventListener("click", scan);
+document.getElementById("manual-toggle").addEventListener("click", () => {
+    manual.hidden = !manual.hidden;
+    if (!manual.hidden) field("bridge").focus();
 });
-found.addEventListener("change", () => { if (found.value) field("bridge").value = found.value; });
+for (const name of ["bridge", "domain"]) field(name).addEventListener("input", update);
 
 form.addEventListener("submit", (e) => {
     e.preventDefault();
-    start({ bridge: field("bridge").value.trim(), domain: field("domain").value.trim() });
+    const pick = chosen();
+    if (pick) start({ bridge: pick.url, domain: pick.domain });
 });
 
 // A bridge that took the page before is connected again at once.
 if (saved.bridge && !params.has("ask")) start({ bridge: field("bridge").value.trim(), domain: field("domain").value });
-else form.hidden = false;
+else { form.hidden = false; scan(); }

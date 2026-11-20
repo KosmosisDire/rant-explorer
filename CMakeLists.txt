@@ -219,6 +219,7 @@ add_executable(rant_explorer
   src/record.cpp
   src/reload.cpp
   src/tiling.cpp
+  src/tips.cpp
   src/touch.cpp
   src/tree.cpp
   src/values.cpp

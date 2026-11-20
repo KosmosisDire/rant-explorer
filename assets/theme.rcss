@@ -92,6 +92,7 @@ body {
 	   inline on body. */
 	--sidebar-left:  530dp;
 	--sidebar-right: 340dp;
+	--status-height: 96dp;    /* the most the node's conditions take above its log */
 	--sheet:         220dp;   /* a phone's sheet, moved inline as it is dragged */
 	--grip:          28dp;    /* the handle atop the sheet, all of it a closed sheet shows */
 

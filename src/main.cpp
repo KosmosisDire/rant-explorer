@@ -18,6 +18,7 @@
 #include "tree.hpp"
 #include "values.hpp"
 #include "tiling.hpp"
+#include "tips.hpp"
 #include "touch.hpp"
 #include "viz.hpp"
 #include "web_server.hpp"
@@ -211,6 +212,7 @@ struct MenuItem {
     Rml::String copy;            /* the text a copy line puts on the clipboard */
     Rml::String hint;            /* that text shortened, shown faint beside the label */
     int         check = 0;       /* 0 no box, 1 clear, 2 checked */
+    bool        radio = false;   /* the box is one choice of several: a dot, not a tick */
     int         table = -1;      /* a Copy table line's index into the menu's tables */
     Rml::String path;            /* the field a raw copy line reads when picked */
     Rml::String topic;           /* the topic key a path line adds a card of */
@@ -351,12 +353,13 @@ private:
 struct LevelToggle {
     int         level = 0;   /* a rant::Level */
     Rml::String icon;
+    Rml::String tip;
     int         count = 0;
     bool        on = true;
 
     bool operator==(const LevelToggle& o) const
     {
-        return level == o.level && icon == o.icon && count == o.count && on == o.on;
+        return level == o.level && icon == o.icon && tip == o.tip && count == o.count && on == o.on;
     }
 };
 
@@ -376,6 +379,8 @@ struct Ui {
     Rml::Vector<Capture::StatusRow>   conditions;
     int                      log_levels = Capture::LOG_ALL;   /* the levels shown, bit n for rant::Level n */
     Rml::Vector<LevelToggle> level_toggles;
+    bool        log_rant = false;   /* Rant's own lines are shown */
+    int         log_rant_count = 0;
     bool        advanced = false;   /* the detail's Advanced part is open */
 
     /* mesh tab: the head's filters, and the sidebar for the selection */
@@ -464,6 +469,9 @@ struct Ui {
        stands. The drag_ fields hold one drag: where it began and how wide it may go. */
     float sidebar_left = 0, sidebar_right = 0;
     float drag_x = 0, drag_width = 0, drag_max = 0;
+    /* The most the node's conditions take above its log, the same way, and one drag of it. */
+    float status_height = 0;
+    float drag_y = 0, drag_height = 0, drag_height_max = 0;
     /* Tree table columns by name: a dragged weight, zero for the theme default, and which
        are hidden. A drag of a header edge weighs its table's shown columns by their widths
        when it began, then moves width between the two either side, from drag_min to
@@ -532,6 +540,8 @@ void apply_body(Rml::ElementDocument* document, const Ui& ui)
         document->SetProperty("--sidebar-left", Rml::CreateString("%.0fdp", ui.sidebar_left));
     if (ui.sidebar_right > 0)
         document->SetProperty("--sidebar-right", Rml::CreateString("%.0fdp", ui.sidebar_right));
+    if (ui.status_height > 0)
+        document->SetProperty("--status-height", Rml::CreateString("%.0fdp", ui.status_height));
     for (const auto& column : ui.columns) {
         if (column.second > 0) document->SetProperty("--c-" + column.first, Rml::CreateString("%.2f", column.second));
         else document->RemoveProperty("--c-" + column.first);
@@ -699,11 +709,12 @@ Rml::Vector<LevelToggle> level_toggles(const Capture& capture, unsigned levels)
     const struct {
         Capture::Level level;
         const char*    icon;
-    } kinds[] = { { Capture::Level::Error, "octagon-x" }, { Capture::Level::Warn, "triangle-alert" },
-                  { Capture::Level::Info, "info" },       { Capture::Level::Debug, "bug" } };
+        const char*    tip;
+    } kinds[] = { { Capture::Level::Error, "octagon-x", "Errors" }, { Capture::Level::Warn, "triangle-alert", "Warnings" },
+                  { Capture::Level::Info, "info", "Info" },          { Capture::Level::Debug, "bug", "Debug" } };
     Rml::Vector<LevelToggle> out;
     for (const auto& k : kinds)
-        out.push_back(LevelToggle{ (int)k.level, k.icon, capture.log_count(k.level), (levels >> (int)k.level & 1u) != 0 });
+        out.push_back(LevelToggle{ (int)k.level, k.icon, k.tip, capture.log_count(k.level), (levels >> (int)k.level & 1u) != 0 });
     return out;
 }
 
@@ -1408,6 +1419,7 @@ int main(int argc, char** argv)
             item.RegisterMember("label",  &MenuItem::label);
             item.RegisterMember("hint",   &MenuItem::hint);
             item.RegisterMember("check",  &MenuItem::check);
+            item.RegisterMember("radio",  &MenuItem::radio);
             item.RegisterMember("header", &MenuItem::header);
             item.RegisterMember("on",     &MenuItem::on);
         }
@@ -1424,6 +1436,7 @@ int main(int argc, char** argv)
         if (auto toggle = ctor.RegisterStruct<LevelToggle>()) {
             toggle.RegisterMember("level", &LevelToggle::level);
             toggle.RegisterMember("icon",  &LevelToggle::icon);
+            toggle.RegisterMember("tip",   &LevelToggle::tip);
             toggle.RegisterMember("count", &LevelToggle::count);
             toggle.RegisterMember("on",    &LevelToggle::on);
         }
@@ -1481,6 +1494,8 @@ int main(int argc, char** argv)
         ctor.Bind("log",             &ui.log);
         ctor.Bind("conditions",      &ui.conditions);
         ctor.Bind("level_toggles",   &ui.level_toggles);
+        ctor.Bind("log_rant",        &ui.log_rant);
+        ctor.Bind("log_rant_count",  &ui.log_rant_count);
         ctor.Bind("note",            &ui.note);
         ctor.Bind("recording",       &ui.recording);
         ctor.Bind("topic_filter",    &ui.topic_filter);
@@ -1740,6 +1755,30 @@ int main(int argc, char** argv)
                 width = width < 160.f ? 160.f : width > ui.drag_max ? ui.drag_max : width;
                 (left ? ui.sidebar_left : ui.sidebar_right) = width;
                 apply_body(splitter->GetOwnerDocument(), ui);
+            });
+        /* The grip under the node's conditions: it moves the most they take, from one line
+           to all but 80dp of the sidebar below its head, which stays for the log. */
+        ctor.BindEventCallback("drag_status",
+            [&ui, context](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList&) {
+                const float   ratio   = context->GetDensityIndependentPixelRatio();
+                const float   mouse_y = event.GetParameter<float>("mouse_y", 0.f) / ratio;
+                Rml::Element* edge    = event.GetCurrentElement()->GetParentNode();
+                Rml::Element* list    = edge->GetPreviousSibling();
+                Rml::Element* head    = list ? list->GetPreviousSibling() : nullptr;
+                if (!list || !head) return;
+                if (event.GetId() == Rml::EventId::Dragstart) {
+                    const float bottom = edge->GetParentNode()->GetBox().GetSize(Rml::BoxArea::Border).y
+                                       + edge->GetParentNode()->GetAbsoluteTop();
+                    const float top    = head->GetAbsoluteTop() + head->GetBox().GetSize(Rml::BoxArea::Border).y;
+                    ui.drag_y          = mouse_y;
+                    ui.drag_height     = list->GetBox().GetSize(Rml::BoxArea::Border).y / ratio;
+                    ui.drag_height_max = (bottom - top) / ratio - 80.f;
+                    return;
+                }
+                float height = ui.drag_height + mouse_y - ui.drag_y;
+                height = std::max(26.f, std::min(height, ui.drag_height_max));
+                ui.status_height = height;
+                apply_body(edge->GetOwnerDocument(), ui);
             });
         /* The grip of the edge between two header cells moves only that edge: the column
            before grows as the one after shrinks, each keeping 24dp of text. Every shown column
@@ -2094,7 +2133,7 @@ int main(int argc, char** argv)
             EM_ASM({ if (globalThis.rantDomain) globalThis.rantDomain($0); }, domain);
 #endif
         };
-        /* The domain button lists every domain with nodes, this one checked, under itself. */
+        /* The domain button lists every domain with nodes, this one chosen, under itself. */
         ctor.BindEventCallback("open_domains",
             [&ui, &capture, context, open_menu](Rml::DataModelHandle handle, Rml::Event& event, const Rml::VariantList&) {
                 std::vector<Capture::DomainRow> rows = capture.domains();
@@ -2111,6 +2150,7 @@ int main(int argc, char** argv)
                     m.hint   = d.nodes ? Rml::CreateString("%d %s", d.nodes, d.nodes == 1 ? "node" : "nodes") : "";
                     m.action = Rml::CreateString("domain:%d", d.domain);
                     m.check  = d.domain == here ? 2 : 1;
+                    m.radio  = true;
                     ui.menu_items.push_back(m);
                 }
                 ui.domain_text.clear();
@@ -2417,6 +2457,12 @@ int main(int argc, char** argv)
                 ui.log_levels ^= 1 << args[0].Get<int>();
                 capture.set_log_levels((unsigned)ui.log_levels);
             });
+        ctor.BindEventCallback("toggle_log_rant",
+            [&ui, &capture](Rml::DataModelHandle handle, Rml::Event&, const Rml::VariantList&) {
+                ui.log_rant = !ui.log_rant;
+                capture.set_log_rant(ui.log_rant);
+                handle.DirtyVariable("log_rant");
+            });
         ctor.BindEventCallback("clear_log",
             [&ui, &capture](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
                 if (ui.has_selection) capture.clear_log(ui.selected.name);
@@ -2677,11 +2723,13 @@ int main(int argc, char** argv)
         double_field = nullptr;
     });
     Keyboard keyboard(context, ui.touch);
-    auto listen = [&right_click, &triple_click, &keyboard](Rml::ElementDocument* document) {
+    Tips     tips(context, ui.touch);
+    auto listen = [&right_click, &triple_click, &keyboard, &tips](Rml::ElementDocument* document) {
         document->AddEventListener(Rml::EventId::Mousedown, &right_click);
         document->AddEventListener(Rml::EventId::Mousedown, &triple_click);
         document->AddEventListener(Rml::EventId::Dblclick, &triple_click);
         keyboard.listen(document);
+        tips.listen(document);
     };
 
     const Rml::String document_path = "shell.rml";
@@ -2847,6 +2895,7 @@ int main(int argc, char** argv)
         sync(model, "subscribes", ui.subscribes, capture.subscribes());
         sync(model, "log", ui.log, capture.log());
         sync(model, "level_toggles", ui.level_toggles, level_toggles(capture, (unsigned)ui.log_levels));
+        sync(model, "log_rant_count", ui.log_rant_count, capture.log_rant_count());
         sync(model, "conditions", ui.conditions, capture.status());
         ui.meta = capture.meta();
         if (capture.ok() && !capture.latest_log().text.empty()) {
@@ -3174,6 +3223,7 @@ int main(int argc, char** argv)
             ui.menu_items  = path_menu(ui.path_choices, ui.path_text, 0);
             model.DirtyVariable("menu_items");
         }
+        tips.update(Capture::now_s());
         context->Update();
         /* The add box's field exists only after the update that opened it. */
         if (ui.path_focus) {

@@ -364,18 +364,6 @@
 								<span class="head-address mono" copy="">{{sel.address}}</span>
 							</div>
 
-							<div class="section">Status {{conditions.size}}</div>
-							<div class="panel" copy-table="">
-								<div class="placeholder" data-if="conditions.size == 0">none</div>
-								<div class="feed-row" row="" data-for="c : conditions">
-									<span class="dot" data-class-bad="c.level == 4" data-class-warn="c.level == 3"></span>
-									<div class="feed-body">
-										<span class="feed-time mono" cell="">{{c.kind}}<span class="tag" data-if="c.rant">rant</span></span>
-										<span class="feed-text mono" cell="">{{c.text}}</span>
-									</div>
-								</div>
-							</div>
-
 							<div class="section">Round trip</div>
 							<link-plot></link-plot>
 
@@ -570,18 +558,31 @@
 				<div class="sidebar right">
 					<div class="sheet-grip" data-event-click="step_sheet" data-event-dragstart="drag_sheet" data-event-drag="drag_sheet" data-event-dragend="drag_sheet"><div></div></div>
 					<div class="pane-head" data-event-dragstart="drag_sheet" data-event-drag="drag_sheet" data-event-dragend="drag_sheet">
-						<span class="section">Node log</span>
+						<span class="section">Diagnostics</span>
 						<div class="level-toggles">
 							<span class="level-toggle" data-for="t : level_toggles" data-class-on="t.on"
 								data-class-bad="t.level == 4" data-class-warn="t.level == 3"
-								data-event-click="toggle_level(t.level)"><icon data-attr-name="t.icon" /><span
+								data-attr-tip="t.tip" data-event-click="toggle_level(t.level)"><icon data-attr-name="t.icon" /><span
 									class="mono">{{t.count}}</span></span>
+							<span class="level-toggle" data-class-on="log_rant" data-event-click="toggle_log_rant"
+								tip="Rant internal diagnostics"><img
+									src="LogoOutline.png" /><span class="mono">{{log_rant_count}}</span></span>
 						</div>
 						<span class="icon-button" data-class-off="!has_selection" data-event-click="clear_log"><icon name="trash-2" /></span>
 					</div>
+					<div class="status-list" copy-table="" data-if="has_selection &amp;&amp; conditions.size > 0">
+						<div class="status-row" row="" data-for="c : conditions" data-class-bad="c.level == 4"
+							data-class-warn="c.level == 3">
+							<icon data-attr-name="c.level == 4 ? 'octagon-x' : c.level == 3 ? 'triangle-alert' : c.level == 2 ? 'info' : 'bug'" /><span
+								class="mono" cell="">{{c.text}}</span>
+						</div>
+					</div>
+					<div class="edge across" data-if="has_selection &amp;&amp; conditions.size > 0">
+						<div class="grip" data-event-dragstart="drag_status" data-event-drag="drag_status"></div>
+					</div>
 					<div class="pane-body" copy-table="">
 						<div class="placeholder" data-if="!has_selection">select a node</div>
-						<div class="placeholder" data-if="has_selection &amp;&amp; log.size == 0">no log lines</div>
+						<div class="placeholder" data-if="has_selection &amp;&amp; log.size == 0">No diagnostics</div>
 						<div class="feed-row" row="" data-for="l : log">
 							<span class="dot" data-class-bad="l.level == 4" data-class-warn="l.level == 3"></span>
 							<div class="feed-body">
@@ -718,14 +719,17 @@
 				</div>
 				<div class="menu-item" data-for="m, i : menu_items" data-class-header="m.header"
 					data-class-on="m.on" data-event-click="menu_pick(i)">
-					<span class="menu-box" data-if="m.check > 0" data-class-on="m.check == 2">
-						<icon name="check" />
+					<span class="menu-box" data-if="m.check > 0" data-class-on="m.check == 2" data-class-radio="m.radio">
+						<icon name="check" data-if="!m.radio" />
+						<span class="menu-dot" data-if="m.radio"></span>
 					</span>
 					<span class="menu-label" data-class-mono="menu_kind == 'path'">{{m.label}}</span>
 					<span class="menu-hint mono" data-if="m.hint != ''">{{m.hint}}</span>
 				</div>
 			</div>
 		</div>
+
+		<div id="tip" class="tip"></div>
 
 	</body>
 </rml>

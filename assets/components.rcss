@@ -194,6 +194,27 @@ td.held, th.held, .kv.held, [cell].held, viz [cell-path].held { background-color
 	background-color: var(--accent);
 }
 
+/* The same edge laid across a column, dragged up and down. */
+.edge.across { height: 0dp; }
+.edge.across .grip {
+	top: -3dp;
+	bottom: auto;
+	left: 0dp;
+	right: 0dp;
+	width: auto;
+	height: 7dp;
+	border-width: 3dp 0dp;
+	border-color: transparent;
+}
+.edge.across .grip[data-event-dragstart] { cursor: row-resize; }
+.edge.across .grip[data-event-dragstart]:hover,
+.edge.across .grip[data-event-dragstart]:active {
+	border-left-width: 0dp;
+	border-right-width: 0dp;
+	border-top-width: 2dp;
+	border-bottom-width: 2dp;
+}
+
 /* ------------------------------------------------------------------- tree table */
 
 /* A table whose first wide column may hold a tree. Cells touch and fill their row, so a
@@ -664,7 +685,7 @@ body.touch .viz-close         { opacity: 1; }   /* a finger never hovers */
 	display: flex;
 	align-items: center;
 	gap: 5dp;
-	padding: 0dp 9dp;
+	padding: 0dp 7dp;
 	font-size: 11dp;
 	border-left: 1dp var(--border);
 	transition: background-color 0.12s, color 0.12s;
@@ -676,6 +697,10 @@ body.touch .viz-close         { opacity: 1; }   /* a finger never hovers */
 .level-toggle.on                            { color: var(--dim); background-color: var(--panel2); }
 .level-toggle.on.bad                        { color: var(--red); }
 .level-toggle.on.warn                       { color: var(--amber); }
+/* The Rant toggle's logo is white, tinted to the toggle's colour like an icon. */
+.level-toggle img                           { width: 12dp; height: 12dp; image-color: var(--faint); transition: image-color 0.12s; }
+.level-toggle:hover img                     { image-color: var(--text); }
+.level-toggle.on img                        { image-color: var(--dim); }
 
 /* A task's progress rides the head's bottom border, so it takes no room. */
 .sidebar.right > .pane-head { position: relative; }
@@ -1000,6 +1025,19 @@ scrollbarvertical sliderarrowinc {
 .feed-time .tag { margin-left: 6dp; }   /* Rant's own line or condition */
 .feed-text { font-size: 11dp; color: var(--text); }
 
+/* One condition on a line: its level as the log toggles show it, then its message. */
+.status-row {
+	display: flex;
+	gap: 7dp;
+	padding: 3dp var(--pad);
+	font-size: 11dp;
+	color: var(--text);
+}
+.status-row icon      { flex: 0 0 auto; font-size: 12dp; margin-top: 1dp; color: var(--dim); }
+.status-row.bad icon  { color: var(--red); }
+.status-row.warn icon { color: var(--amber); }
+.status-row span      { flex: 1; min-width: 0; word-break: break-word; }
+
 /* --------------------------------------------------------------- detail heading */
 
 .detail-head {
@@ -1052,6 +1090,17 @@ scrollbarvertical sliderarrowinc {
 	box-shadow: var(--shadow-color) 0dp 0dp 10dp;
 }
 
+/* A hover tip: a line or two of help beside what the pointer rests on. */
+.tip {
+	padding: 5dp 8dp;
+	font-size: 11dp;
+	color: var(--text);
+	background-color: var(--panel2);
+	border: 1dp var(--border2);
+	border-radius: 4dp;
+	box-shadow: var(--shadow-color) 0dp 0dp 10dp;
+}
+
 .menu-item {
 	display: flex;
 	align-items: center;
@@ -1080,6 +1129,11 @@ scrollbarvertical sliderarrowinc {
 }
 .menu-box icon    { font-size: 10dp; }
 .menu-box.on      { color: var(--text); background-color: var(--accent); border-color: var(--accent); }
+/* One choice of several: a ring, filled with a dot when chosen. */
+.menu-box.radio   { border-radius: 7dp; }
+.menu-box.radio.on { background-color: transparent; }
+.menu-dot         { width: 7dp; height: 7dp; border-radius: 4dp; }
+.menu-box.on .menu-dot { background-color: var(--accent); }
 .menu-hint {
 	margin-left: auto;
 	min-width: 0;

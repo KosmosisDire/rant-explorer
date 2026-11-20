@@ -244,6 +244,7 @@ body.left-over .sidebar.left {
 body.touch .pane-head { padding: 0dp var(--pad); }
 
 .pane-head .section {
+	white-space: nowrap;
 	margin: 0dp;
 	margin-right: auto;
 }
@@ -268,6 +269,14 @@ body.touch .pane-head { padding: 0dp var(--pad); }
    needs an overflow rule. */
 .pane-body {
 	width: 100%;
+	overflow-y: auto;
+}
+
+/* The node's conditions above its log, as tall as they need up to what the splitter set. */
+.status-list {
+	min-height: 0dp;   /* a column item's automatic minimum is its content, which beats max-height */
+	max-height: var(--status-height);
+	padding: 4dp 0dp;
 	overflow-y: auto;
 }
 
@@ -570,6 +579,16 @@ body.compact .detail-head > .head-add { min-width: 26dp; height: 100%; padding: 
 	position: absolute;
 	width: 200dp;
 }
+
+/* src/tips.cpp places the hover tip by its owner and shows it. */
+#tip {
+	display: none;
+	position: absolute;
+	z-index: 3000;
+	max-width: 260dp;
+	pointer-events: none;
+}
+#tip.shown { display: block; }
 #menu-layer .menu.paths { width: 360dp; }   /* PATH_MENU_W_DP */
 
 /* A phone's menu is a sheet along the bottom over a dimmed screen. It sits in the layer's

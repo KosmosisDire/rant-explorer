@@ -436,9 +436,11 @@ public:
     std::string call(const std::vector<uint8_t>& request);
     std::string cancel();
 
-    /* Which log levels reach log(): bit n passes rant::Level n. */
+    /* Which levels reach log() and status(): bit n passes rant::Level n. */
     static constexpr unsigned LOG_ALL = 0x1E;   /* debug to error */
     void     set_log_levels(unsigned mask) { log_mask_ = mask; }
+    /* Whether Rant's own lines and conditions reach log() and status(). */
+    void     set_log_rant(bool shown) { log_rant_ = shown; }
     /* Drops a node's lines held so far, by its name as log lines carry it. */
     void     clear_log(const std::string& node);
 
@@ -448,8 +450,11 @@ public:
     const std::vector<EndpointRow>& subscribes() const { return subscribes_; }
     const MetaView&                 meta()       const { return meta_; }
     const std::vector<LogRow>&      log()        const { return log_; }
-    /* The selected node's lines held at a level, shown or not. */
+    /* The selected node's conditions and lines held at a level that the Rant toggle lets
+       through, shown or not. */
     int                             log_count(Level level) const { return log_counts_[(int)level]; }
+    /* The selected node's conditions and lines from Rant itself, shown or not. */
+    int                             log_rant_count() const { return log_rant_count_; }
     const std::vector<StatusRow>&   status()     const { return status_; }
     const std::vector<TopicRow>&    topics()     const { return topics_; }
     /* Bumps when topics() was rebuilt, so a tree over it is rebuilt only then. */
@@ -486,6 +491,7 @@ private:
     MetaView                 meta_;
     std::vector<LogRow>      log_;
     int                      log_counts_[5] = {};   /* by rant::Level */
+    int                      log_rant_count_ = 0;
     LogRow                   latest_log_;
     std::vector<StatusRow>   status_;
     std::vector<TopicRow>    topics_;
@@ -499,6 +505,7 @@ private:
     std::string selected_id_;
     std::string error_;
     unsigned    log_mask_ = LOG_ALL;
+    bool        log_rant_ = false;
     Options     opts_;
     std::vector<DomainRow> domains_;
     uint64_t    domains_at_us_ = 0;

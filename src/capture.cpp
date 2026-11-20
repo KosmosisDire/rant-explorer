@@ -1744,6 +1744,7 @@ void Capture::switch_domain(uint16_t domain)
     meta_ = MetaView();
     log_.clear();
     std::fill(std::begin(log_counts_), std::end(log_counts_), 0);
+    log_rant_count_ = 0;
     latest_log_ = LogRow();
     status_.clear();
     topics_.clear();
@@ -2630,19 +2631,29 @@ void Capture::poll()
 
     latest_log_ = lines.empty() ? LogRow() : Impl::row(lines.back());
 
-    /* The selected node's conditions, already in order. */
+    /* The log sidebar's toggles count and filter the selected node's conditions, already in
+       order, and its lines, newest first. */
+    std::fill(std::begin(log_counts_), std::end(log_counts_), 0);
+    log_rant_count_ = 0;
     status_.clear();
     if (have_selection) {
         const auto it = status.find(selected_peer);
-        if (it != status.end()) status_ = it->second;
+        if (it != status.end())
+            for (const StatusRow& row : it->second) {
+                if (row.rant) log_rant_count_++;
+                if (row.rant && !log_rant_) continue;
+                if (row.level >= 0 && row.level < (int)std::size(log_counts_)) log_counts_[row.level]++;
+                if (!(log_mask_ & (1u << row.level))) continue;
+                status_.push_back(row);
+            }
     }
 
-    /* The log sidebar: this node's lines, newest first, filtered by the level toggles. */
     log_.clear();
-    std::fill(std::begin(log_counts_), std::end(log_counts_), 0);
     if (!selected_name.empty()) {
         for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
             if (it->node != selected_name) continue;
+            if (it->rant) log_rant_count_++;
+            if (it->rant && !log_rant_) continue;
             if (it->level >= 0 && it->level < (int)std::size(log_counts_)) log_counts_[it->level]++;
             if (!(log_mask_ & (1u << it->level))) continue;
             log_.push_back(Impl::row(*it));

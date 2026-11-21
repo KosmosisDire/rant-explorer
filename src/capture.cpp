@@ -195,21 +195,21 @@ constexpr uint32_t ARRAY_HEAD = 5, ARRAY_TAIL = 3;
 constexpr uint32_t REVEAL_STEP = 100;
 
 using Field     = rant::Schema::Field;
-using FieldType = rant::FieldType;
+using SchemaTypeKind = rant::SchemaTypeKind;
 using ValueNode = Capture::ValueNode;
 
-const char* scalar_word(FieldType kind)
+const char* scalar_word(SchemaTypeKind kind)
 {
     switch (kind) {
-    case FieldType::U8:  return "u8";  case FieldType::U16: return "u16";
-    case FieldType::U32: return "u32"; case FieldType::U64: return "u64";
-    case FieldType::I8:  return "i8";  case FieldType::I16: return "i16";
-    case FieldType::I32: return "i32"; case FieldType::I64: return "i64";
-    case FieldType::F32: return "f32"; case FieldType::F64: return "f64";
-    case FieldType::Bool:    return "bool";
-    case FieldType::Struct:  return "struct";
-    case FieldType::Map:     return "map";
-    case FieldType::VString: return "string";
+    case SchemaTypeKind::U8:  return "u8";  case SchemaTypeKind::U16: return "u16";
+    case SchemaTypeKind::U32: return "u32"; case SchemaTypeKind::U64: return "u64";
+    case SchemaTypeKind::I8:  return "i8";  case SchemaTypeKind::I16: return "i16";
+    case SchemaTypeKind::I32: return "i32"; case SchemaTypeKind::I64: return "i64";
+    case SchemaTypeKind::F32: return "f32"; case SchemaTypeKind::F64: return "f64";
+    case SchemaTypeKind::Bool:    return "bool";
+    case SchemaTypeKind::Struct:  return "struct";
+    case SchemaTypeKind::Map:     return "map";
+    case SchemaTypeKind::VString: return "string";
     default:                 return "?";
     }
 }
@@ -221,12 +221,12 @@ std::string field_type(const std::vector<Field>& fields, size_t i)
     const Field& f = fields[i];
     if (!f.type_name.empty()) return std::string(f.type_name);
     switch (f.kind) {
-    case FieldType::Map:     return "map";
-    case FieldType::VString: return "string";
-    case FieldType::String:  return "string<" + std::to_string(f.str_cap) + ">";
-    case FieldType::Enum:    return std::string("enum<") + scalar_word(f.backing) + ">";
-    case FieldType::Array:   return field_type(fields, i + 1) + "[" + std::to_string(f.count) + "]";
-    case FieldType::VArray:  return field_type(fields, i + 1) + "[]";
+    case SchemaTypeKind::Map:     return "map";
+    case SchemaTypeKind::VString: return "string";
+    case SchemaTypeKind::String:  return "string<" + std::to_string(f.str_cap) + ">";
+    case SchemaTypeKind::Enum:    return std::string("enum<") + scalar_word(f.backing) + ">";
+    case SchemaTypeKind::Array:   return field_type(fields, i + 1) + "[" + std::to_string(f.count) + "]";
+    case SchemaTypeKind::VArray:  return field_type(fields, i + 1) + "[]";
     default:                 return scalar_word(f.kind);
     }
 }
@@ -235,8 +235,8 @@ std::string field_type(const std::vector<Field>& fields, size_t i)
 static bool is_packed(const Field& e)
 {
     switch (e.kind) {
-    case FieldType::Struct: case FieldType::Array: case FieldType::VArray: case FieldType::VString:
-    case FieldType::Map: case FieldType::Enum: return false;
+    case SchemaTypeKind::Struct: case SchemaTypeKind::Array: case SchemaTypeKind::VArray: case SchemaTypeKind::VString:
+    case SchemaTypeKind::Map: case SchemaTypeKind::Enum: return false;
     default: return e.size != 0;
     }
 }
@@ -260,23 +260,23 @@ std::string std_name(std::string_view name)
     return type == rant::detail::RANT_STD_NONE ? std::string() : std::string(name);
 }
 
-bool is_number(FieldType kind)
+bool is_number(SchemaTypeKind kind)
 {
-    return kind <= FieldType::F64;   /* U8 through F64 lead the enum */
+    return kind <= SchemaTypeKind::F64;   /* U8 through F64 lead the enum */
 }
 
 using Scalar = ValueNode::Scalar;
 
 /* A number's or a bool's wire type, None for any other field. */
-Scalar scalar_of(FieldType kind)
+Scalar scalar_of(SchemaTypeKind kind)
 {
     switch (kind) {
-    case FieldType::U8:  return Scalar::U8;  case FieldType::U16: return Scalar::U16;
-    case FieldType::U32: return Scalar::U32; case FieldType::U64: return Scalar::U64;
-    case FieldType::I8:  return Scalar::I8;  case FieldType::I16: return Scalar::I16;
-    case FieldType::I32: return Scalar::I32; case FieldType::I64: return Scalar::I64;
-    case FieldType::F32: return Scalar::F32; case FieldType::F64: return Scalar::F64;
-    case FieldType::Bool: return Scalar::Bool;
+    case SchemaTypeKind::U8:  return Scalar::U8;  case SchemaTypeKind::U16: return Scalar::U16;
+    case SchemaTypeKind::U32: return Scalar::U32; case SchemaTypeKind::U64: return Scalar::U64;
+    case SchemaTypeKind::I8:  return Scalar::I8;  case SchemaTypeKind::I16: return Scalar::I16;
+    case SchemaTypeKind::I32: return Scalar::I32; case SchemaTypeKind::I64: return Scalar::I64;
+    case SchemaTypeKind::F32: return Scalar::F32; case SchemaTypeKind::F64: return Scalar::F64;
+    case SchemaTypeKind::Bool: return Scalar::Bool;
     default:             return Scalar::None;
     }
 }
@@ -347,17 +347,17 @@ void read_element(const ValueNode& array, uint32_t k, const uint8_t* message, si
 }
 
 /* The inverse, for an element of a plain array. */
-void write_scalar(FieldType kind, uint8_t* p, const ValueNode& n)
+void write_scalar(SchemaTypeKind kind, uint8_t* p, const ValueNode& n)
 {
     uint64_t bits = 0;
-    if (kind == FieldType::F32) {
+    if (kind == SchemaTypeKind::F32) {
         const float f = (float)n.number;
         uint32_t b;
         std::memcpy(&b, &f, 4);
         bits = b;
-    } else if (kind == FieldType::F64) {
+    } else if (kind == SchemaTypeKind::F64) {
         std::memcpy(&bits, &n.number, 8);
-    } else if (kind == FieldType::Bool) {
+    } else if (kind == SchemaTypeKind::Bool) {
         bits = n.number != 0;
     } else {
         bits = (uint64_t)n.integer;
@@ -386,7 +386,7 @@ bool write_edit(const rant::Schema& schema, std::vector<uint8_t>& buf, const Val
         const size_t at = (size_t)e.element * el.size;
         if (at + el.size > elements.size()) return false;
         uint8_t* p = elements.data() + at;
-        if (el.kind == FieldType::String) {
+        if (el.kind == SchemaTypeKind::String) {
             if (e.text.size() > el.str_cap) return false;
             p[0] = (uint8_t)(e.text.size() & 0xFF);
             p[1] = (uint8_t)(e.text.size() >> 8);
@@ -406,7 +406,7 @@ bool write_edit(const rant::Schema& schema, std::vector<uint8_t>& buf, const Val
         case ValueNode::Bool: v.v.u = e.number != 0; break;
         case ValueNode::Enum: v.v.i = e.integer; break;
         case ValueNode::Text:
-            if (f.kind == FieldType::String && e.text.size() > f.str_cap) return false;
+            if (f.kind == SchemaTypeKind::String && e.text.size() > f.str_cap) return false;
             v.bytes = rant::detail::rant_bytes(e.text.data(), e.text.size());
             break;
         default: return false;
@@ -488,26 +488,26 @@ struct Decoder {
                                                         (uint16_t)elems.size(), &v) != 0;
 
         switch (f.kind) {
-        case FieldType::Struct:
+        case SchemaTypeKind::Struct:
             n.kind = ValueNode::Struct;
             out.push_back(n);
             for (size_t j = i + 1, end = end_of(i); j < end; j = end_of(j)) field(j, elems, n.path, depth + 1);
             return;
-        case FieldType::Array:
-        case FieldType::VArray:
+        case SchemaTypeKind::Array:
+        case SchemaTypeKind::VArray:
             array(i, f, ok ? v : rant::detail::RantValue{}, n, elems);
             return;
-        case FieldType::String:
-        case FieldType::VString:
+        case SchemaTypeKind::String:
+        case SchemaTypeKind::VString:
             n.kind = ValueNode::Text;
-            n.cap  = f.kind == FieldType::String ? f.str_cap : 0;
+            n.cap  = f.kind == SchemaTypeKind::String ? f.str_cap : 0;
             if (ok && v.bytes.data) n.text.assign((const char*)v.bytes.data, v.bytes.len);
             break;
-        case FieldType::Map:
+        case SchemaTypeKind::Map:
             n.kind  = ValueNode::Map;
             n.count = ok ? v.count : 0;
             break;
-        case FieldType::Enum: {
+        case SchemaTypeKind::Enum: {
             n.kind    = ValueNode::Enum;
             n.integer = ok ? v.v.i : 0;
             n.number  = (double)n.integer;
@@ -522,17 +522,17 @@ struct Decoder {
             }
             break;
         }
-        case FieldType::Bool:
+        case SchemaTypeKind::Bool:
             n.kind   = ValueNode::Bool;
             n.number = ok && v.v.u ? 1 : 0;
             break;
         default:
             if (!is_number(f.kind)) break;
             n.kind = ValueNode::Number;
-            if (f.kind == FieldType::F32 || f.kind == FieldType::F64) {
+            if (f.kind == SchemaTypeKind::F32 || f.kind == SchemaTypeKind::F64) {
                 n.is_float = true;
                 n.number   = ok ? v.v.f : 0;
-            } else if (f.kind >= FieldType::I8) {
+            } else if (f.kind >= SchemaTypeKind::I8) {
                 n.integer = ok ? v.v.i : 0;
                 n.number  = (double)n.integer;
             } else {
@@ -555,7 +555,7 @@ struct Decoder {
         const uint32_t count = v.count;
 
         /* A variable byte array is one blob: an image, a file, a payload. */
-        if (f.kind == FieldType::VArray && el.kind == FieldType::U8) {
+        if (f.kind == SchemaTypeKind::VArray && el.kind == SchemaTypeKind::U8) {
             n.kind  = ValueNode::Blob;
             n.count = (uint32_t)v.bytes.len;
             n.offset = v.bytes.data ? (uint32_t)(v.bytes.data - msg.data) : 0;
@@ -566,12 +566,12 @@ struct Decoder {
 
         n.kind     = ValueNode::Array;
         n.count    = count;
-        n.elem     = el.kind == FieldType::Struct ? ValueNode::Struct
-                   : el.kind == FieldType::String || el.kind == FieldType::VString ? ValueNode::Text
-                   : el.kind == FieldType::Array || el.kind == FieldType::VArray ? ValueNode::Array
-                   : el.kind == FieldType::Enum ? ValueNode::Enum
-                   : el.kind == FieldType::Map ? ValueNode::Map
-                   : el.kind == FieldType::Bool ? ValueNode::Bool : ValueNode::Number;
+        n.elem     = el.kind == SchemaTypeKind::Struct ? ValueNode::Struct
+                   : el.kind == SchemaTypeKind::String || el.kind == SchemaTypeKind::VString ? ValueNode::Text
+                   : el.kind == SchemaTypeKind::Array || el.kind == SchemaTypeKind::VArray ? ValueNode::Array
+                   : el.kind == SchemaTypeKind::Enum ? ValueNode::Enum
+                   : el.kind == SchemaTypeKind::Map ? ValueNode::Map
+                   : el.kind == SchemaTypeKind::Bool ? ValueNode::Bool : ValueNode::Number;
         n.elem_type = field_type(fields, i + 1);
         n.elem_std  = std_name(el.type_name);
         n.scalar    = scalar_of(el.kind);
@@ -726,7 +726,7 @@ struct Capture::Impl {
         if (now - t.asked_us < (t.pending ? TRAFFIC_TIMEOUT_US : TRAFFIC_PERIOD_US)) return;
         t.pending  = true;
         t.asked_us = now;
-        const rant::SendStatus sent = mesh.meta_async(peer, [this, id](const rant::MetaSnapshot& snap) {
+        const rant::RantResult sent = mesh.meta_async(peer, [this, id](const rant::MetaSnapshot& snap) {
             TrafficReply reply;
             reply.id    = id;
             reply.ok    = snap.valid;
@@ -741,7 +741,7 @@ struct Capture::Impl {
             std::lock_guard<std::mutex> lock(mutex);
             traffic_inbox.push_back(std::move(reply));
         }, rant::MetaTopics);
-        if (sent != rant::SendStatus::Ok) t.pending = false;
+        if (sent != rant::RantResult::Ok) t.pending = false;
     }
 
     /* Folds the replies that landed into rates. True when one did. */
@@ -895,13 +895,13 @@ struct Capture::Impl {
         }
         /* Close every share this handle holds. State while one of them is mid dispatch, and
            what is still open stays open for the next try. */
-        rant::SendStatus close()
+        rant::RantResult close()
         {
-            rant::SendStatus st = rant::SendStatus::Ok;
+            rant::RantResult st = rant::RantResult::Ok;
             auto one = [&](auto& h) {
                 if (!h.valid()) return;
-                const rant::SendStatus r = h.close();
-                if (r != rant::SendStatus::Ok && r != rant::SendStatus::NoTopic) st = r;
+                const rant::RantResult r = h.close();
+                if (r != rant::RantResult::Ok && r != rant::RantResult::NoTopic) st = r;
             };
             one(publisher);
             one(topic);
@@ -1148,8 +1148,8 @@ struct Capture::Impl {
     void retire_pending()
     {
         for (auto it = retiring.begin(); it != retiring.end();) {
-            const rant::SendStatus st = it->close();
-            if (st == rant::SendStatus::Ok || st == rant::SendStatus::NoTopic) it = retiring.erase(it);
+            const rant::RantResult st = it->close();
+            if (st == rant::RantResult::Ok || st == rant::RantResult::NoTopic) it = retiring.erase(it);
             else ++it;
         }
     }
@@ -2010,14 +2010,14 @@ std::vector<uint8_t> Capture::encode(const std::vector<uint8_t>& base, uint64_t 
 namespace {
 
 /* Why a write to a variable was refused, empty when it went out. role is what BadRole means. */
-std::string write_error(rant::SendStatus st, const char* role)
+std::string write_error(rant::RantResult st, const char* role)
 {
     switch (st) {
-    case rant::SendStatus::Ok:       return {};
-    case rant::SendStatus::NoTopic:  return "no owner matched";
-    case rant::SendStatus::TooBig:   return "the value is too big";
-    case rant::SendStatus::BadRole:  return role;
-    case rant::SendStatus::Schema:   return "the owner's schema differs";
+    case rant::RantResult::Ok:       return {};
+    case rant::RantResult::NoTopic:  return "no owner matched";
+    case rant::RantResult::TooBig:   return "the value is too big";
+    case rant::RantResult::BadRole:  return role;
+    case rant::RantResult::Schema:   return "the owner's schema differs";
     default:                         return "the write was refused";
     }
 }
@@ -2106,7 +2106,7 @@ bool Capture::rewrite(Draft& draft, uint16_t field, const std::function<void(std
     const auto found = impl_->schemas.find(draft.schema);
     Field f, el;
     if (found == impl_->schemas.end() || !found->second.field_at(field, f) ||
-        f.kind != FieldType::VArray || !found->second.field_at((uint16_t)(field + 1), el) || !is_packed(el)) {
+        f.kind != SchemaTypeKind::VArray || !found->second.field_at((uint16_t)(field + 1), el) || !is_packed(el)) {
         error = "only a variable array of numbers or capped strings can change its length here";
         return false;
     }
@@ -2146,10 +2146,10 @@ std::string Capture::publish(const std::vector<uint8_t>& message)
     Impl::Sub* s = Impl::watched(impl_.get());
     if (!s || !s->live.publisher.valid()) return "not ready to publish yet";
     switch (s->live.publisher.send(rant::Bytes(message))) {
-    case rant::SendStatus::Ok:      return {};
-    case rant::SendStatus::TooBig:  return "the message is too big";
-    case rant::SendStatus::Schema:  return "the schema was refused";
-    case rant::SendStatus::BadRole: return "the name cannot be published here";
+    case rant::RantResult::Ok:      return {};
+    case rant::RantResult::TooBig:  return "the message is too big";
+    case rant::RantResult::Schema:  return "the schema was refused";
+    case rant::RantResult::BadRole: return "the name cannot be published here";
     default:                        return "the send was refused";
     }
 }
@@ -2170,7 +2170,7 @@ std::string Capture::call(const std::vector<uint8_t>& request)
         b->status  = r.status();
         b->message = std::string(r.message());
     };
-    rant::SendStatus st;
+    rant::RantResult st;
     if (s->live.task.valid()) {
         const rant::TaskCall tc = s->live.task.call_async(rant::Bytes(request),
             [weak](const rant::ProgressView<rant::Bytes>& p) {
@@ -2186,10 +2186,10 @@ std::string Capture::call(const std::vector<uint8_t>& request)
         st = s->live.function.call_async(rant::Bytes(request), on_response);
     }
     switch (st) {
-    case rant::SendStatus::Ok:      break;
-    case rant::SendStatus::NoTopic: return "no provider matched";
-    case rant::SendStatus::TooBig:  return "the request is too big";
-    case rant::SendStatus::Schema:  return "the provider's schema differs";
+    case rant::RantResult::Ok:      break;
+    case rant::RantResult::NoTopic: return "no provider matched";
+    case rant::RantResult::TooBig:  return "the request is too big";
+    case rant::RantResult::Schema:  return "the provider's schema differs";
     default:                        return "the call was refused";
     }
     s->call         = box;
@@ -2207,8 +2207,8 @@ std::string Capture::cancel()
     Impl::Sub* s = Impl::watched(impl_.get());
     if (!s || !s->live.task.valid() || s->call_state != Impl::CallState::Waiting) return "no run to cancel";
     switch (s->live.task.cancel(s->call_id)) {
-    case rant::SendStatus::Ok:      return {};
-    case rant::SendStatus::BadRole: return "the task cannot be cancelled";
+    case rant::RantResult::Ok:      return {};
+    case rant::RantResult::BadRole: return "the task cannot be cancelled";
     default:                        return "the cancel was refused";
     }
 }
@@ -2520,7 +2520,7 @@ void Capture::poll()
         now_steady - impl_->last_meta_us >= META_PERIOD_US) {
         impl_->last_meta_us  = now_steady;
         impl_->meta_pending  = true;
-        const rant::SendStatus sent = mesh.meta_async(
+        const rant::RantResult sent = mesh.meta_async(
             selected_peer,
             [this](const rant::MetaSnapshot& snap) {
                 std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -2535,7 +2535,7 @@ void Capture::poll()
                 }
             },
             rant::MetaNode | rant::MetaProc | rant::MetaPeers);
-        if (sent != rant::SendStatus::Ok) impl_->meta_pending = false;
+        if (sent != rant::RantResult::Ok) impl_->meta_pending = false;
     }
 
     /* Copy the meta snapshot and the log ring out from under the service thread. */

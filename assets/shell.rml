@@ -332,7 +332,8 @@
 										data-class-warn="(!n.alive || n.worst == 3) &amp;&amp; n.worst != 4"
 										data-class-bad="n.worst == 4"></span>
 									<span class="list-label" cell="">{{n.name}}</span>
-									<span class="list-trail warn" cell="" data-if="!n.alive">joining</span>
+									<span class="list-trail warn" cell="" data-if="!n.alive &amp;&amp; n.wire == 0">joining</span>
+									<span class="list-trail warn" cell="" data-if="n.wire != 0">wire {{n.wire}}</span>
 									<span class="list-trail mono" cell=""
 										data-if="n.alive &amp;&amp; n.rtt_samples > 0">{{n.rtt_ms | ms}}</span>
 								</div>
@@ -360,10 +361,28 @@
 							<div class="detail-head">
 								<span class="hero" copy="">{{sel.name}}</span>
 								<span class="badge ok" data-if="sel.alive">ALIVE</span>
-								<span class="badge warn" data-if="!sel.alive">JOINING</span>
+								<span class="badge warn" data-if="!sel.alive &amp;&amp; sel.wire == 0">JOINING</span>
+								<span class="badge warn" data-if="sel.wire != 0">WIRE {{sel.wire}}</span>
 								<span class="head-address mono" copy="">{{sel.address}}</span>
 							</div>
 
+							<div data-if="sel.wire != 0">
+								<div class="placeholder">It speaks wire {{sel.wire}} and this explorer wire {{wire}}.
+									Update its Rant to see the rest.</div>
+								<div class="section">Discovery</div>
+								<div class="panel" copy-table="">
+									<div class="kv-row" data-if="sel.wire >= 8">
+										<div class="kv"><span class="k">ID</span><span class="v mono">{{sel.id}}</span></div>
+									</div>
+									<div class="kv-row">
+										<div class="kv"><span class="k">Wire</span><span class="v mono">{{sel.wire}}</span></div>
+										<div class="kv"><span class="k">Last announce</span><span
+												class="v mono">{{sel.last_heard_s | age}}</span></div>
+									</div>
+								</div>
+							</div>
+
+							<div data-if="sel.wire == 0">
 							<div class="section">Round trip</div>
 							<link-plot></link-plot>
 
@@ -544,6 +563,7 @@
 									</div>
 								</div>
 
+							</div>
 							</div>
 
 						</div>

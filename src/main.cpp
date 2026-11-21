@@ -512,6 +512,7 @@ struct Ui {
 #else
     bool web       = false;
 #endif
+    int  wire      = Capture::wire_version();
 };
 
 /* Whether the device's main pointer is a finger. The page knows before any input, so the
@@ -943,8 +944,8 @@ Rml::String machines_signature(const Rml::Vector<Capture::MachineRow>& machines)
         out += m.host;
         out += '|';
         for (const Capture::NodeRow& n : m.nodes)
-            out += Rml::CreateString("%s;%d;%d;%s;%d|", n.name.c_str(), (int)n.alive,
-                                     n.rtt_samples, format_ms(n.rtt_ms).c_str(), n.worst);
+            out += Rml::CreateString("%s;%d;%d;%s;%d;%d|", n.name.c_str(), (int)n.alive,
+                                     n.rtt_samples, format_ms(n.rtt_ms).c_str(), n.worst, n.wire);
     }
     return out;
 }
@@ -1274,6 +1275,7 @@ int main(int argc, char** argv)
             node_row.RegisterMember("publishes",     &Capture::NodeRow::publishes);
             node_row.RegisterMember("subscribes",    &Capture::NodeRow::subscribes);
             node_row.RegisterMember("worst",         &Capture::NodeRow::worst);
+            node_row.RegisterMember("wire",          &Capture::NodeRow::wire);
         }
         ctor.RegisterArray<Rml::Vector<Capture::NodeRow>>();
 
@@ -1556,6 +1558,7 @@ int main(int argc, char** argv)
         ctor.Bind("mesh",            &ui.mesh);
         ctor.Bind("maximized",       &ui.maximized);
         ctor.Bind("web",             &ui.web);
+        ctor.Bind("wire",            &ui.wire);
         ctor.Bind("layout",          &ui.size);
         ctor.Bind("left_open",       &ui.left_open);
         ctor.Bind("right_open",      &ui.right_open);

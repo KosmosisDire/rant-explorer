@@ -1875,6 +1875,11 @@ void Capture::subscribe(const std::string& key, bool on)
     }
 }
 
+int Capture::wire_version()
+{
+    return RANT_WIRE_VERSION;
+}
+
 bool Capture::subscribed(const std::string& key) const
 {
     const Impl::Sub* s = impl_ ? impl_->find(key) : nullptr;
@@ -2286,15 +2291,18 @@ void Capture::poll()
 
     rant::Reflection mesh = impl_->node.reflection();
     const std::vector<rant::Peer> peers = mesh.peers();
+    const std::vector<rant::OtherWireNode> other_wire = mesh.other_wire_nodes();
     const uint32_t mesh_epoch = mesh.epoch();
 
     /* Slide the clock origin so node time never reads earlier than an announce we hold. */
-    for (const rant::Peer& p : peers) {
-        if (p.last_heard_us > impl_->node_now_us(now_steady)) {
-            impl_->origin_node_us   = p.last_heard_us;
+    auto heard = [&](uint64_t us) {
+        if (us > impl_->node_now_us(now_steady)) {
+            impl_->origin_node_us   = us;
             impl_->origin_steady_us = now_steady;
         }
-    }
+    };
+    for (const rant::Peer& p : peers) heard(p.last_heard_us);
+    for (const rant::OtherWireNode& o : other_wire) heard(o.last_heard_us);
     const uint64_t node_now = impl_->node_now_us(now_steady);
 
     for (auto& entry : impl_->tracks) entry.second.seen = false;
@@ -2311,6 +2319,18 @@ void Capture::poll()
     uint32_t selected_peer = 0;
     bool     have_selection = false;
     uint32_t selected_epoch = 0;
+
+    auto add_to_machine = [this](NodeRow&& row) {
+        const std::string host = host_of(row.address);
+        auto machine = std::find_if(machines_.begin(), machines_.end(),
+                                    [&host](const MachineRow& m) { return m.host == host; });
+        if (machine == machines_.end()) {
+            machines_.push_back(MachineRow{ host.empty() ? "(unknown host)" : host, {} });
+            machine = machines_.end() - 1;
+        }
+        machine->nodes.push_back(std::move(row));
+        node_count_++;
+    };
 
     for (const rant::Peer& p : peers) {
         if (!p.active) continue;   /* dropped peers stay listed, the UI never shows them */
@@ -2384,15 +2404,20 @@ void Capture::poll()
             selected_epoch = p.epoch;
         }
 
-        const std::string host = host_of(p.address);
-        auto machine = std::find_if(machines_.begin(), machines_.end(),
-                                    [&host](const MachineRow& m) { return m.host == host; });
-        if (machine == machines_.end()) {
-            machines_.push_back(MachineRow{ host.empty() ? "(unknown host)" : host, {} });
-            machine = machines_.end() - 1;
-        }
-        machine->nodes.push_back(std::move(row));
-        node_count_++;
+        add_to_machine(std::move(row));
+    }
+
+    /* Nodes on another wire only catalogue: no peer id, so no details, traffic or graph. */
+    for (const rant::OtherWireNode& o : other_wire) {
+        const bool known = std::any_of(o.uuid.begin(), o.uuid.end(), [](uint8_t b) { return b != 0; });
+        NodeRow row;
+        row.id      = known ? format_hex(o.uuid.data(), o.uuid.size()) : "wire:" + o.address;
+        row.name    = known ? o.name : "unknown node";
+        row.address = o.address;
+        row.wire    = o.wire;
+        if (node_now && o.last_heard_us)
+            row.last_heard_s = (double)(node_now - o.last_heard_us) / 1e6;
+        add_to_machine(std::move(row));
     }
 
     for (auto it = impl_->tracks.begin(); it != impl_->tracks.end();) {

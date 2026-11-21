@@ -51,6 +51,7 @@ public:
         int         fragment_size = -1;
         int         publishes = 0, subscribes = 0;
         int         worst = 0;           /* its most serious condition's rant::DiagnosticLevel, 0 = none */
+        int         wire = 0;            /* another wire version it speaks, 0 = ours */
     };
 
     /* The left list groups nodes by the host they run on. */
@@ -446,6 +447,7 @@ public:
 
     const std::vector<MachineRow>&  machines()   const { return machines_; }
     int                             node_count() const { return node_count_; }
+    static int                      wire_version();   /* the one this explorer's Rant speaks */
     const std::vector<EndpointRow>& publishes()  const { return publishes_; }
     const std::vector<EndpointRow>& subscribes() const { return subscribes_; }
     const MetaView&                 meta()       const { return meta_; }

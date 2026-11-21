@@ -33,7 +33,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/get_cpm.cmake")
 # to ../rant to build against the working tree instead.
 CPMAddPackage(NAME rant
   GITHUB_REPOSITORY KosmosisDire/Rant
-  VERSION 0.0.47
+  VERSION 0.0.48
   EXCLUDE_FROM_ALL YES)
 
 # Static CRT: a copied exe must run with no VC++ redistributable. Before every dependency,
@@ -50,7 +50,7 @@ endif()
 # ../math-rant.
 CPMAddPackage(NAME math
   GITHUB_REPOSITORY KosmosisDire/rant-math
-  VERSION 0.0.7
+  VERSION 0.0.8
   EXCLUDE_FROM_ALL YES)
 
 # FreeType is RmlUi's font engine. Its CMake spells Freetype::Freetype as an export name

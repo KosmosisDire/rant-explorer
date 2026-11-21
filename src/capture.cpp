@@ -629,7 +629,7 @@ struct Decoder {
    they touch are declared before the node and guarded. */
 struct Capture::Impl {
     struct RawLog {
-        int         level = (int)rant::Level::Info;
+        int         level = (int)rant::DiagnosticLevel::Info;
         bool        rant = false;
         uint64_t    wall_us = 0;
         std::string node;

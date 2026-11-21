@@ -351,7 +351,7 @@ private:
 /* Everything the documents bind to. Copied from Capture once per frame. */
 /* One of the node log's level toggles: its icon and how many lines of that level are held. */
 struct LevelToggle {
-    int         level = 0;   /* a rant::Level */
+    int         level = 0;   /* a rant::DiagnosticLevel */
     Rml::String icon;
     Rml::String tip;
     int         count = 0;
@@ -367,7 +367,7 @@ struct Ui {
     /* shell */
     /* The status bar line: the newest log line off the mesh, or why our node failed. */
     Rml::String status, tab = "topics";
-    int         status_level = 2, peer_count = 0;   /* a rant::Level, 1 debug to 4 error */
+    int         status_level = 2, peer_count = 0;   /* a rant::DiagnosticLevel, 1 debug to 4 error */
 
     /* nodes tab */
     Rml::Vector<Capture::MachineRow> machines;
@@ -377,7 +377,7 @@ struct Ui {
     Rml::Vector<Capture::EndpointRow> publishes, subscribes;
     Rml::Vector<Capture::LogRow>      log;
     Rml::Vector<Capture::StatusRow>   conditions;
-    int                      log_levels = Capture::LOG_ALL;   /* the levels shown, bit n for rant::Level n */
+    int                      log_levels = Capture::LOG_ALL;   /* the levels shown, bit n for rant::DiagnosticLevel n */
     Rml::Vector<LevelToggle> level_toggles;
     bool        log_rant = false;   /* Rant's own lines are shown */
     int         log_rant_count = 0;

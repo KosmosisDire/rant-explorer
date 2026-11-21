@@ -50,7 +50,7 @@ public:
         int         updates = 0;         /* announce changes we have counted */
         int         fragment_size = -1;
         int         publishes = 0, subscribes = 0;
-        int         worst = 0;           /* its most serious condition's rant::Level, 0 = none */
+        int         worst = 0;           /* its most serious condition's rant::DiagnosticLevel, 0 = none */
     };
 
     /* The left list groups nodes by the host they run on. */
@@ -157,12 +157,12 @@ public:
     };
     static constexpr double ACTIVE_S = 10, LOST_S = 6;
 
-    /* rant::Level's values, which a LogRow and a StatusRow carry */
+    /* rant::DiagnosticLevel's values, which a LogRow and a StatusRow carry */
     enum class Level : int { Debug = 1, Info, Warn, Error };
 
     /* One line off the mesh wide @rant/log stream, already filtered to the selection. */
     struct LogRow {
-        int         level = 2;   /* a rant::Level, 1 debug to 4 error */
+        int         level = 2;   /* a rant::DiagnosticLevel, 1 debug to 4 error */
         bool        rant = false;   /* Rant's own line, not the node's */
         std::string time;        /* local HH:MM:SS */
         std::string node;
@@ -176,7 +176,7 @@ public:
 
     /* One condition active on the selected node, the most serious first. */
     struct StatusRow {
-        int         level = 2;      /* a rant::Level */
+        int         level = 2;      /* a rant::DiagnosticLevel */
         bool        rant = false;   /* raised by Rant itself, so kind is its kind */
         std::string kind;           /* the app's key, or Rant's kind before its id */
         std::string text;
@@ -436,7 +436,7 @@ public:
     std::string call(const std::vector<uint8_t>& request);
     std::string cancel();
 
-    /* Which levels reach log() and status(): bit n passes rant::Level n. */
+    /* Which levels reach log() and status(): bit n passes rant::DiagnosticLevel n. */
     static constexpr unsigned LOG_ALL = 0x1E;   /* debug to error */
     void     set_log_levels(unsigned mask) { log_mask_ = mask; }
     /* Whether Rant's own lines and conditions reach log() and status(). */
@@ -490,7 +490,7 @@ private:
     std::vector<EndpointRow> publishes_, subscribes_;
     MetaView                 meta_;
     std::vector<LogRow>      log_;
-    int                      log_counts_[5] = {};   /* by rant::Level */
+    int                      log_counts_[5] = {};   /* by rant::DiagnosticLevel */
     int                      log_rant_count_ = 0;
     LogRow                   latest_log_;
     std::vector<StatusRow>   status_;
